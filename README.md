@@ -91,21 +91,22 @@ After session completion:
 ---
 
 ## Repository Structure
+
 verification-engine/
 │
 ├── backend/
-│ ├── services/ # extraction, grounding, audit, cleanup
-│ ├── connectors/ # VIT mock, VC mock
-│ ├── models/ # schemas (Pydantic)
-│ ├── routes/ # API endpoints
-│ └── db/ # database access
+│   ├── services/        # extraction, grounding, audit, cleanup
+│   ├── connectors/      # VIT mock, VC mock
+│   ├── models/          # schemas (Pydantic)
+│   ├── routes/          # API endpoints
+│   └── db/              # database access
 │
 ├── frontend/
-│ ├── components/ # PDF viewer, grounding UI
-│ └── pages/
+│   ├── components/      # PDF viewer, grounding UI
+│   └── pages/
 │
 ├── fixtures/
-│ └── vit_registry.json
+│   └── vit_registry.json
 │
 ├── docker-compose.yml
 └── README.md

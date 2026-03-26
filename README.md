@@ -92,6 +92,7 @@ After session completion:
 
 ## Repository Structure
 
+```text
 verification-engine/
 │
 ├── backend/
@@ -110,6 +111,7 @@ verification-engine/
 │
 ├── docker-compose.yml
 └── README.md
+```
 
 ---
 

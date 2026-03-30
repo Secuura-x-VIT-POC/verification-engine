@@ -6,10 +6,9 @@ Session-based document verification engine with extraction, grounding, trust eva
 
 ## Overview
 
-This repository implements the core verification pipeline for the Secuura × VIT Proof of Concept.
+This repository contains the core verification pipeline for the Secuura x VIT proof of concept.
 
-The system processes recruitment documents (PDFs) in a **session-scoped, privacy-aware workflow**.  
-Documents are **not processed at upload time** — verification is triggered only when an authorized reviewer opens a session.
+The system processes recruitment documents in a session-scoped, privacy-aware workflow. Documents are not processed at upload time; verification starts only when an authorized reviewer opens a session.
 
 The design prioritizes:
 - minimal data retention
@@ -22,52 +21,102 @@ The design prioritizes:
 
 ### 1. Session-Based Processing
 - One-time upload tokens
-- Verification triggered on session open (deferred execution)
-- No background processing without user action
+- Verification triggered on session open
+- No background processing without reviewer action
 
 ### 2. Extraction Pipeline
-- Text-based PDF parsing (PyMuPDF / pdfplumber)
-- Local OCR fallback (Tesseract / PaddleOCR)
-- Canonical field mapping
+- Dedicated extraction service for document parsing/OCR
+- Canonical field extraction for downstream validation
+- Structured handoff into trust evaluation
 
-### 3. Spatial Grounding
-- Extracted values linked to PDF coordinates
-- Reviewer can see **where data came from**
-- Normalized bounding boxes rendered via PDF.js
+### 3. Trust Evaluation Engine
+- Connector-based validation flow
+- Mock registry / credential connectors for the POC
+- Deterministic decision outcomes:
+  - Green -> verified by trusted source
+  - Amber -> valid document, but no high-assurance confirmation
+  - Red -> mismatch, failure, or policy violation
 
-### 4. Trust Evaluation Engine
-- Connector-based validation (VIT registry mock, VC mock)
-- Deterministic decision model:
-  - **Green** → verified by trusted source
-  - **Amber** → valid document, no high-assurance source
-  - **Red** → mismatch, failure, or policy violation
+### 4. Audit & Integrity
+- Audit receipt persistence in the database layer
+- Sealed nonce / receipt schema for tamper-evident records
+- Minimal retained metadata after processing
 
-### 5. Audit & Integrity
-- HMAC-based document commitment
-- Signed audit receipt
-- Pseudonymous reviewer references
-- No raw document stored after session
-
-### 6. Content-Minimised Retention
+### 5. Privacy-Aware Retention
 After session completion:
-- PDF deleted
-- extracted data deleted
-- OCR output deleted
-- only minimal audit metadata retained
+- transient uploaded content can be cleaned up
+- only minimal audit metadata should remain
 
 ---
 
-## System Flow
+## Repository Structure
 
-1. Reviewer creates session  
-2. One-time upload token issued  
-3. PDF uploaded to transient storage  
-4. Reviewer opens session → verification starts  
-5. Extraction + grounding executed  
-6. Connector validation performed  
-7. Trust engine produces outcome  
-8. Audit receipt generated  
-9. Cleanup deletes all content  
+  ```text
+  verification-engine/
+  |
+  |-- README.md                         # project overview and onboarding
+  |-- LICENSE
+  |-- docker-compose.yml                # local multi-service orchestration
+  |
+  |-- backend/
+  |   |-- Dockerfile                    # backend container
+  |   |-- requirements.txt              # backend Python dependencies
+  |   |
+  |   `-- app/
+  |       |-- main.py                   # FastAPI entrypoint
+  |       |
+  |       |-- audit/                    # audit logic and receipt handling
+  |       |-- auth/                     # authentication / authorization
+  |       |-- cleanup/                  # post-session cleanup
+  |       |-- connectors/               # external verification connectors
+  |       |   |-- broker.py
+  |       |   |-- entra_vc_mock.py
+  |       |   `-- vit_mock.py
+  |       |-- orchestrator/             # verification orchestration
+  |       |-- security/                 # security utilities and policies
+  |       |-- sessions/                 # session lifecycle management
+  |       |-- storage/                  # transient file / object handling
+  |       |-- trust/                    # trust evaluation engine
+  |       |-- uploads/                  # upload flow
+  |       `-- workflow/                 # end-to-end verification workflow
+  |
+  |-- extraction/
+  |   |-- Dockerfile                    # extraction service container
+  |   |-- requirements.txt              # extraction/OCR dependencies
+  |   |-- cached_results/               # cached extraction outputs
+  |   |-- grounding/                    # PDF field grounding logic
+  |   |-- ocr/                          # OCR pipeline
+  |   |-- parser/                       # document parsing
+  |   |-- samples/                      # sample documents / fixtures
+  |   `-- schema/                       # extraction output schemas
+  |
+  |-- frontend/
+  |   |-- Dockerfile                    # frontend container
+  |   |-- package.json                  # frontend dependencies and scripts
+  |   |
+  |   `-- src/
+  |       |-- audit_receipt/            # audit receipt UI
+  |       |-- components/               # shared UI components
+  |       |-- pages/                    # app pages/routes
+  |       |-- pdf_viewer/               # PDF viewer and grounding overlays
+  |       `-- trust_panel/              # trust decision UI
+  |
+  |-- db/
+  |   |-- audit_schema/                 # audit-related SQL definitions
+  |       |-- receipt.sql              # Audit receipt schema
+  |       `-- sealed_nonce.sql         # Nonce / integrity schema
+  |   `-- workflow_schema/              # workflow/session database schema
+  ```
+
+---
+
+## Service Layout
+
+- `backend/`: API and verification orchestration layer
+- `backend/app/connectors/`: mocked trust and credential verification connectors used by the POC
+- `extraction/`: extraction/OCR service container and dependencies
+- `frontend/`: reviewer-facing frontend application
+- `db/audit_schema/`: SQL definitions for audit-related persistence
 
 ---
 
@@ -75,80 +124,45 @@ After session completion:
 
 **Backend**
 - FastAPI
-- PostgreSQL (session state + audit store)
-- PyMuPDF / pdfplumber
-- Tesseract / PaddleOCR
+- Python dependency set in `backend/requirements.txt`
+
+**Extraction**
+- Separate Python service in `extraction/`
+- OCR / parsing dependencies isolated from the API service
 
 **Frontend**
-- React
-- PDF.js (viewer + grounding overlay)
+- JavaScript frontend in `frontend/`
+- Containerized separately via `frontend/Dockerfile`
 
-**Infrastructure (POC)**
-- Docker Compose (single machine)
-- Environment-based secrets
-- Local execution (no external APIs required)
-
----
-
-## Repository Structure
-
-```text
-verification-engine/
-│
-├── backend/
-│   ├── services/        # extraction, grounding, audit, cleanup
-│   ├── connectors/      # VIT mock, VC mock
-│   ├── models/          # schemas (Pydantic)
-│   ├── routes/          # API endpoints
-│   └── db/              # database access
-│
-├── frontend/
-│   ├── components/      # PDF viewer, grounding UI
-│   └── pages/
-│
-├── fixtures/
-│   └── vit_registry.json
-│
-├── docker-compose.yml
-└── README.md
-```
+**Data / Infra**
+- SQL schema under `db/audit_schema/`
+- Docker Compose for local multi-service orchestration
 
 ---
 
 ## Security Model (POC vs Production)
 
 ### Implemented in POC
-- One-time upload tokens
-- Input validation and PDF safety checks
-- Pseudonymous audit records
-- Content deletion after session
+- Session-scoped verification
+- Connector-based trust evaluation
+- Audit-oriented database schema
+- Containerized local deployment
 
-### Documented for Production (not implemented)
-- Worker isolation (tmpfs, swap-disabled execution)
-- KMS-backed encryption
-- mTLS between services
-- HSM-backed audit recovery vault
-- Kubernetes-based worker orchestration
-
----
-
-## Limitations (Important)
-
-This is a **proof of concept**, not a production system.
-
-- Processing runs in-process (no isolated workers)
-- Cleanup is best-effort (no distributed retry controller)
-- OCR and extraction accuracy depend on input quality
-- Connectors are mocked (no real registry integration)
+### Documented for Production (not fully implemented here)
+- Worker isolation
+- stronger key management
+- service-to-service hardening
+- production-grade orchestration and recovery controls
 
 ---
 
-## Demo Notes
+## Limitations
 
-To ensure reliability during demo:
-- Preprocess selected PDFs (extraction + grounding)
-- Cache results before presentation
-- Run trust evaluation and audit flow live
+This repository is a proof of concept, not a production system.
+
+- Connectors are mocked
+- Some production security controls are architectural goals rather than fully implemented features
+- The current repository structure is service-oriented, but still intentionally lightweight for demo use
 
 ---
 
@@ -156,14 +170,14 @@ To ensure reliability during demo:
 
 The goal of this project is to demonstrate:
 
-- secure document verification workflows  
-- trust-based decision systems  
-- privacy-preserving audit design  
+- secure document verification workflows
+- trust-based decision systems
+- privacy-preserving audit design
 
-—not to provide a production-ready verification platform.
+It is not intended to be a production-ready verification platform.
 
 ---
 
 ## License
 
-Internal POC — Secuura × VIT
+Internal POC - Secuura x VIT

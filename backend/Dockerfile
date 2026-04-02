@@ -1,11 +1,16 @@
-FROM python:3.10
+FROM python:3.10-slim
 
-WORKDIR /app
+WORKDIR /workspace
 
-COPY requirements.txt .
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr libgl1 \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/requirements.txt backend/requirements.txt
 
-COPY . .
+RUN pip install --no-cache-dir -r backend/requirements.txt
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+COPY backend backend
+COPY extraction extraction
+
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]

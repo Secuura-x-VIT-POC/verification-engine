@@ -1,24 +1,54 @@
 from __future__ import annotations
 
-from ..db.connection import get_db_connection
-from ..workflow.service import start_verification
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
-try:
-    from fastapi import APIRouter, Depends
-except ImportError:  # pragma: no cover - optional until FastAPI is installed
-    APIRouter = None
-    Depends = None
-
-
-def verify_session(session_id: str, conn) -> dict[str, str]:
-    return {"status": start_verification(conn, session_id)}
+from ..auth.routes import get_current_user
+from ..db.database import get_db
+from ..sessions.constants import SessionState
+from ..sessions.models import Session as SessionModel
+from ..workflow.runtime import run_verification, serialize_session
 
 
-if APIRouter is not None and Depends is not None:
-    router = APIRouter()
+router = APIRouter(tags=["workflow"])
 
-    @router.post("/session/{session_id}/verify")
-    def verify_session_route(session_id: str, conn=Depends(get_db_connection)):
-        return verify_session(session_id, conn)
-else:  # pragma: no cover - makes the module import-safe without FastAPI
-    router = None
+
+def _get_owned_session(db: Session, session_id: str, user: str) -> SessionModel:
+    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != user:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return session
+
+
+@router.post("/session/{session_id}/verify")
+def verify_session_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> dict:
+    session = _get_owned_session(db, session_id, user)
+    if not session.file_path:
+        raise HTTPException(status_code=409, detail="Upload a PDF before verification")
+    if session.status in {SessionState.PENDING_CLEANUP, SessionState.PURGE_COMPLETE, SessionState.FAILED_PURGED}:
+        raise HTTPException(status_code=409, detail="Session is already closed")
+
+    if session.status not in {
+        SessionState.UPLOADED_PENDING_REVIEW,
+        SessionState.VERIFYING,
+        SessionState.FAILED_RETRIABLE,
+        SessionState.VERIFIED_GREEN,
+        SessionState.VERIFIED_AMBER,
+        SessionState.VERIFIED_RED,
+    }:
+        raise HTTPException(status_code=409, detail="Session is not ready for verification")
+
+    if session.status not in {
+        SessionState.VERIFIED_GREEN,
+        SessionState.VERIFIED_AMBER,
+        SessionState.VERIFIED_RED,
+    }:
+        session = run_verification(db, session, user)
+
+    return serialize_session(db, session)

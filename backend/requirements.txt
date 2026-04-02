@@ -4,6 +4,9 @@ uvicorn[standard]
 sqlalchemy
 psycopg2-binary
 pypdf2
+pymupdf
+pytesseract
+pillow
 
 pydantic
 python-dotenv

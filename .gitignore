@@ -1,6 +1,13 @@
 venv
-.env
 __pycache__
 tmp
 uploads
 *.db
+node_modules/
+dist/
+.vite/
+.env
+.env.*
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/

@@ -1,84 +1,51 @@
-import os
-import uuid
+from __future__ import annotations
 
-from sqlalchemy import create_engine, text
+import base64
 
+from sqlalchemy.orm import Session as DbSession
 
-_engine = None
-
-
-def get_engine():
-    global _engine
-    if _engine is None:
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            raise RuntimeError("DATABASE_URL is not set.")
-        _engine = create_engine(database_url)
-    return _engine
+from ..sessions.models import AuditEventRecord, AuditReceiptRecord, SealedNonceRecord
 
 
-def store_audit_bundle(receipt: dict, nonce: bytes):
-    with get_engine().begin() as conn:
+def store_audit_bundle(db: DbSession, receipt: dict, nonce: bytes) -> AuditReceiptRecord:
+    receipt_record = AuditReceiptRecord(
+        audit_event_id=str(receipt["audit_event_id"]),
+        session_id=str(receipt["session_id"]),
+        reviewer_ref=receipt["reviewer_ref"],
+        document_commitment=receipt["document_commitment"],
+        trust_outcome=receipt["trust_outcome"],
+        reason_codes=receipt["reason_codes"],
+        connector_ids=receipt.get("connector_ids", []),
+        issued_at=receipt["issued_at"],
+        key_version=receipt["key_version"],
+        receipt_hash=receipt["receipt_hash"],
+    )
+    nonce_record = SealedNonceRecord(
+        session_id=str(receipt["session_id"]),
+        nonce_value=base64.b64encode(nonce).decode("ascii"),
+    )
+    audit_event = AuditEventRecord(
+        session_id=str(receipt["session_id"]),
+        event_type="AUDIT_RECEIPT_ISSUED",
+        event_data={
+            "audit_event_id": str(receipt["audit_event_id"]),
+            "trust_outcome": receipt["trust_outcome"],
+            "reason_codes": receipt["reason_codes"],
+            "connector_ids": receipt.get("connector_ids", []),
+        },
+    )
 
-        # 1. audit_receipts
-        conn.execute(text("""
-            INSERT INTO audit.audit_receipts (
-                audit_event_id,
-                session_id,
-                reviewer_ref,
-                document_commitment,
-                trust_outcome,
-                reason_codes,
-                connector_ids,
-                issued_at,
-                key_version,
-                receipt_hash
-            ) VALUES (
-                :audit_event_id,
-                :session_id,
-                :reviewer_ref,
-                :document_commitment,
-                :trust_outcome,
-                :reason_codes,
-                :connector_ids,
-                :issued_at,
-                :key_version,
-                :receipt_hash
-            )
-        """), receipt)
+    db.add(receipt_record)
+    db.add(nonce_record)
+    db.add(audit_event)
+    db.flush()
+    return receipt_record
 
-        # 2. sealed_nonces (encrypted later)
-        conn.execute(text("""
-            INSERT INTO audit.sealed_nonces (
-                nonce_id,
-                session_id,
-                nonce_value
-            ) VALUES (
-                :nonce_id,
-                :session_id,
-                :nonce_value
-            )
-        """), {
-            "nonce_id": str(uuid.uuid4()),
-            "session_id": receipt["session_id"],
-            "nonce_value": nonce
-        })
 
-        # 3. audit_events
-        conn.execute(text("""
-            INSERT INTO audit.audit_events (
-                event_id,
-                session_id,
-                event_type,
-                event_data
-            ) VALUES (
-                :event_id,
-                :session_id,
-                'AUDIT_RECEIPT_ISSUED',
-                :event_data
-            )
-        """), {
-            "event_id": str(uuid.uuid4()),
-            "session_id": receipt["session_id"],
-            "event_data": str(receipt)
-        })
+def get_latest_audit_receipt(db: DbSession, session_id: str) -> AuditReceiptRecord | None:
+    return (
+        db.query(AuditReceiptRecord)
+        .filter(AuditReceiptRecord.session_id == session_id)
+        .order_by(AuditReceiptRecord.created_at.desc())
+        .first()
+    )

@@ -5,11 +5,13 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from ..auth.routes import get_current_user
 from ..db.database import get_db
 from ..security.pdf_validator import PDFValidationError, validate_pdf
+from ..workflow.runtime import close_session, serialize_session
 from .constants import SessionState
 from .models import Session as SessionModel
 from .models import UploadToken
@@ -24,6 +26,20 @@ def _uploads_dir() -> Path:
     return upload_dir
 
 
+def _get_session_or_404(db: Session, session_id: str) -> SessionModel:
+    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+def _get_owned_session(db: Session, session_id: str, user: str) -> SessionModel:
+    session = _get_session_or_404(db, session_id)
+    if session.user_id != user:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return session
+
+
 @router.post("/sessions")
 def create_session(
     db: Session = Depends(get_db),
@@ -32,9 +48,17 @@ def create_session(
     new_session = SessionModel(user_id=user)
     db.add(new_session)
     db.commit()
-    db.refresh(new_session)
-
     return {"session_id": new_session.id, "status": new_session.status}
+
+
+@router.get("/sessions/{session_id}")
+def get_session_details(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> dict:
+    session = _get_owned_session(db, session_id, user)
+    return serialize_session(db, session)
 
 
 @router.post("/sessions/{session_id}/upload-token")
@@ -43,20 +67,18 @@ def generate_upload_token(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> dict[str, str]:
-    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if session.user_id != user:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    session = _get_owned_session(db, session_id, user)
+    if session.status not in {SessionState.CREATED, SessionState.UPLOAD_PENDING}:
+        raise HTTPException(status_code=409, detail="Upload token can only be issued for new sessions")
 
     upload_token = UploadToken(
         token=str(uuid.uuid4()),
         session_id=session_id,
         is_used=False,
     )
+    session.status = SessionState.UPLOAD_PENDING
     db.add(upload_token)
     db.commit()
-    db.refresh(upload_token)
 
     return {
         "upload_token": upload_token.token,
@@ -72,20 +94,16 @@ def upload_file(
     user: str = Depends(get_current_user),
 ) -> dict[str, str]:
     upload_token = db.query(UploadToken).filter(UploadToken.token == token).first()
-    if not upload_token:
+    if upload_token is None:
         raise HTTPException(status_code=404, detail="Invalid token")
     if upload_token.is_used:
         raise HTTPException(status_code=409, detail="Token already used")
     if upload_token.expires_at < datetime.utcnow():
         raise HTTPException(status_code=401, detail="Token expired")
 
-    session = db.query(SessionModel).filter(SessionModel.id == upload_token.session_id).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if session.user_id != user:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    session = _get_owned_session(db, upload_token.session_id, user)
     if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF allowed")
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
     content = file.file.read()
     try:
@@ -99,8 +117,20 @@ def upload_file(
 
     upload_token.is_used = True
     upload_token.used_at = datetime.utcnow()
+    session.filename = file.filename
     session.file_path = str(file_path)
-    session.status = SessionState.UPLOADED
+    session.uploaded_at = datetime.utcnow()
+    session.status = SessionState.UPLOADED_PENDING_REVIEW
+    session.worker_phase = None
+    session.reason_codes = []
+    session.connector_ids = []
+    session.trust_outcome = None
+    session.extraction_payload = None
+    session.connector_payload = None
+    session.document_commitment = None
+    session.audit_receipt_id = None
+    session.purge_status = None
+    session.purge_error = None
     db.commit()
 
     return {
@@ -109,3 +139,35 @@ def upload_file(
         "session_id": session.id,
         "status": session.status,
     }
+
+
+@router.get("/sessions/{session_id}/document")
+def get_session_document(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+):
+    session = _get_owned_session(db, session_id, user)
+    if not session.file_path:
+        raise HTTPException(status_code=404, detail="Document has already been purged")
+
+    file_path = Path(session.file_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Document not found on disk")
+
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename=session.filename or file_path.name,
+    )
+
+
+@router.post("/sessions/{session_id}/close")
+def close_session_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> dict:
+    session = _get_owned_session(db, session_id, user)
+    closed_session = close_session(db, session)
+    return serialize_session(db, closed_session)

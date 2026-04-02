@@ -1,14 +1,50 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .api.routes import router as api_router
+from .auth.routes import router as auth_router
+from .connectors.routes import router as connector_router
+from .core.limiter import SLOWAPI_AVAILABLE, limiter
+from .db.database import init_db
+from .sessions.routes import router as session_router
+
+try:
+    from slowapi import _rate_limit_exceeded_handler
+    from slowapi.errors import RateLimitExceeded
+    from slowapi.middleware import SlowAPIMiddleware
+except ImportError:  # pragma: no cover - optional until dependencies are installed
+    _rate_limit_exceeded_handler = None
+    RateLimitExceeded = None
+    SlowAPIMiddleware = None
 
 
 app = FastAPI()
 
+if SLOWAPI_AVAILABLE and SlowAPIMiddleware is not None:
+    app.state.limiter = limiter
+    app.add_middleware(SlowAPIMiddleware)
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 if api_router is not None:
     app.include_router(api_router)
+app.include_router(auth_router)
+app.include_router(session_router)
+app.include_router(connector_router)
+
+
+@app.on_event("startup")
+def startup_event() -> None:
+    init_db()
 
 
 @app.get("/")

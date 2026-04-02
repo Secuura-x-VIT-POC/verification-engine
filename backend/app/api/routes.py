@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from backend.app.db.connection import get_db_connection
-from backend.app.workflow.service import start_verification
+from ..db.connection import get_db_connection
+from ..workflow.service import start_verification
 
 try:
     from fastapi import APIRouter, Depends

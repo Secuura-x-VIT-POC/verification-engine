@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+
+sqlalchemy
+psycopg2-binary
+pypdf2
+
+pydantic
+python-dotenv
+
+cryptography

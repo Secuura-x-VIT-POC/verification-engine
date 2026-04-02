@@ -6,9 +6,9 @@ import uuid
 from contextlib import nullcontext
 from typing import Callable
 
-from backend.app.orchestrator.orchestrator import trigger_processing
-from backend.app.trust.trust_engine import evaluate_trust
-from backend.app.workflow import repository
+from ..orchestrator.orchestrator import trigger_processing
+from ..trust.trust_engine import evaluate_trust
+from . import repository
 
 
 LOGGER = logging.getLogger(__name__)

@@ -1,6 +1,6 @@
 import time
 
-from backend.app.workflow import repository
+from ..workflow import repository
 
 
 def trigger_processing(conn, session_id: str, worker_id: str, max_retries=3):

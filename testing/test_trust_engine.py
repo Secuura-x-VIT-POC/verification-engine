@@ -1,184 +1,131 @@
-import sys
 import os
+import sys
+import unittest
 
-# Add project root to Python path
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from backend.app.trust.trust_engine import evaluate_trust
 
-def run_tests():
-    tests = [
-        {
-            "name": "GREEN - valid verified connector",
-            "policy": {
-                "requires_high_assurance": True,
-                "required_connectors": ["vit_registry"]
-            },
-            "extraction": {
-                "is_unsafe": False,
-                "critical_tamper_signal": False,
-                "fields": [
-                    {"name": "name", "is_mandatory": True, "is_grounded": True}
-                ]
-            },
-            "connectors": [
-                {
-                    "connector_id": "vit_registry",
-                    "status": "VERIFIED",
-                    "assurance_class": "HIGH",
-                    "mismatched_claims": []
-                }
-            ],
-            "expected": "GREEN"
-        },
 
-        {
-            "name": "RED - tampered document",
-            "policy": {"requires_high_assurance": True, "required_connectors": ["vit_registry"]},
-            "extraction": {
-                "is_unsafe": True,
-                "critical_tamper_signal": True,
-                "fields": []
+class TrustEngineTests(unittest.TestCase):
+    def setUp(self):
+        self.base_extraction = {
+            "fields": {
+                "name": "Kanak",
+                "institution": "VIT",
+                "credential": "BTech",
+                "id": "ABC1234567",
             },
-            "connectors": [],
-            "expected": "RED"
-        },
-
-        {
-            "name": "RED - missing grounding",
-            "policy": {"requires_high_assurance": True, "required_connectors": ["vit_registry"]},
-            "extraction": {
-                "is_unsafe": False,
-                "critical_tamper_signal": False,
-                "fields": [
-                    {"name": "degree", "is_mandatory": True, "is_grounded": False}
-                ]
+            "confidence": {
+                "name": 0.98,
+                "institution": 0.96,
+                "credential": 0.95,
+                "id": 0.94,
             },
-            "connectors": [],
-            "expected": "RED"
-        },
-
-        {
-            "name": "RED - connector mismatch",
-            "policy": {"requires_high_assurance": True, "required_connectors": ["vit_registry"]},
-            "extraction": {
-                "is_unsafe": False,
-                "critical_tamper_signal": False,
-                "fields": [
-                    {"name": "name", "is_mandatory": True, "is_grounded": True}
-                ]
+            "bounding_boxes": {
+                "name": {"page": 1, "x0": 10, "y0": 10, "x1": 60, "y1": 20},
+                "institution": {"page": 1, "x0": 10, "y0": 30, "x1": 60, "y1": 40},
+                "credential": {"page": 1, "x0": 10, "y0": 50, "x1": 60, "y1": 60},
+                "id": {"page": 1, "x0": 10, "y0": 70, "x1": 60, "y1": 80},
             },
-            "connectors": [
-                {
-                    "connector_id": "vit_registry",
-                    "status": "VERIFIED",
-                    "assurance_class": "HIGH",
-                    "mismatched_claims": ["name"]
-                }
-            ],
-            "expected": "RED"
-        },
-
-        {
-            "name": "RED - required connector timeout",
-            "policy": {"requires_high_assurance": True, "required_connectors": ["vit_registry"]},
-            "extraction": {
-                "is_unsafe": False,
-                "critical_tamper_signal": False,
-                "fields": [
-                    {"name": "name", "is_mandatory": True, "is_grounded": True}
-                ]
-            },
-            "connectors": [
-                {
-                    "connector_id": "vit_registry",
-                    "status": "TIMEOUT_AFTER_RETRIES",
-                    "assurance_class": "HIGH",
-                    "mismatched_claims": []
-                }
-            ],
-            "expected": "RED"
-        },
-
-        {
-            "name": "AMBER - optional connector timeout",
-            "policy": {"requires_high_assurance": False, "required_connectors": ["vit_registry"]},
-            "extraction": {
-                "is_unsafe": False,
-                "critical_tamper_signal": False,
-                "fields": [
-                    {"name": "name", "is_mandatory": True, "is_grounded": True}
-                ]
-            },
-            "connectors": [
-                {
-                    "connector_id": "vit_registry",
-                    "status": "TIMEOUT_AFTER_RETRIES",
-                    "assurance_class": "LOW",
-                    "mismatched_claims": []
-                }
-            ],
-            "expected": "AMBER"
-        },
-
-        {
-            "name": "AMBER - no verified connector but optional",
-            "policy": {"requires_high_assurance": False, "required_connectors": ["vit_registry"]},
-            "extraction": {
-                "is_unsafe": False,
-                "critical_tamper_signal": False,
-                "fields": [
-                    {"name": "name", "is_mandatory": True, "is_grounded": True}
-                ]
-            },
-            "connectors": [
-                {
-                    "connector_id": "vit_registry",
-                    "status": "NOT_FOUND",
-                    "assurance_class": "LOW",
-                    "mismatched_claims": []
-                }
-            ],
-            "expected": "AMBER"
-        },
-
-        {
-            "name": "RED - no connector response (required)",
-            "policy": {"requires_high_assurance": True, "required_connectors": ["vit_registry"]},
-            "extraction": {
-                "is_unsafe": False,
-                "critical_tamper_signal": False,
-                "fields": [
-                    {"name": "name", "is_mandatory": True, "is_grounded": True}
-                ]
-            },
-            "connectors": [],
-            "expected": "RED"
+            "ocr_used": False,
         }
-    ]
+        self.base_policy = {
+            "required_fields": ["name", "institution", "credential", "id"],
+            "min_confidence_threshold": 0.8,
+            "require_connector": True,
+        }
 
-    passed = 0
-
-    for test in tests:
+    def test_full_green_path(self):
         result = evaluate_trust(
-            test["policy"],
-            test["extraction"],
-            test["connectors"]
+            self.base_extraction,
+            {
+                "connector_id": "vit_registry",
+                "status": "VERIFIED",
+                "reason_codes": ["REGISTRY_MATCH"],
+                "assurance_class": "HIGH",
+            },
+            self.base_policy,
         )
 
-        outcome = result["outcome"]
-        status = "PASS" if outcome == test["expected"] else "FAIL"
+        self.assertEqual(result["outcome"], "GREEN")
+        self.assertEqual(result["reason_codes"], ["CONNECTOR_VERIFIED"])
+        self.assertEqual(result["connector_ids"], ["vit_registry"])
 
-        print(f"{status} | {test['name']}")
-        print(f"  Expected: {test['expected']}, Got: {outcome}")
-        print(f"  Reason Codes: {result['reason_codes']}")
-        print("-" * 50)
+    def test_mismatch_returns_red(self):
+        result = evaluate_trust(
+            self.base_extraction,
+            {
+                "connector_id": "vit_registry",
+                "status": "MISMATCH",
+                "reason_codes": ["NAME_MISMATCH"],
+                "assurance_class": "HIGH",
+            },
+            self.base_policy,
+        )
 
-        if status == "PASS":
-            passed += 1
+        self.assertEqual(result["outcome"], "RED")
+        self.assertEqual(result["reason_codes"], ["CONNECTOR_MISMATCH"])
 
-    print(f"\n{passed}/{len(tests)} tests passed")
+    def test_missing_field_returns_red(self):
+        extraction = {
+            **self.base_extraction,
+            "fields": {
+                "name": "Kanak",
+                "institution": "VIT",
+                "credential": "BTech",
+            },
+        }
+
+        result = evaluate_trust(
+            extraction,
+            {
+                "connector_id": "vit_registry",
+                "status": "VERIFIED",
+                "reason_codes": ["REGISTRY_MATCH"],
+                "assurance_class": "HIGH",
+            },
+            self.base_policy,
+        )
+
+        self.assertEqual(result["outcome"], "RED")
+        self.assertEqual(result["reason_codes"], ["MISSING_REQUIRED_FIELD"])
+
+    def test_high_assurance_timeout_returns_red(self):
+        result = evaluate_trust(
+            self.base_extraction,
+            {
+                "connector_id": "vit_registry",
+                "status": "TIMEOUT",
+                "reason_codes": ["CONNECTOR_TIMEOUT"],
+                "assurance_class": "HIGH",
+            },
+            self.base_policy,
+        )
+
+        self.assertEqual(result["outcome"], "RED")
+        self.assertEqual(result["reason_codes"], ["CONNECTOR_TIMEOUT_REQUIRED"])
+
+    def test_optional_timeout_returns_amber(self):
+        policy = {
+            **self.base_policy,
+            "require_connector": False,
+        }
+        result = evaluate_trust(
+            self.base_extraction,
+            {
+                "connector_id": "vit_registry",
+                "status": "TIMEOUT",
+                "reason_codes": ["CONNECTOR_TIMEOUT"],
+                "assurance_class": "OPTIONAL",
+            },
+            policy,
+        )
+
+        self.assertEqual(result["outcome"], "AMBER")
+        self.assertEqual(result["reason_codes"], ["NOT_VERIFIED"])
 
 
 if __name__ == "__main__":
-    run_tests()
+    unittest.main()

@@ -14,6 +14,7 @@ ALLOWED_TRANSITIONS = {
         SessionState.VERIFIED_RED,
         SessionState.ABANDONED_VERIFYING,
         SessionState.FAILED_RETRIABLE,
+        SessionState.FAILED_PURGED,
     },
     SessionState.ABANDONED_VERIFYING: {
         SessionState.FAILED_RETRIABLE,

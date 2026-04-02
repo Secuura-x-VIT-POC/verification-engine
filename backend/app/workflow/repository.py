@@ -128,8 +128,8 @@ def update_worker_phase(conn, session_id: str, worker_id: str, worker_phase: str
     )
 
 
-def update_heartbeat(conn, session_id: str, worker_id: str) -> None:
-    conn.execute(
+def update_heartbeat(conn, session_id: str, worker_id: str) -> int:
+    result = conn.execute(
         update(SessionModel)
         .where(SessionModel.id == session_id)
         .where(SessionModel.lease_id == worker_id)
@@ -138,6 +138,7 @@ def update_heartbeat(conn, session_id: str, worker_id: str) -> None:
             updated_at=datetime.utcnow(),
         )
     )
+    return result.rowcount or 0
 
 
 def mark_stale_sessions(conn, timeout_seconds: int = 60) -> int:
@@ -194,6 +195,35 @@ def complete_processing(
             "lease_holder_id": None,
             "lease_acquired_at": None,
         },
+    )
+
+
+def fail_processing(
+    conn,
+    session_id: str,
+    failure_state: str,
+    reason_codes: list[str],
+    *,
+    extra_values: dict | None = None,
+) -> None:
+    values = {
+        "worker_phase": "FAILED",
+        "trust_outcome": None,
+        "reason_codes": reason_codes,
+        "connector_ids": [],
+        "lease_id": None,
+        "lease_holder_id": None,
+        "lease_acquired_at": None,
+        "heartbeat_at": None,
+    }
+    if extra_values:
+        values.update(extra_values)
+
+    transition_state(
+        conn,
+        session_id,
+        failure_state,
+        extra_values=values,
     )
 
 

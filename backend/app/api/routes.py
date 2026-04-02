@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -7,10 +9,11 @@ from ..auth.routes import get_current_user
 from ..db.database import get_db
 from ..sessions.constants import SessionState
 from ..sessions.models import Session as SessionModel
-from ..workflow.runtime import run_verification, serialize_session
+from ..workflow.runtime import get_result_response, get_status_response, run_verification, serialize_session
 
 
 router = APIRouter(tags=["workflow"])
+LOGGER = logging.getLogger(__name__)
 
 
 def _get_owned_session(db: Session, session_id: str, user: str) -> SessionModel:
@@ -52,3 +55,27 @@ def verify_session_route(
         session = run_verification(db, session, user)
 
     return serialize_session(db, session)
+
+
+@router.get("/session/{session_id}/status")
+def get_session_status_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> dict:
+    session = _get_owned_session(db, session_id, user)
+    payload = get_status_response(session)
+    LOGGER.info("STATUS_FETCHED session_id=%s state=%s", session.id, session.status)
+    return payload
+
+
+@router.get("/session/{session_id}/result")
+def get_session_result_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> dict:
+    session = _get_owned_session(db, session_id, user)
+    payload = get_result_response(session)
+    LOGGER.info("RESULT_FETCHED session_id=%s state=%s", session.id, session.status)
+    return payload

@@ -18,6 +18,8 @@ from ..sessions.constants import SessionState, VERIFIED_STATES
 from ..sessions.models import Session as SessionModel
 from ..trust.trust_engine import evaluate_trust
 from . import repository
+from .failures import WorkflowProcessingError
+from .service import call_connector_with_retry, handle_processing_failure
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -39,28 +41,19 @@ STATUS_BY_OUTCOME = {
     "RED": SessionState.VERIFIED_RED,
 }
 
+PROCESSING_STATES = {
+    SessionState.VERIFYING,
+}
+
+CLEANUP_READY_STATES = VERIFIED_STATES | {
+    SessionState.FAILED_RETRIABLE,
+    SessionState.FAILED_PURGED,
+    SessionState.ABANDONED_VERIFYING,
+}
+
 
 def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) -> SessionModel:
     file_path = Path(session.file_path or "")
-    if not session.file_path or not file_path.exists():
-        session.reason_codes = ["DOCUMENT_NOT_FOUND"]
-        session.connector_ids = []
-        if session.status == SessionState.FAILED_RETRIABLE:
-            session.worker_phase = "FAILED"
-            session.updated_at = datetime.utcnow()
-        else:
-            repository.transition_state(
-                db,
-                session.id,
-                SessionState.FAILED_RETRIABLE,
-                extra_values={
-                    "worker_phase": "FAILED",
-                    "updated_at": datetime.utcnow(),
-                },
-            )
-        db.commit()
-        db.refresh(session)
-        return session
 
     now = datetime.utcnow()
     repository.transition_state(
@@ -69,7 +62,9 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
         SessionState.VERIFYING,
         extra_values={
             "worker_phase": "EXTRACTING",
+            "lease_id": reviewer_ref,
             "lease_holder_id": reviewer_ref,
+            "lease_acquired_at": now,
             "heartbeat_at": now,
             "verify_started_at": session.verify_started_at or now,
             "version": SessionModel.version + 1,
@@ -79,28 +74,41 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
     db.refresh(session)
 
     try:
+        if not session.file_path or not file_path.exists():
+            raise WorkflowProcessingError(
+                "document_missing",
+                message=f"Document not found for session {session.id}",
+            )
+
         extraction_payload = extract_document_payload(file_path)
         session.extraction_payload = extraction_payload["view"]
         session.worker_phase = "CONNECTOR_EVAL"
         session.heartbeat_at = datetime.utcnow()
         db.commit()
 
-        connector_responses = build_connector_responses(extraction_payload)
+        policy = build_policy(extraction_payload)
+        connector_responses = build_connector_responses(extraction_payload, policy)
         session.connector_payload = connector_responses
         session.worker_phase = "TRUST_SCORING"
         session.heartbeat_at = datetime.utcnow()
         db.commit()
+        _raise_on_processing_connector_failure(connector_responses)
 
-        policy = build_policy(extraction_payload)
-        trust_result = evaluate_trust(policy, extraction_payload["trust_input"], connector_responses)
+        trust_result = evaluate_trust(extraction_payload["view"], connector_responses, policy)
 
-        with file_path.open("rb") as source_file:
-            document_bytes = source_file.read()
+        try:
+            with file_path.open("rb") as source_file:
+                document_bytes = source_file.read()
 
-        nonce = generate_nonce()
-        commitment = generate_commitment(document_bytes, nonce, "secuura-session")
-        receipt = generate_receipt(session.id, reviewer_ref, commitment, trust_result)
-        store_audit_bundle(db, receipt, nonce)
+            nonce = generate_nonce()
+            commitment = generate_commitment(document_bytes, nonce, "secuura-session")
+            receipt = generate_receipt(session.id, reviewer_ref, commitment, trust_result)
+            store_audit_bundle(db, receipt, nonce)
+        except Exception as exc:
+            raise WorkflowProcessingError(
+                "audit_store_failure",
+                message=str(exc),
+            ) from exc
 
         repository.transition_state(
             db,
@@ -108,8 +116,10 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
             STATUS_BY_OUTCOME[trust_result["outcome"]],
             extra_values={
                 "worker_phase": "COMPLETED",
+                "lease_id": None,
                 "lease_holder_id": None,
-                "heartbeat_at": datetime.utcnow(),
+                "lease_acquired_at": None,
+                "heartbeat_at": None,
                 "trust_outcome": trust_result["outcome"],
                 "reason_codes": trust_result["reason_codes"],
                 "connector_ids": trust_result["connector_ids"],
@@ -122,28 +132,31 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
         db.refresh(session)
         return session
     except Exception as exc:
-        repository.transition_state(
+        failure_error = exc
+        if not isinstance(exc, WorkflowProcessingError):
+            failure_error = WorkflowProcessingError(
+                "extraction_crash",
+                message=str(exc),
+            )
+
+        failure_values = {}
+        if session.extraction_payload is None:
+            failure_values["extraction_payload"] = {
+                "document_type": "academic_credential",
+                "used_ocr": False,
+                "fields": {},
+                "confidence": {},
+                "bounding_boxes": {},
+                "field_details": [],
+                "error_message": str(exc),
+            }
+
+        handle_processing_failure(
             db,
             session.id,
-            SessionState.FAILED_RETRIABLE,
-            extra_values={
-                "worker_phase": "FAILED",
-                "lease_holder_id": None,
-                "heartbeat_at": datetime.utcnow(),
-                "reason_codes": ["WORKFLOW_EXECUTION_FAILED"],
-                "connector_ids": [],
-                "extraction_payload": {
-                    "document_type": "academic_credential",
-                    "used_ocr": False,
-                    "fields": {},
-                    "confidence": {},
-                    "bounding_boxes": {},
-                    "field_details": [],
-                    "error_message": str(exc),
-                },
-            },
+            failure_error,
+            extra_values=failure_values,
         )
-        db.commit()
         db.refresh(session)
         return session
 
@@ -252,6 +265,39 @@ def serialize_session(db: DbSession, session: SessionModel) -> dict[str, Any]:
     }
 
 
+def is_ready_for_cleanup(session: SessionModel) -> bool:
+    return session.status in CLEANUP_READY_STATES
+
+
+def get_status_response(session: SessionModel) -> dict[str, Any]:
+    return {
+        "session_id": session.id,
+        "state": session.status,
+        "processing": session.status in PROCESSING_STATES,
+        "retriable": session.status == SessionState.FAILED_RETRIABLE,
+    }
+
+
+def get_result_response(session: SessionModel) -> dict[str, Any]:
+    if session.status in VERIFIED_STATES:
+        return {
+            "session_id": session.id,
+            "outcome": session.trust_outcome,
+            "reason_codes": session.reason_codes or [],
+            "connector_ids": session.connector_ids or [],
+        }
+
+    return {
+        "session_id": session.id,
+        "outcome": None,
+        "reason_codes": session.reason_codes or [],
+        "connector_ids": session.connector_ids or [],
+        "state": session.status,
+        "processing": session.status in PROCESSING_STATES,
+        "retriable": session.status == SessionState.FAILED_RETRIABLE,
+    }
+
+
 def extract_document_payload(file_path: Path) -> dict[str, Any]:
     raw_result = _load_extraction_result(file_path)
     fields = raw_result.get("fields") or {}
@@ -318,7 +364,7 @@ def extract_document_payload(file_path: Path) -> dict[str, Any]:
     }
 
 
-def build_connector_responses(extraction_payload: dict[str, Any]) -> list[dict[str, Any]]:
+def build_connector_responses(extraction_payload: dict[str, Any], policy: dict | None = None) -> list[dict[str, Any]]:
     connector_input = extraction_payload["connector_input"]
     institution = (connector_input.get("institution") or "").lower()
     name = connector_input.get("name")
@@ -326,13 +372,16 @@ def build_connector_responses(extraction_payload: dict[str, Any]) -> list[dict[s
     if "vit" not in institution or not name or not degree:
         return []
 
-    response = call_connector(
+    connector_policy = dict((policy or {}).get("connector_policies", {}).get("vit_registry", {}))
+    connector_policy.setdefault("connector_id", "vit_registry")
+    response = call_connector_with_retry(
+        lambda payload: call_connector(payload, "vit_registry"),
         {
             "name": name,
             "degree": degree,
             "status": "verified",
         },
-        "vit_registry",
+        connector_policy,
     )
     return [response]
 
@@ -341,20 +390,75 @@ def build_policy(extraction_payload: dict[str, Any]) -> dict[str, Any]:
     institution = (extraction_payload["connector_input"].get("institution") or "").lower()
     should_query_registry = "vit" in institution
     return {
+        "required_fields": ["name", "institution", "credential", "id"],
+        "min_confidence_threshold": 0.6,
+        "require_connector": should_query_registry,
         "requires_high_assurance": False,
         "required_connectors": ["vit_registry"] if should_query_registry else [],
+        "connector_policies": {
+            "vit_registry": {
+                "connector_id": "vit_registry",
+                "assurance_class": "HIGH" if should_query_registry else "OPTIONAL",
+                "max_retries": 2,
+                "deferred_retry_allowed": False,
+            }
+        },
     }
+
+
+def _raise_on_processing_connector_failure(connector_responses: list[dict[str, Any]]) -> None:
+    for response in connector_responses:
+        status = str(response.get("status") or "").upper()
+        assurance_class = str(response.get("assurance_class") or "OPTIONAL").upper()
+        context = {
+            "assurance_class": assurance_class,
+            "connector_id": response.get("connector_id"),
+        }
+
+        if status == "TIMEOUT" and assurance_class == "HIGH":
+            raise WorkflowProcessingError(
+                "connector_timeout",
+                message="Required connector timed out",
+                context=context,
+            )
+
+        if status == "ERROR":
+            raise WorkflowProcessingError(
+                "transient_connector_error",
+                message="Connector execution failed",
+                context=context,
+            )
 
 
 def _load_extraction_result(file_path: Path) -> dict[str, Any]:
     try:
         from extraction.parser.document_parser import extract_document_data
     except Exception as exc:  # pragma: no cover - fallback path is environment-dependent
-        fallback = _fallback_extract_document(file_path)
+        try:
+            fallback = _fallback_extract_document(file_path)
+        except Exception as fallback_exc:
+            raise WorkflowProcessingError(
+                "malformed_document",
+                message=str(fallback_exc),
+            ) from fallback_exc
+
         fallback["error_message"] = f"Extraction pipeline unavailable: {exc}"
         return fallback
 
-    result = extract_document_data(str(file_path))
+    try:
+        result = extract_document_data(str(file_path))
+    except Exception as exc:
+        try:
+            fallback = _fallback_extract_document(file_path)
+        except Exception as fallback_exc:
+            raise WorkflowProcessingError(
+                "malformed_document",
+                message=str(fallback_exc),
+            ) from fallback_exc
+
+        fallback["error_message"] = str(exc)
+        return fallback
+
     if hasattr(result, "model_dump"):
         return result.model_dump()
     if hasattr(result, "dict"):

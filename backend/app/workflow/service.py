@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import logging
+import inspect
+import random
 import threading
+import time
 import uuid
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from typing import Callable
 
 from ..trust.trust_engine import evaluate_trust
+from .failures import FailureClassification, WorkflowProcessingError, classify_failure
 from . import repository
 
 
@@ -38,6 +43,41 @@ def acquire_lease(conn, session_id: str, worker_id: str) -> bool:
     _safe_rollback(conn)
     LOGGER.info("LEASE_REJECTED session_id=%s worker_id=%s", session_id, worker_id)
     return False
+
+
+def call_connector_with_retry(connector_fn, payload: dict, policy: dict | None = None) -> dict:
+    policy = policy or {}
+    connector_id = str(policy.get("connector_id") or getattr(connector_fn, "__name__", "connector"))
+    assurance_class = str(policy.get("assurance_class", "HIGH"))
+    max_retries = int(policy.get("max_retries", 2))
+    max_attempts = max_retries + 1
+
+    for attempt in range(1, max_attempts + 1):
+        LOGGER.info("CONNECTOR_ATTEMPT connector_id=%s attempt=%s", connector_id, attempt)
+        try:
+            raw_result = connector_fn(payload)
+            return _normalize_connector_result(raw_result, connector_id, assurance_class)
+        except Exception as exc:
+            if attempt >= max_attempts:
+                LOGGER.warning(
+                    "CONNECTOR_TIMEOUT connector_id=%s attempts=%s error=%s",
+                    connector_id,
+                    attempt,
+                    exc,
+                )
+                return {
+                    "connector_id": connector_id,
+                    "status": "TIMEOUT",
+                    "reason_codes": ["CONNECTOR_TIMEOUT"],
+                    "matched_claims": {},
+                    "mismatched_claims": {},
+                    "assurance_class": assurance_class,
+                    "source_timestamp": datetime.now(timezone.utc).isoformat(),
+                    "technical_state": "TIMEOUT",
+                }
+
+            LOGGER.info("CONNECTOR_RETRY connector_id=%s next_attempt=%s", connector_id, attempt + 1)
+            time.sleep(random.uniform(0.2, 0.5))
 
 
 def start_verification(
@@ -97,6 +137,7 @@ def run_worker_pipeline(
     grounding = grounding_stage or _default_grounding_stage
     connector_eval = connector_stage or _default_connector_stage
     load_policy = policy_loader or _default_policy_loader
+    failure_type = "unknown_processing_error"
 
     heartbeat_runner = (
         _HeartbeatRunner(conn, session_id, worker_id, heartbeat_interval_seconds)
@@ -107,18 +148,28 @@ def run_worker_pipeline(
     try:
         with heartbeat_runner:
             update_worker_phase(conn, session_id, worker_id, WORKER_PHASE_EXTRACTING)
+            failure_type = "extraction_crash"
             extraction_data = extraction(conn, session_id, worker_id)
 
             update_worker_phase(conn, session_id, worker_id, WORKER_PHASE_GROUNDING)
+            failure_type = "extraction_crash"
             grounded_data = grounding(conn, session_id, worker_id, extraction_data)
 
             update_worker_phase(conn, session_id, worker_id, WORKER_PHASE_CONNECTOR_EVAL)
-            connector_responses = connector_eval(conn, session_id, worker_id, grounded_data)
+            policy = load_policy(conn, session_id, worker_id, grounded_data)
+            failure_type = "transient_connector_error"
+            connector_responses = _invoke_connector_stage(
+                connector_eval,
+                conn,
+                session_id,
+                worker_id,
+                grounded_data,
+                policy,
+            )
 
             update_worker_phase(conn, session_id, worker_id, WORKER_PHASE_TRUST_SCORING)
-            policy = load_policy(conn, session_id, worker_id, grounded_data)
-
-            trust_result = evaluate_trust(policy, grounded_data, connector_responses)
+            failure_type = "unknown_processing_error"
+            trust_result = evaluate_trust(grounded_data, connector_responses, policy)
             complete_processing(
                 conn,
                 session_id,
@@ -127,13 +178,17 @@ def run_worker_pipeline(
                 trust_result["connector_ids"],
             )
             return trust_result
-    except Exception:
-        complete_processing(
+    except Exception as exc:
+        workflow_error = exc
+        if not isinstance(exc, WorkflowProcessingError):
+            workflow_error = WorkflowProcessingError(
+                failure_type,
+                message=str(exc),
+            )
+        handle_processing_failure(
             conn,
             session_id,
-            "RED",
-            ["WORKFLOW_EXECUTION_FAILED"],
-            [],
+            workflow_error,
         )
         raise
 
@@ -143,14 +198,20 @@ def update_worker_phase(conn, session_id: str, worker_id: str, worker_phase: str
     conn.commit()
 
 
-def update_heartbeat(conn, session_id: str, worker_id: str) -> None:
-    repository.update_heartbeat(conn, session_id, worker_id)
+def update_heartbeat(conn, session_id: str, worker_id: str) -> bool:
+    updated_rows = repository.update_heartbeat(conn, session_id, worker_id)
     conn.commit()
+    if updated_rows:
+        LOGGER.info("HEARTBEAT_UPDATED session_id=%s worker_id=%s", session_id, worker_id)
+        return True
+    return False
 
 
 def mark_stale_sessions(conn, timeout_seconds: int = 60) -> int:
     updated_rows = repository.mark_stale_sessions(conn, timeout_seconds=timeout_seconds)
     conn.commit()
+    if updated_rows:
+        LOGGER.info("STALE_SESSION_MARKED count=%s timeout_seconds=%s", updated_rows, timeout_seconds)
     return updated_rows
 
 
@@ -170,6 +231,39 @@ def complete_processing(
         connector_ids,
     )
     conn.commit()
+
+
+def handle_processing_failure(
+    conn,
+    session_id: str,
+    error: Exception,
+    *,
+    extra_values: dict | None = None,
+    context: dict | None = None,
+) -> FailureClassification:
+    resolved_context = dict(context or {})
+    if isinstance(error, WorkflowProcessingError):
+        error_type = error.error_type
+        resolved_context.update(error.context)
+    else:
+        error_type = "unknown_processing_error"
+
+    classification = classify_failure(error_type, resolved_context)
+    LOGGER.error(
+        "PROCESSING_FAILED session_id=%s error_type=%s retriable=%s",
+        session_id,
+        classification.error_type,
+        classification.retriable,
+    )
+    repository.fail_processing(
+        conn,
+        session_id,
+        classification.state,
+        classification.reason_codes,
+        extra_values=extra_values,
+    )
+    conn.commit()
+    return classification
 
 
 def _safe_rollback(conn) -> None:
@@ -196,6 +290,7 @@ def _default_connector_stage(
     session_id: str,
     worker_id: str,
     grounded_data: dict,
+    policy: dict | None = None,
 ) -> list[dict]:
     return []
 
@@ -229,6 +324,10 @@ class _HeartbeatRunner:
         )
 
     def __enter__(self):
+        if not update_heartbeat(self.conn, self.session_id, self.worker_id):
+            raise RuntimeError(
+                f"Failed to initialize heartbeat for session {self.session_id}"
+            )
         self._thread.start()
         return self
 
@@ -241,7 +340,13 @@ class _HeartbeatRunner:
     def _run(self) -> None:
         while not self._stop_event.wait(self.interval_seconds):
             try:
-                update_heartbeat(self.conn, self.session_id, self.worker_id)
+                if not update_heartbeat(self.conn, self.session_id, self.worker_id):
+                    LOGGER.warning(
+                        "Heartbeat rejected for session %s worker %s",
+                        self.session_id,
+                        self.worker_id,
+                    )
+                    return
             except Exception:
                 LOGGER.warning(
                     "Failed to update heartbeat for session %s",
@@ -249,3 +354,44 @@ class _HeartbeatRunner:
                     exc_info=True,
                 )
                 return
+
+
+def _normalize_connector_result(raw_result: dict, connector_id: str, assurance_class: str) -> dict:
+    normalized = dict(raw_result)
+    normalized["connector_id"] = str(raw_result.get("connector_id") or connector_id)
+    normalized["assurance_class"] = str(raw_result.get("assurance_class") or assurance_class)
+    normalized["reason_codes"] = list(raw_result.get("reason_codes") or [])
+    normalized["matched_claims"] = dict(raw_result.get("matched_claims") or {})
+    normalized["mismatched_claims"] = dict(raw_result.get("mismatched_claims") or {})
+    normalized["technical_state"] = str(raw_result.get("technical_state") or "SUCCESS")
+    normalized["source_timestamp"] = raw_result.get("source_timestamp") or datetime.now(timezone.utc).isoformat()
+
+    raw_status = str(raw_result.get("status") or "").upper()
+    if raw_status == "VERIFIED":
+        normalized["status"] = "VERIFIED"
+    elif normalized["mismatched_claims"] or raw_status in {"NOT_VERIFIED", "INVALID", "REVOKED", "MISMATCH"}:
+        normalized["status"] = "MISMATCH"
+    else:
+        normalized["status"] = "ERROR"
+        if "CONNECTOR_ERROR" not in normalized["reason_codes"]:
+            normalized["reason_codes"].append("CONNECTOR_ERROR")
+
+    return normalized
+
+
+def _invoke_connector_stage(
+    connector_eval,
+    conn,
+    session_id: str,
+    worker_id: str,
+    grounded_data: dict,
+    policy: dict,
+) -> list[dict]:
+    try:
+        parameter_count = len(inspect.signature(connector_eval).parameters)
+    except (TypeError, ValueError):
+        parameter_count = 5
+
+    if parameter_count >= 5:
+        return connector_eval(conn, session_id, worker_id, grounded_data, policy)
+    return connector_eval(conn, session_id, worker_id, grounded_data)

@@ -6,7 +6,6 @@ import uuid
 from contextlib import nullcontext
 from typing import Callable
 
-from ..orchestrator.orchestrator import trigger_processing
 from ..trust.trust_engine import evaluate_trust
 from . import repository
 
@@ -29,6 +28,18 @@ def generate_worker_id() -> str:
     return str(uuid.uuid4())
 
 
+def acquire_lease(conn, session_id: str, worker_id: str) -> bool:
+    acquired = repository.acquire_lease(conn, session_id, worker_id)
+    if acquired:
+        conn.commit()
+        LOGGER.info("LEASE_ACQUIRED session_id=%s worker_id=%s", session_id, worker_id)
+        return True
+
+    _safe_rollback(conn)
+    LOGGER.info("LEASE_REJECTED session_id=%s worker_id=%s", session_id, worker_id)
+    return False
+
+
 def start_verification(
     conn,
     session_id: str,
@@ -41,6 +52,8 @@ def start_verification(
     policy_loader: Callable | None = None,
     heartbeat_interval_seconds: int = 10,
 ) -> str:
+    from ..orchestrator.orchestrator import trigger_processing
+
     current_worker_id = worker_id or generate_worker_id()
     result = trigger_processing(
         conn,
@@ -157,6 +170,12 @@ def complete_processing(
         connector_ids,
     )
     conn.commit()
+
+
+def _safe_rollback(conn) -> None:
+    rollback = getattr(conn, "rollback", None)
+    if callable(rollback):
+        rollback()
 
 
 def _default_extraction_stage(conn, session_id: str, worker_id: str) -> dict:

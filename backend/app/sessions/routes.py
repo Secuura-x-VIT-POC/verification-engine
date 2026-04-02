@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..auth.routes import get_current_user
 from ..db.database import get_db
 from ..security.pdf_validator import PDFValidationError, validate_pdf
+from ..workflow import repository as workflow_repository
 from ..workflow.runtime import close_session, serialize_session
 from .constants import SessionState
 from .models import Session as SessionModel
@@ -76,9 +77,15 @@ def generate_upload_token(
         session_id=session_id,
         is_used=False,
     )
-    session.status = SessionState.UPLOAD_PENDING
+    if session.status == SessionState.CREATED:
+        workflow_repository.transition_state(
+            db,
+            session_id,
+            SessionState.UPLOAD_PENDING,
+        )
     db.add(upload_token)
     db.commit()
+    db.refresh(session)
 
     return {
         "upload_token": upload_token.token,
@@ -117,21 +124,28 @@ def upload_file(
 
     upload_token.is_used = True
     upload_token.used_at = datetime.utcnow()
-    session.filename = file.filename
-    session.file_path = str(file_path)
-    session.uploaded_at = datetime.utcnow()
-    session.status = SessionState.UPLOADED_PENDING_REVIEW
-    session.worker_phase = None
-    session.reason_codes = []
-    session.connector_ids = []
-    session.trust_outcome = None
-    session.extraction_payload = None
-    session.connector_payload = None
-    session.document_commitment = None
-    session.audit_receipt_id = None
-    session.purge_status = None
-    session.purge_error = None
+    workflow_repository.transition_state(
+        db,
+        session.id,
+        SessionState.UPLOADED_PENDING_REVIEW,
+        extra_values={
+            "filename": file.filename,
+            "file_path": str(file_path),
+            "uploaded_at": datetime.utcnow(),
+            "worker_phase": None,
+            "reason_codes": [],
+            "connector_ids": [],
+            "trust_outcome": None,
+            "extraction_payload": None,
+            "connector_payload": None,
+            "document_commitment": None,
+            "audit_receipt_id": None,
+            "purge_status": None,
+            "purge_error": None,
+        },
+    )
     db.commit()
+    db.refresh(session)
 
     return {
         "message": "File uploaded securely",

@@ -7,16 +7,33 @@ from unittest.mock import MagicMock, call, patch
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from backend.app.orchestrator.orchestrator import trigger_processing
-from backend.app.workflow import repository
+from backend.app.sessions.constants import SessionState
+from backend.app.workflow.state_machine import InvalidStateTransitionError, validate_transition
 from backend.app.workflow.service import (
     WORKER_PHASE_CONNECTOR_EVAL,
     WORKER_PHASE_EXTRACTING,
     WORKER_PHASE_GROUNDING,
     WORKER_PHASE_TRUST_SCORING,
+    acquire_lease,
     mark_stale_sessions,
     run_worker_pipeline,
     start_verification,
 )
+
+
+class StateMachineTests(unittest.TestCase):
+    def test_validate_transition_allows_known_valid_transition(self):
+        validate_transition(
+            SessionState.UPLOADED_PENDING_REVIEW,
+            SessionState.VERIFYING,
+        )
+
+    def test_validate_transition_rejects_invalid_transition(self):
+        with self.assertRaises(InvalidStateTransitionError):
+            validate_transition(
+                SessionState.CREATED,
+                SessionState.VERIFYING,
+            )
 
 
 class TriggerProcessingTests(unittest.TestCase):
@@ -24,55 +41,72 @@ class TriggerProcessingTests(unittest.TestCase):
         conn = MagicMock()
 
         with patch(
-            "backend.app.orchestrator.orchestrator.repository.get_session_state_and_version",
-            return_value={"state": repository.PENDING_REVIEW_STATE, "version": 4},
-        ), patch(
-            "backend.app.orchestrator.orchestrator.repository.acquire_lease",
+            "backend.app.orchestrator.orchestrator.service.acquire_lease",
             return_value=True,
-        ):
+        ) as acquire_mock:
             result = trigger_processing(conn, "session-1", "worker-1")
 
         self.assertEqual(result, "STARTED")
-        conn.commit.assert_called_once()
+        acquire_mock.assert_called_once_with(conn, "session-1", "worker-1")
         conn.rollback.assert_not_called()
 
-    def test_trigger_processing_returns_no_op_for_non_pending_sessions(self):
+    def test_trigger_processing_returns_no_op_when_lease_is_rejected(self):
         conn = MagicMock()
 
         with patch(
-            "backend.app.orchestrator.orchestrator.repository.get_session_state_and_version",
-            return_value={"state": "VERIFYING", "version": 5},
-        ), patch(
-            "backend.app.orchestrator.orchestrator.repository.acquire_lease"
-        ) as acquire_lease:
+            "backend.app.orchestrator.orchestrator.service.acquire_lease",
+            return_value=False,
+        ) as acquire_mock:
             result = trigger_processing(conn, "session-1", "worker-1")
 
         self.assertEqual(result, "NO_OP")
-        acquire_lease.assert_not_called()
-        conn.rollback.assert_called_once()
+        acquire_mock.assert_called_once_with(conn, "session-1", "worker-1")
+        conn.rollback.assert_not_called()
 
-    def test_trigger_processing_retries_after_a_failed_compare_and_swap(self):
+    def test_trigger_processing_does_not_retry_after_rejected_lease(self):
         conn = MagicMock()
 
         with patch(
-            "backend.app.orchestrator.orchestrator.repository.get_session_state_and_version",
-            side_effect=[
-                {"state": repository.PENDING_REVIEW_STATE, "version": 1},
-                {"state": repository.PENDING_REVIEW_STATE, "version": 2},
-            ],
-        ), patch(
-            "backend.app.orchestrator.orchestrator.repository.acquire_lease",
-            side_effect=[False, True],
-        ) as acquire_lease, patch(
-            "backend.app.orchestrator.orchestrator.time.sleep"
-        ) as sleep_mock:
+            "backend.app.orchestrator.orchestrator.service.acquire_lease",
+            return_value=False,
+        ) as acquire_mock:
             result = trigger_processing(conn, "session-1", "worker-1", max_retries=2)
 
-        self.assertEqual(result, "STARTED")
-        self.assertEqual(acquire_lease.call_count, 2)
-        conn.rollback.assert_called_once()
+        self.assertEqual(result, "NO_OP")
+        acquire_mock.assert_called_once_with(conn, "session-1", "worker-1")
+        conn.rollback.assert_not_called()
+
+
+class LeaseServiceTests(unittest.TestCase):
+    def test_acquire_lease_commits_and_logs_when_successful(self):
+        conn = MagicMock()
+
+        with patch(
+            "backend.app.workflow.service.repository.acquire_lease",
+            return_value=True,
+        ):
+            with self.assertLogs("backend.app.workflow.service", level="INFO") as logs:
+                result = acquire_lease(conn, "session-1", "worker-1")
+
+        self.assertTrue(result)
         conn.commit.assert_called_once()
-        sleep_mock.assert_called_once_with(0.05)
+        conn.rollback.assert_not_called()
+        self.assertTrue(any("LEASE_ACQUIRED" in entry for entry in logs.output))
+
+    def test_acquire_lease_rolls_back_and_logs_when_rejected(self):
+        conn = MagicMock()
+
+        with patch(
+            "backend.app.workflow.service.repository.acquire_lease",
+            return_value=False,
+        ):
+            with self.assertLogs("backend.app.workflow.service", level="INFO") as logs:
+                result = acquire_lease(conn, "session-1", "worker-1")
+
+        self.assertFalse(result)
+        conn.commit.assert_not_called()
+        conn.rollback.assert_called_once()
+        self.assertTrue(any("LEASE_REJECTED" in entry for entry in logs.output))
 
 
 class WorkflowServiceTests(unittest.TestCase):
@@ -80,7 +114,7 @@ class WorkflowServiceTests(unittest.TestCase):
         conn = MagicMock()
 
         with patch(
-            "backend.app.workflow.service.trigger_processing",
+            "backend.app.orchestrator.orchestrator.trigger_processing",
             return_value="STARTED",
         ) as trigger_mock, patch(
             "backend.app.workflow.service.run_worker_pipeline"

@@ -17,6 +17,7 @@ from ..connectors.broker import call_connector
 from ..sessions.constants import SessionState, VERIFIED_STATES
 from ..sessions.models import Session as SessionModel
 from ..trust.trust_engine import evaluate_trust
+from . import repository
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -42,21 +43,40 @@ STATUS_BY_OUTCOME = {
 def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) -> SessionModel:
     file_path = Path(session.file_path or "")
     if not session.file_path or not file_path.exists():
-        session.status = SessionState.FAILED_RETRIABLE
-        session.worker_phase = "FAILED"
         session.reason_codes = ["DOCUMENT_NOT_FOUND"]
         session.connector_ids = []
-        session.updated_at = datetime.utcnow()
+        if session.status == SessionState.FAILED_RETRIABLE:
+            session.worker_phase = "FAILED"
+            session.updated_at = datetime.utcnow()
+        else:
+            repository.transition_state(
+                db,
+                session.id,
+                SessionState.FAILED_RETRIABLE,
+                extra_values={
+                    "worker_phase": "FAILED",
+                    "updated_at": datetime.utcnow(),
+                },
+            )
         db.commit()
+        db.refresh(session)
         return session
 
-    session.status = SessionState.VERIFYING
-    session.worker_phase = "EXTRACTING"
-    session.lease_holder_id = reviewer_ref
-    session.heartbeat_at = datetime.utcnow()
-    session.verify_started_at = session.verify_started_at or datetime.utcnow()
-    session.version = (session.version or 0) + 1
+    now = datetime.utcnow()
+    repository.transition_state(
+        db,
+        session.id,
+        SessionState.VERIFYING,
+        extra_values={
+            "worker_phase": "EXTRACTING",
+            "lease_holder_id": reviewer_ref,
+            "heartbeat_at": now,
+            "verify_started_at": session.verify_started_at or now,
+            "version": SessionModel.version + 1,
+        },
+    )
     db.commit()
+    db.refresh(session)
 
     try:
         extraction_payload = extract_document_payload(file_path)
@@ -82,46 +102,65 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
         receipt = generate_receipt(session.id, reviewer_ref, commitment, trust_result)
         store_audit_bundle(db, receipt, nonce)
 
-        session.status = STATUS_BY_OUTCOME[trust_result["outcome"]]
-        session.worker_phase = "COMPLETED"
-        session.lease_holder_id = None
-        session.heartbeat_at = datetime.utcnow()
-        session.trust_outcome = trust_result["outcome"]
-        session.reason_codes = trust_result["reason_codes"]
-        session.connector_ids = trust_result["connector_ids"]
-        session.document_commitment = commitment
-        session.audit_receipt_id = receipt["audit_event_id"]
-        session.verified_at = datetime.utcnow()
-        session.updated_at = datetime.utcnow()
+        repository.transition_state(
+            db,
+            session.id,
+            STATUS_BY_OUTCOME[trust_result["outcome"]],
+            extra_values={
+                "worker_phase": "COMPLETED",
+                "lease_holder_id": None,
+                "heartbeat_at": datetime.utcnow(),
+                "trust_outcome": trust_result["outcome"],
+                "reason_codes": trust_result["reason_codes"],
+                "connector_ids": trust_result["connector_ids"],
+                "document_commitment": commitment,
+                "audit_receipt_id": receipt["audit_event_id"],
+                "verified_at": datetime.utcnow(),
+            },
+        )
         db.commit()
+        db.refresh(session)
         return session
     except Exception as exc:
-        session.status = SessionState.FAILED_RETRIABLE
-        session.worker_phase = "FAILED"
-        session.lease_holder_id = None
-        session.heartbeat_at = datetime.utcnow()
-        session.reason_codes = ["WORKFLOW_EXECUTION_FAILED"]
-        session.connector_ids = []
-        session.extraction_payload = {
-            "document_type": "academic_credential",
-            "used_ocr": False,
-            "fields": {},
-            "confidence": {},
-            "bounding_boxes": {},
-            "field_details": [],
-            "error_message": str(exc),
-        }
-        session.updated_at = datetime.utcnow()
+        repository.transition_state(
+            db,
+            session.id,
+            SessionState.FAILED_RETRIABLE,
+            extra_values={
+                "worker_phase": "FAILED",
+                "lease_holder_id": None,
+                "heartbeat_at": datetime.utcnow(),
+                "reason_codes": ["WORKFLOW_EXECUTION_FAILED"],
+                "connector_ids": [],
+                "extraction_payload": {
+                    "document_type": "academic_credential",
+                    "used_ocr": False,
+                    "fields": {},
+                    "confidence": {},
+                    "bounding_boxes": {},
+                    "field_details": [],
+                    "error_message": str(exc),
+                },
+            },
+        )
         db.commit()
+        db.refresh(session)
         return session
 
 
 def close_session(db: DbSession, session: SessionModel) -> SessionModel:
     start_cleanup(db, session.id)
-    session.status = SessionState.PENDING_CLEANUP
-    session.purge_status = "IN_PROGRESS"
-    session.closed_at = datetime.utcnow()
+    repository.transition_state(
+        db,
+        session.id,
+        SessionState.PENDING_CLEANUP,
+        extra_values={
+            "purge_status": "IN_PROGRESS",
+            "closed_at": datetime.utcnow(),
+        },
+    )
     db.commit()
+    db.refresh(session)
 
     try:
         if session.file_path:
@@ -129,27 +168,39 @@ def close_session(db: DbSession, session: SessionModel) -> SessionModel:
             if file_path.exists():
                 file_path.unlink()
 
-        session.file_path = None
-        session.filename = None
-        session.extraction_payload = None
-        session.connector_payload = None
-        session.worker_phase = None
-        session.lease_holder_id = None
-        session.heartbeat_at = None
-        session.status = SessionState.PURGE_COMPLETE
-        session.purge_status = "COMPLETED"
-        session.purge_error = None
-        session.updated_at = datetime.utcnow()
+        repository.transition_state(
+            db,
+            session.id,
+            SessionState.PURGE_COMPLETE,
+            extra_values={
+                "file_path": None,
+                "filename": None,
+                "extraction_payload": None,
+                "connector_payload": None,
+                "worker_phase": None,
+                "lease_holder_id": None,
+                "heartbeat_at": None,
+                "purge_status": "COMPLETED",
+                "purge_error": None,
+            },
+        )
         complete_cleanup(db, session.id)
         db.commit()
+        db.refresh(session)
         return session
     except Exception as exc:
-        session.status = SessionState.FAILED_PURGED
-        session.purge_status = "FAILED"
-        session.purge_error = str(exc)
-        session.updated_at = datetime.utcnow()
+        repository.transition_state(
+            db,
+            session.id,
+            SessionState.FAILED_PURGED,
+            extra_values={
+                "purge_status": "FAILED",
+                "purge_error": str(exc),
+            },
+        )
         fail_cleanup(db, session.id, str(exc))
         db.commit()
+        db.refresh(session)
         return session
 
 

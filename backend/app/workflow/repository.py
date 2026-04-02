@@ -1,105 +1,176 @@
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timedelta
+
+from sqlalchemy import select, update
+
+from ..sessions.models import Session as SessionModel
+from .state_machine import InvalidStateTransitionError, validate_transition
+
+LOGGER = logging.getLogger(__name__)
+
 PENDING_REVIEW_STATE = "UPLOADED_PENDING_REVIEW"
 VERIFYING_STATE = "VERIFYING"
 
 
-def get_session_state_and_version(conn, session_id: str) -> dict[str, object] | None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT state, version
-            FROM audit.sessions
-            WHERE session_id = %s
-            """,
-            (session_id,),
-        )
-        row = cur.fetchone()
+class StateTransitionConflictError(RuntimeError):
+    pass
 
-    if not row:
+
+def get_session_state_and_version(conn, session_id: str) -> dict[str, object] | None:
+    row = conn.execute(
+        select(SessionModel.status, SessionModel.version).where(SessionModel.id == session_id)
+    ).first()
+    if row is None:
         return None
 
-    state, version = row
-    return {"state": state, "version": version}
+    return {
+        "state": row.status,
+        "version": row.version,
+    }
 
 
-def acquire_lease(conn, session_id: str, worker_id: str, version: int) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE audit.sessions
-            SET
-                state = %s,
-                lease_holder_id = %s,
-                lease_acquired_at = NOW(),
-                heartbeat_at = NOW(),
-                version = version + 1,
-                updated_at = NOW()
-            WHERE
-                session_id = %s
-                AND state = %s
-                AND version = %s
-            RETURNING session_id
-            """,
-            (
-                VERIFYING_STATE,
-                worker_id,
-                session_id,
-                PENDING_REVIEW_STATE,
-                version,
-            ),
+def get_session_state(conn, session_id: str) -> str | None:
+    session = get_session_state_and_version(conn, session_id)
+    if session is None:
+        return None
+    return str(session["state"])
+
+
+def transition_state(
+    conn,
+    session_id: str,
+    new_state: str,
+    *,
+    extra_values: dict | None = None,
+    require_lease_id: str | None = None,
+    require_null_lease: bool = False,
+) -> str:
+    current_state = get_session_state(conn, session_id)
+    if current_state is None:
+        raise StateTransitionConflictError(f"Session not found: {session_id}")
+
+    _validate_transition_or_raise(
+        session_id=session_id,
+        current_state=current_state,
+        new_state=new_state,
+    )
+
+    values = {
+        "status": new_state,
+        "updated_at": datetime.utcnow(),
+    }
+    if extra_values:
+        values.update(extra_values)
+
+    statement = (
+        update(SessionModel)
+        .where(SessionModel.id == session_id)
+        .where(SessionModel.status == current_state)
+        .values(**values)
+        .returning(SessionModel.id)
+    )
+
+    if require_null_lease:
+        statement = statement.where(SessionModel.lease_id.is_(None))
+    if require_lease_id is not None:
+        statement = statement.where(SessionModel.lease_id == require_lease_id)
+
+    result = conn.execute(statement)
+    updated_session_id = result.scalar_one_or_none()
+    if updated_session_id is None:
+        raise StateTransitionConflictError(
+            f"Atomic state transition failed for session {session_id}: {current_state} -> {new_state}"
         )
-        return cur.fetchone() is not None
+
+    LOGGER.info(
+        "STATE_TRANSITION: %s → %s session_id=%s",
+        current_state,
+        new_state,
+        session_id,
+    )
+    return current_state
+
+
+def acquire_lease(conn, session_id: str, worker_id: str) -> bool:
+    session = get_session_state_and_version(conn, session_id)
+    if session is None or session["state"] != PENDING_REVIEW_STATE:
+        return False
+
+    try:
+        transition_state(
+            conn,
+            session_id,
+            VERIFYING_STATE,
+            extra_values={
+                "lease_id": worker_id,
+                "lease_holder_id": worker_id,
+                "lease_acquired_at": datetime.utcnow(),
+            },
+            require_null_lease=True,
+        )
+    except StateTransitionConflictError:
+        return False
+
+    return True
 
 
 def update_worker_phase(conn, session_id: str, worker_id: str, worker_phase: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE audit.sessions
-            SET
-                worker_phase = %s,
-                updated_at = NOW()
-            WHERE
-                session_id = %s
-                AND lease_holder_id = %s
-            """,
-            (worker_phase, session_id, worker_id),
+    conn.execute(
+        update(SessionModel)
+        .where(SessionModel.id == session_id)
+        .where(SessionModel.lease_id == worker_id)
+        .values(
+            worker_phase=worker_phase,
+            updated_at=datetime.utcnow(),
         )
+    )
 
 
 def update_heartbeat(conn, session_id: str, worker_id: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE audit.sessions
-            SET
-                heartbeat_at = NOW(),
-                updated_at = NOW()
-            WHERE
-                session_id = %s
-                AND lease_holder_id = %s
-            """,
-            (session_id, worker_id),
+    conn.execute(
+        update(SessionModel)
+        .where(SessionModel.id == session_id)
+        .where(SessionModel.lease_id == worker_id)
+        .values(
+            heartbeat_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
         )
+    )
 
 
 def mark_stale_sessions(conn, timeout_seconds: int = 60) -> int:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE audit.sessions
-            SET
-                state = 'ABANDONED_VERIFYING',
-                lease_holder_id = NULL,
-                updated_at = NOW()
-            WHERE
-                state = %s
-                AND heartbeat_at < NOW() - (%s * INTERVAL '1 second')
-            """,
-            (VERIFYING_STATE, timeout_seconds),
+    _validate_transition_or_raise(
+        session_id="bulk-stale-session-scan",
+        current_state=VERIFYING_STATE,
+        new_state="ABANDONED_VERIFYING",
+    )
+
+    cutoff = datetime.utcnow() - timedelta(seconds=timeout_seconds)
+    result = conn.execute(
+        update(SessionModel)
+        .where(SessionModel.status == VERIFYING_STATE)
+        .where(SessionModel.heartbeat_at.is_not(None))
+        .where(SessionModel.heartbeat_at < cutoff)
+        .values(
+            status="ABANDONED_VERIFYING",
+            lease_id=None,
+            lease_holder_id=None,
+            lease_acquired_at=None,
+            updated_at=datetime.utcnow(),
         )
-        return cur.rowcount
+    )
+
+    updated_rows = result.rowcount or 0
+    if updated_rows:
+        LOGGER.info(
+            "STATE_TRANSITION: %s → %s count=%s",
+            VERIFYING_STATE,
+            "ABANDONED_VERIFYING",
+            updated_rows,
+        )
+    return updated_rows
 
 
 def complete_processing(
@@ -110,25 +181,30 @@ def complete_processing(
     reason_codes: list[str],
     connector_ids: list[str],
 ) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE audit.sessions
-            SET
-                state = %s,
-                trust_outcome = %s,
-                reason_codes = %s,
-                connector_ids = %s,
-                worker_phase = 'COMPLETED',
-                lease_holder_id = NULL,
-                updated_at = NOW()
-            WHERE session_id = %s
-            """,
-            (
-                outcome_state,
-                outcome,
-                reason_codes,
-                connector_ids,
-                session_id,
-            ),
+    transition_state(
+        conn,
+        session_id,
+        outcome_state,
+        extra_values={
+            "trust_outcome": outcome,
+            "reason_codes": reason_codes,
+            "connector_ids": connector_ids,
+            "worker_phase": "COMPLETED",
+            "lease_id": None,
+            "lease_holder_id": None,
+            "lease_acquired_at": None,
+        },
+    )
+
+
+def _validate_transition_or_raise(*, session_id: str, current_state: str, new_state: str) -> None:
+    try:
+        validate_transition(current_state, new_state)
+    except InvalidStateTransitionError:
+        LOGGER.warning(
+            "INVALID_TRANSITION_BLOCKED session_id=%s current_state=%s new_state=%s",
+            session_id,
+            current_state,
+            new_state,
         )
+        raise

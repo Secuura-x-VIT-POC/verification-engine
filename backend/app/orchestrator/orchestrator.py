@@ -1,46 +1,26 @@
-import time
+from __future__ import annotations
 
-from ..workflow import repository
+from ..workflow import service
 
 
 def trigger_processing(conn, session_id: str, worker_id: str, max_retries=3):
     """
-    Attempts to acquire lease and start processing.
+    Attempts to acquire a strict single-worker lease before processing.
     Returns:
         - "STARTED" -> this worker owns execution
-        - "NO_OP" -> another worker already started
+        - "NO_OP" -> another worker already owns the lease
         - "FAILED" -> unexpected issue
     """
 
-    for attempt in range(max_retries):
-        try:
-            session = repository.get_session_state_and_version(conn, session_id)
+    del max_retries
 
-            if not session:
-                _safe_rollback(conn)
-                return "FAILED"
-
-            if session["state"] != repository.PENDING_REVIEW_STATE:
-                _safe_rollback(conn)
-                return "NO_OP"
-
-            if repository.acquire_lease(
-                conn,
-                session_id,
-                worker_id,
-                session["version"],
-            ):
-                conn.commit()
-                return "STARTED"
-
-            _safe_rollback(conn)
-            time.sleep(0.05 * (attempt + 1))
-
-        except Exception:
-            _safe_rollback(conn)
-            return "FAILED"
-
-    return "NO_OP"
+    try:
+        if service.acquire_lease(conn, session_id, worker_id):
+            return "STARTED"
+        return "NO_OP"
+    except Exception:
+        _safe_rollback(conn)
+        return "FAILED"
 
 
 def _safe_rollback(conn) -> None:

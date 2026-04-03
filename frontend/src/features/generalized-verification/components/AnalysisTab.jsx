@@ -48,12 +48,24 @@ export default function AnalysisTab({ rows, emptyMessage }) {
                   <span className="gv-detail-key">Task outcome</span>
                   <p>{row.taskStatus || "Pending"}</p>
                 </div>
+                <div>
+                  <span className="gv-detail-key">Provider</span>
+                  <p>{row.providerLabel || "No provider used"}</p>
+                </div>
+                <div>
+                  <span className="gv-detail-key">Agent-assisted route</span>
+                  <p>{row.agentRecommendedVerifierLabel || "No agent recommendation"}</p>
+                </div>
               </div>
 
-              {row.verificationReason || row.routeReason || row.reasonCodes.length ? (
+              {row.verificationReason || row.routeReason || row.agentRouteReason || row.reasonCodes.length ? (
                 <div className="gv-analysis-notes">
                   {row.verificationReason ? <p><strong>Why verify:</strong> {row.verificationReason}</p> : null}
                   {row.routeReason ? <p><strong>Route reason:</strong> {row.routeReason}</p> : null}
+                  {row.providerTechnicalStatus ? <p><strong>Provider status:</strong> {row.providerTechnicalStatus}</p> : null}
+                  {row.providerFallbackUsed ? <p><strong>Provider fallback:</strong> Local deterministic fallback was used.</p> : null}
+                  {row.agentRouteReason ? <p><strong>Agent-assisted:</strong> {row.agentRouteReason}</p> : null}
+                  {row.agentManualReviewRecommended ? <p><strong>Agent review flag:</strong> Manual review suggested.</p> : null}
                   {row.reasonCodes.length ? <p><strong>Reason codes:</strong> {row.reasonCodes.join(", ")}</p> : null}
                 </div>
               ) : null}

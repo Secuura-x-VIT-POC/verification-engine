@@ -47,6 +47,11 @@ export default function AuditDetailCard({ detail, compact = false }) {
             <strong>Task:</strong> {detail.execution.label}
           </span>
         ) : null}
+        {detail.execution?.providerLabel ? (
+          <span>
+            <strong>Provider:</strong> {detail.execution.providerLabel}
+          </span>
+        ) : null}
         <span>
           <strong>Value:</strong> {detail.documentValue}
         </span>
@@ -69,8 +74,34 @@ export default function AuditDetailCard({ detail, compact = false }) {
         </div>
       ) : null}
 
+      {detail.agentAssisted ? (
+        <div className="gv-chip-row">
+          <span className="gv-chip">Agent-assisted</span>
+        </div>
+      ) : null}
+
       {compact ? null : (
         <>
+          {detail.agentInfo || detail.agentExplanation ? (
+            <section className="gv-card-section">
+              <h3>Agent-assisted context</h3>
+              {detail.agentInfo ? (
+                <div className="gv-inline-meta">
+                  <span>
+                    <strong>Candidate:</strong> {detail.agentInfo.candidateLabel}
+                  </span>
+                  {detail.agentInfo.recommendedVerifierLabel ? (
+                    <span>
+                      <strong>Recommended verifier:</strong> {detail.agentInfo.recommendedVerifierLabel}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+              {detail.agentInfo?.routeReason ? <p>{detail.agentInfo.routeReason}</p> : null}
+              {detail.agentExplanation ? <p>{detail.agentExplanation}</p> : null}
+            </section>
+          ) : null}
+
           {detail.execution ? (
             <section className="gv-card-section">
               <h3>Task execution</h3>
@@ -81,12 +112,20 @@ export default function AuditDetailCard({ detail, compact = false }) {
                 <span>
                   <strong>Attempts:</strong> {detail.execution.resultCount}
                 </span>
+                {detail.execution.providerTechnicalStatus ? (
+                  <span>
+                    <strong>Provider status:</strong> {detail.execution.providerTechnicalStatus}
+                  </span>
+                ) : null}
                 {detail.execution.confidence !== null ? (
                   <span>
                     <strong>Confidence:</strong> {detail.execution.confidence}
                   </span>
                 ) : null}
               </div>
+              {detail.execution.providerFallbackUsed ? (
+                <p className="muted">Provider-backed execution fell back to the bounded local verifier path.</p>
+              ) : null}
             </section>
           ) : null}
 

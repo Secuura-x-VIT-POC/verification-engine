@@ -1,9 +1,16 @@
 import {
+  createEmptyAgentCredentialCandidateCollection,
+  createEmptyAgentDocumentUnderstanding,
+  createEmptyAgentRouteRecommendationCollection,
+  createEmptyAgentRunStatus,
   createEmptyAnalysisStatus,
   createEmptyCredentialAuditCollection,
   createEmptyCredentialBundleCollection,
   createEmptyCredentialCollection,
   createEmptyDocumentProfile,
+  createEmptyProviderCapabilityCollection,
+  createEmptyProviderExecutionStatus,
+  createEmptyProviderExecutionTraceCollection,
   createEmptyVerificationExecutionStatus,
   createEmptySessionOverview,
   createEmptyVerificationPlan,
@@ -315,6 +322,162 @@ export function normalizeVerificationExecutionStatus(payload, sessionId = "") {
   };
 }
 
+export function normalizeProviderExecutionTraces(payload, sessionId = "") {
+  const collection = { ...createEmptyProviderExecutionTraceCollection(sessionId), ...asObject(payload) };
+  const traces = Array.isArray(collection.traces) ? collection.traces : [];
+  return {
+    session_id: asString(collection.session_id, sessionId),
+    document_type: asString(collection.document_type, "unknown"),
+    traces: traces.map((trace, index) => {
+      const normalizedTrace = asObject(trace);
+      return {
+        request_id: asString(normalizedTrace.request_id, `trace-${index + 1}`),
+        provider_key: asString(normalizedTrace.provider_key, "unknown"),
+        verifier_key: asString(normalizedTrace.verifier_key, "unknown"),
+        started_at: asNullableString(normalizedTrace.started_at),
+        completed_at: asNullableString(normalizedTrace.completed_at),
+        technical_status: asString(normalizedTrace.technical_status, "SKIPPED"),
+        redaction_applied: asBoolean(normalizedTrace.redaction_applied),
+        outbound_mode: asString(normalizedTrace.outbound_mode, "DISABLED"),
+        retry_count: asInteger(normalizedTrace.retry_count) ?? 0,
+        error_summary: asNullableString(normalizedTrace.error_summary),
+        http_status: asInteger(normalizedTrace.http_status),
+        response_summary: asObject(normalizedTrace.response_summary),
+        fallback_used: asBoolean(normalizedTrace.fallback_used),
+      };
+    }),
+  };
+}
+
+export function normalizeProviderExecutionStatus(payload, sessionId = "") {
+  const status = { ...createEmptyProviderExecutionStatus(sessionId), ...asObject(payload) };
+  return {
+    session_id: asString(status.session_id, sessionId),
+    workflow_state: asString(status.workflow_state, "UNKNOWN"),
+    provider_execution_status: asString(status.provider_execution_status, "NOT_STARTED"),
+    provider_execution_error: asNullableString(status.provider_execution_error),
+    traces_available: asBoolean(status.traces_available),
+    trace_count: asInteger(status.trace_count) ?? 0,
+    provider_keys_used: asStringArray(status.provider_keys_used),
+    outbound_attempted: asBoolean(status.outbound_attempted),
+    fallback_used: asBoolean(status.fallback_used),
+  };
+}
+
+export function normalizeProviderCapabilities(payload, sessionId = "") {
+  const collection = { ...createEmptyProviderCapabilityCollection(sessionId), ...asObject(payload) };
+  const capabilities = Array.isArray(collection.capabilities) ? collection.capabilities : [];
+  return {
+    session_id: asString(collection.session_id, sessionId),
+    capabilities: capabilities.map((capability, index) => {
+      const normalizedCapability = asObject(capability);
+      return {
+        provider_key: asString(normalizedCapability.provider_key, `provider-${index + 1}`),
+        provider_label: asString(normalizedCapability.provider_label, "Provider"),
+        supported_verifier_keys: asStringArray(normalizedCapability.supported_verifier_keys),
+        supported_categories: asStringArray(normalizedCapability.supported_categories),
+        supports_batch: asBoolean(normalizedCapability.supports_batch),
+        supports_partial_match: asBoolean(normalizedCapability.supports_partial_match),
+        supports_document_upload: asBoolean(normalizedCapability.supports_document_upload),
+        supports_field_lookup: asBoolean(normalizedCapability.supports_field_lookup, true),
+        requires_credentials: asBoolean(normalizedCapability.requires_credentials),
+        default_timeout_ms: asInteger(normalizedCapability.default_timeout_ms) ?? 0,
+        enabled: asBoolean(normalizedCapability.enabled),
+      };
+    }),
+  };
+}
+
+export function normalizeAgentDocumentUnderstanding(payload, sessionId = "") {
+  const understanding = { ...createEmptyAgentDocumentUnderstanding(sessionId), ...asObject(payload) };
+  const detectedEntities = Array.isArray(understanding.detected_entities) ? understanding.detected_entities : [];
+  return {
+    session_id: asString(understanding.session_id, sessionId),
+    document_type_guess: asString(understanding.document_type_guess, "unknown"),
+    document_family_guess: asString(understanding.document_family_guess, "unknown"),
+    confidence: asNumber(understanding.confidence),
+    detected_sections: asStringArray(understanding.detected_sections),
+    detected_entities: detectedEntities.map((entity) => {
+      const normalizedEntity = asObject(entity);
+      return {
+        label: asString(normalizedEntity.label, "Unknown"),
+        category: asString(normalizedEntity.category, "unknown"),
+        credential_id: asNullableString(normalizedEntity.credential_id),
+      };
+    }),
+    pii_signals: asStringArray(understanding.pii_signals),
+    credential_candidates: asStringArray(understanding.credential_candidates),
+    reasoning_summary: asString(
+      understanding.reasoning_summary,
+      "No agent document understanding is available."
+    ),
+    manual_review_recommended: asBoolean(understanding.manual_review_recommended),
+  };
+}
+
+export function normalizeAgentCredentialCandidates(payload, sessionId = "") {
+  const collection = { ...createEmptyAgentCredentialCandidateCollection(sessionId), ...asObject(payload) };
+  const candidates = Array.isArray(collection.candidates) ? collection.candidates : [];
+  return {
+    session_id: asString(collection.session_id, sessionId),
+    document_type: asString(collection.document_type, "unknown"),
+    candidates: candidates.map((candidate, index) => {
+      const normalizedCandidate = asObject(candidate);
+      return {
+        candidate_id: asString(normalizedCandidate.candidate_id, `candidate-${index + 1}`),
+        label: asString(normalizedCandidate.label, `Candidate ${index + 1}`),
+        category: asString(normalizedCandidate.category, "unknown"),
+        source_fields: asStringArray(normalizedCandidate.source_fields),
+        grouped_field_ids: asStringArray(normalizedCandidate.grouped_field_ids),
+        grouped_values: asObject(normalizedCandidate.grouped_values),
+        confidence: asNumber(normalizedCandidate.confidence),
+        verification_recommended: asBoolean(normalizedCandidate.verification_recommended),
+        verification_reason: asNullableString(normalizedCandidate.verification_reason),
+        possible_verifier_keys: asStringArray(normalizedCandidate.possible_verifier_keys),
+        ambiguity_flags: asStringArray(normalizedCandidate.ambiguity_flags),
+      };
+    }),
+  };
+}
+
+export function normalizeAgentRouteRecommendations(payload, sessionId = "") {
+  const collection = { ...createEmptyAgentRouteRecommendationCollection(sessionId), ...asObject(payload) };
+  const recommendations = Array.isArray(collection.recommendations) ? collection.recommendations : [];
+  return {
+    session_id: asString(collection.session_id, sessionId),
+    document_type: asString(collection.document_type, "unknown"),
+    recommendations: recommendations.map((recommendation, index) => {
+      const normalizedRecommendation = asObject(recommendation);
+      return {
+        candidate_id: asString(normalizedRecommendation.candidate_id, `candidate-${index + 1}`),
+        recommended_verifier_key: asString(normalizedRecommendation.recommended_verifier_key, "manual_review"),
+        alternative_verifier_keys: asStringArray(normalizedRecommendation.alternative_verifier_keys),
+        route_reason: asString(normalizedRecommendation.route_reason, "No agent route reason is available."),
+        confidence: asNumber(normalizedRecommendation.confidence),
+        manual_review_recommended: asBoolean(normalizedRecommendation.manual_review_recommended),
+      };
+    }),
+  };
+}
+
+export function normalizeAgentRunStatus(payload, sessionId = "") {
+  const status = { ...createEmptyAgentRunStatus(sessionId), ...asObject(payload) };
+  return {
+    session_id: asString(status.session_id, sessionId),
+    workflow_state: asString(status.workflow_state, "UNKNOWN"),
+    agent_run_status: asString(status.agent_run_status, "NOT_STARTED"),
+    agent_run_error: asNullableString(status.agent_run_error),
+    provider_used: asNullableString(status.provider_used),
+    fallback_used: asBoolean(status.fallback_used),
+    warnings: asStringArray(status.warnings),
+    document_understanding_available: asBoolean(status.document_understanding_available),
+    credential_candidates_available: asBoolean(status.credential_candidates_available),
+    route_recommendations_available: asBoolean(status.route_recommendations_available),
+    explanations_available: asBoolean(status.explanations_available),
+    run_summary_available: asBoolean(status.run_summary_available),
+  };
+}
+
 export function normalizeSessionOverview(payload, sessionId = "") {
   const session = { ...createEmptySessionOverview(sessionId), ...asObject(payload) };
   return {
@@ -328,6 +491,10 @@ export function normalizeSessionOverview(payload, sessionId = "") {
     connector_ids: asStringArray(session.connector_ids),
     generalized_analysis_status: asNullableString(session.generalized_analysis_status),
     generalized_analysis_error: asNullableString(session.generalized_analysis_error),
+    agent_run_status: asNullableString(session.agent_run_status),
+    agent_run_error: asNullableString(session.agent_run_error),
+    provider_execution_status: asNullableString(session.provider_execution_status),
+    provider_execution_error: asNullableString(session.provider_execution_error),
     purge_status: asNullableString(session.purge_status),
     purge_error: asNullableString(session.purge_error),
     created_at: asNullableString(session.created_at),

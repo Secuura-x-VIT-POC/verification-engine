@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from importlib import import_module
+
 from .contracts import (
     EXECUTION_STATUS_FAILED,
     EXECUTION_STATUS_NOT_STARTED,
@@ -15,18 +19,33 @@ from .contracts import (
     VerificationTaskResult,
     VerificationTaskResultCollection,
 )
-from .executor import VerificationTaskExecutor
-from .registry import VerifierRegistry, build_default_verifier_registry
-from .service import (
-    build_and_persist_execution_artifacts,
-    build_execution_artifacts,
-    get_credential_bundles_for_session,
-    get_verification_execution_status_for_session,
-    get_verification_execution_summary_for_session,
-    get_verification_task_results_for_session,
-    mark_execution_failure,
-    persist_execution_artifacts,
-)
+
+
+_LAZY_IMPORTS = {
+    "VerificationTaskExecutor": (".executor", "VerificationTaskExecutor"),
+    "VerifierRegistry": (".registry", "VerifierRegistry"),
+    "build_and_persist_execution_artifacts": (".service", "build_and_persist_execution_artifacts"),
+    "build_default_verifier_registry": (".registry", "build_default_verifier_registry"),
+    "build_execution_artifacts": (".service", "build_execution_artifacts"),
+    "get_credential_bundles_for_session": (".service", "get_credential_bundles_for_session"),
+    "get_verification_execution_status_for_session": (".service", "get_verification_execution_status_for_session"),
+    "get_verification_execution_summary_for_session": (".service", "get_verification_execution_summary_for_session"),
+    "get_verification_task_results_for_session": (".service", "get_verification_task_results_for_session"),
+    "mark_execution_failure": (".service", "mark_execution_failure"),
+    "persist_execution_artifacts": (".service", "persist_execution_artifacts"),
+}
+
+
+def __getattr__(name: str):
+    target = _LAZY_IMPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute = target
+    module = import_module(module_name, __name__)
+    value = getattr(module, attribute)
+    globals()[name] = value
+    return value
+
 
 __all__ = [
     "CredentialVerificationBundle",

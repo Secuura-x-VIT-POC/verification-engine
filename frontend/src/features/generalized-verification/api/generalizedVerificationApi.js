@@ -1,10 +1,17 @@
 import { apiRequest } from "../../../lib/api.js";
 import {
+  normalizeAgentCredentialCandidates,
+  normalizeAgentDocumentUnderstanding,
+  normalizeAgentRouteRecommendations,
+  normalizeAgentRunStatus,
   normalizeAnalysisStatus,
   normalizeCredentialBundles,
   normalizeCredentialAudits,
   normalizeCredentialCollection,
   normalizeDocumentProfile,
+  normalizeProviderCapabilities,
+  normalizeProviderExecutionStatus,
+  normalizeProviderExecutionTraces,
   normalizeSessionOverview,
   normalizeVerificationExecutionStatus,
   normalizeVerificationPlan,
@@ -57,9 +64,44 @@ export async function getAnalysisStatus(sessionId, token) {
   return normalizeAnalysisStatus(payload, sessionId);
 }
 
+export async function getAgentDocumentUnderstanding(sessionId, token) {
+  const payload = await apiRequest(`/session/${sessionId}/agent-document-understanding`, { token });
+  return normalizeAgentDocumentUnderstanding(payload, sessionId);
+}
+
+export async function getAgentCredentialCandidates(sessionId, token) {
+  const payload = await apiRequest(`/session/${sessionId}/agent-credential-candidates`, { token });
+  return normalizeAgentCredentialCandidates(payload, sessionId);
+}
+
+export async function getAgentRouteRecommendations(sessionId, token) {
+  const payload = await apiRequest(`/session/${sessionId}/agent-route-recommendations`, { token });
+  return normalizeAgentRouteRecommendations(payload, sessionId);
+}
+
+export async function getAgentRunStatus(sessionId, token) {
+  const payload = await apiRequest(`/session/${sessionId}/agent-run-status`, { token });
+  return normalizeAgentRunStatus(payload, sessionId);
+}
+
 export async function getVerificationExecutionStatus(sessionId, token) {
   const payload = await apiRequest(`/session/${sessionId}/verification-execution-status`, { token });
   return normalizeVerificationExecutionStatus(payload, sessionId);
+}
+
+export async function getProviderExecutionTraces(sessionId, token) {
+  const payload = await apiRequest(`/session/${sessionId}/provider-execution-traces`, { token });
+  return normalizeProviderExecutionTraces(payload, sessionId);
+}
+
+export async function getProviderExecutionStatus(sessionId, token) {
+  const payload = await apiRequest(`/session/${sessionId}/provider-execution-status`, { token });
+  return normalizeProviderExecutionStatus(payload, sessionId);
+}
+
+export async function getProviderCapabilities(sessionId, token) {
+  const payload = await apiRequest(`/session/${sessionId}/provider-capabilities`, { token });
+  return normalizeProviderCapabilities(payload, sessionId);
 }
 
 export async function getSessionDocumentBlob(sessionId, token) {

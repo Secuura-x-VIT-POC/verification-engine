@@ -9,6 +9,7 @@ pytesseract
 pillow
 
 pydantic
+langgraph
 python-dotenv
 python-jose[cryptography]
 python-multipart

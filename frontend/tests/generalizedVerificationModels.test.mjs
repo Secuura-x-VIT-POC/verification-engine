@@ -1,24 +1,39 @@
 import assert from "node:assert/strict";
 import {
+  normalizeAgentCredentialCandidates,
+  normalizeAgentDocumentUnderstanding,
+  normalizeAgentRouteRecommendations,
+  normalizeAgentRunStatus,
   normalizeCredentialBundles,
   normalizeCredentialCollection,
   normalizeDocumentProfile,
+  normalizeProviderCapabilities,
+  normalizeProviderExecutionStatus,
+  normalizeProviderExecutionTraces,
   normalizeVerificationPlan,
   normalizeVerificationTaskResults,
 } from "../src/features/generalized-verification/utils/normalizers.js";
 import {
   buildAuditDetailViewModels,
   buildHighlightItems,
+  buildProviderExecutionSummary,
   buildStatusCounts,
   buildTaskExecutionSummary,
   buildWorkspaceViewModel,
 } from "../src/features/generalized-verification/utils/viewModels.js";
 import {
+  createEmptyAgentCredentialCandidateCollection,
+  createEmptyAgentDocumentUnderstanding,
+  createEmptyAgentRouteRecommendationCollection,
+  createEmptyAgentRunStatus,
   createEmptyAnalysisStatus,
   createEmptyCredentialBundleCollection,
   createEmptyCredentialAuditCollection,
   createEmptyCredentialCollection,
   createEmptyDocumentProfile,
+  createEmptyProviderCapabilityCollection,
+  createEmptyProviderExecutionStatus,
+  createEmptyProviderExecutionTraceCollection,
   createEmptyVerificationExecutionStatus,
   createEmptySessionOverview,
   createEmptyVerificationPlan,
@@ -187,6 +202,10 @@ export const checks = [
     run() {
       const viewModel = buildWorkspaceViewModel({
         session: createEmptySessionOverview("session-1"),
+        agentDocumentUnderstanding: createEmptyAgentDocumentUnderstanding("session-1"),
+        agentCredentialCandidates: createEmptyAgentCredentialCandidateCollection("session-1"),
+        agentRouteRecommendations: createEmptyAgentRouteRecommendationCollection("session-1"),
+        agentRunStatus: createEmptyAgentRunStatus("session-1"),
         documentProfile: createEmptyDocumentProfile("session-1"),
         credentials: createEmptyCredentialCollection("session-1"),
         verificationPlan: createEmptyVerificationPlan("session-1"),
@@ -196,6 +215,9 @@ export const checks = [
         verificationSummary: createEmptyVerificationSummary("session-1"),
         analysisStatus: createEmptyAnalysisStatus("session-1"),
         executionStatus: createEmptyVerificationExecutionStatus("session-1"),
+        providerExecutionTraces: createEmptyProviderExecutionTraceCollection("session-1"),
+        providerExecutionStatus: createEmptyProviderExecutionStatus("session-1"),
+        providerCapabilities: createEmptyProviderCapabilityCollection("session-1"),
       });
 
       const counts = buildStatusCounts(viewModel.auditDetails);
@@ -205,6 +227,7 @@ export const checks = [
       assert.match(viewModel.messages.credentials, /No credentials/i);
       assert.equal(counts.UNVERIFIED, 0);
       assert.equal(viewModel.taskExecutionSummary.totalTasks, 0);
+      assert.equal(viewModel.agentUnderstandingSummary.documentTypeGuess, "unknown");
     },
   },
   {
@@ -285,6 +308,185 @@ export const checks = [
       assert.equal(summary.counts.SUCCEEDED, 1);
       assert.equal(details[0].execution.status, "SUCCEEDED");
       assert.equal(details[0].auditStatus, "VERIFIED");
+    },
+  },
+  {
+    name: "agent payload normalization and workspace mapping stay stable",
+    run() {
+      const understanding = normalizeAgentDocumentUnderstanding(
+        {
+          session_id: "session-1",
+          document_type_guess: "utility_document",
+          document_family_guess: "address_document",
+          confidence: 0.81,
+          detected_sections: ["identity_section"],
+          detected_entities: [{ label: "Residency Proof Number", category: "address", credential_id: "residency-1" }],
+          pii_signals: ["Residency Proof Number"],
+          credential_candidates: ["candidate-residency-1"],
+          reasoning_summary: "Agent-assisted understanding recognized an address-like proof identifier.",
+          manual_review_recommended: true,
+        },
+        "session-1"
+      );
+      const candidates = normalizeAgentCredentialCandidates(
+        {
+          session_id: "session-1",
+          candidates: [
+            {
+              candidate_id: "candidate-residency-1",
+              label: "Residency Proof Number",
+              category: "address",
+              source_fields: ["Residency Proof Number"],
+              grouped_field_ids: ["residency-1"],
+              grouped_values: { "Residency Proof Number": "ADDR-42" },
+              confidence: 0.88,
+              verification_recommended: true,
+              verification_reason: "Address-like proof identifiers should be verified.",
+              possible_verifier_keys: ["address_check"],
+              ambiguity_flags: [],
+            },
+          ],
+        },
+        "session-1"
+      );
+      const routes = normalizeAgentRouteRecommendations(
+        {
+          session_id: "session-1",
+          recommendations: [
+            {
+              candidate_id: "candidate-residency-1",
+              recommended_verifier_key: "address_check",
+              alternative_verifier_keys: ["manual_review"],
+              route_reason: "Agent-assisted grouping suggests an address verifier.",
+              confidence: 0.88,
+              manual_review_recommended: true,
+            },
+          ],
+        },
+        "session-1"
+      );
+      const agentRunStatus = normalizeAgentRunStatus(
+        {
+          session_id: "session-1",
+          agent_run_status: "READY",
+          provider_used: "deterministic",
+          fallback_used: false,
+          warnings: [],
+        },
+        "session-1"
+      );
+
+      const viewModel = buildWorkspaceViewModel({
+        session: createEmptySessionOverview("session-1"),
+        agentDocumentUnderstanding: understanding,
+        agentCredentialCandidates: candidates,
+        agentRouteRecommendations: routes,
+        agentRunStatus,
+        documentProfile: createEmptyDocumentProfile("session-1"),
+        credentials: normalizeCredentialCollection(
+          {
+            session_id: "session-1",
+            credentials: [
+              {
+                credential_id: "residency-1",
+                label: "Residency Proof Number",
+                category: "address",
+                value: "ADDR-42",
+                requires_verification: true,
+                bounding_box: { page: 1, x0: 10, y0: 10, x1: 120, y1: 20 },
+              },
+            ],
+          },
+          "session-1"
+        ),
+        verificationPlan: normalizeVerificationPlan(
+          {
+            session_id: "session-1",
+            route_decisions: [
+              {
+                credential_id: "residency-1",
+                selected_verifier_key: "address_check",
+                selected_verifier_label: "Address Check",
+                route_reason: "Baseline route",
+                fallback_verifiers: [],
+                manual_review_recommended: false,
+              },
+            ],
+            tasks: [],
+          },
+          "session-1"
+        ),
+        verificationTaskResults: createEmptyVerificationTaskResultCollection("session-1"),
+        credentialBundles: createEmptyCredentialBundleCollection("session-1"),
+        credentialAudits: createEmptyCredentialAuditCollection("session-1"),
+        verificationSummary: createEmptyVerificationSummary("session-1"),
+        analysisStatus: createEmptyAnalysisStatus("session-1"),
+        executionStatus: createEmptyVerificationExecutionStatus("session-1"),
+        providerExecutionTraces: createEmptyProviderExecutionTraceCollection("session-1"),
+        providerExecutionStatus: createEmptyProviderExecutionStatus("session-1"),
+        providerCapabilities: createEmptyProviderCapabilityCollection("session-1"),
+      });
+
+      assert.equal(viewModel.agentUnderstandingSummary.documentTypeGuess, "utility_document");
+      assert.equal(viewModel.analysisRows[0].agentRecommendedVerifierLabel, "Address Check");
+      assert.equal(viewModel.auditDetails[0].agentAssisted, true);
+      assert.equal(viewModel.agentStatusLabel, "Ready");
+    },
+  },
+  {
+    name: "provider payload normalization and summary stay bounded",
+    run() {
+      const traces = normalizeProviderExecutionTraces(
+        {
+          session_id: "session-1",
+          traces: [
+            {
+              request_id: "trace-1",
+              provider_key: "identity_http",
+              verifier_key: "identity_db",
+              technical_status: "SUCCESS",
+              outbound_mode: "HTTP_JSON",
+              retry_count: 1,
+              response_summary: { source: "fixture" },
+              fallback_used: false,
+            },
+          ],
+        },
+        "session-1"
+      );
+      const status = normalizeProviderExecutionStatus(
+        {
+          session_id: "session-1",
+          provider_execution_status: "READY",
+          trace_count: 1,
+          provider_keys_used: ["identity_http"],
+          outbound_attempted: true,
+          fallback_used: false,
+        },
+        "session-1"
+      );
+      const capabilities = normalizeProviderCapabilities(
+        {
+          session_id: "session-1",
+          capabilities: [
+            {
+              provider_key: "identity_http",
+              provider_label: "Identity HTTP Provider",
+              supported_verifier_keys: ["identity_db"],
+              supported_categories: ["identity"],
+              enabled: true,
+            },
+          ],
+        },
+        "session-1"
+      );
+
+      const summary = buildProviderExecutionSummary(traces, status, capabilities);
+
+      assert.equal(summary.traceCount, 1);
+      assert.equal(summary.overallLabel, "Ready");
+      assert.equal(summary.providerKeysUsed[0], "identity_http");
+      assert.equal(summary.enabledProviders[0], "Identity HTTP Provider");
     },
   },
 ];

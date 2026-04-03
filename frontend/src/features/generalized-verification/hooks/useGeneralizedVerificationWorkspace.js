@@ -1,10 +1,17 @@
 import { useEffect, useState } from "react";
 import {
+  getAgentCredentialCandidates,
+  getAgentDocumentUnderstanding,
+  getAgentRouteRecommendations,
+  getAgentRunStatus,
   getAnalysisStatus,
   getCredentialBundles,
   getCredentialAudits,
   getCredentials,
   getDocumentProfile,
+  getProviderCapabilities,
+  getProviderExecutionStatus,
+  getProviderExecutionTraces,
   getSessionDocumentBlob,
   getSessionOverview,
   getVerificationExecutionStatus,
@@ -13,11 +20,18 @@ import {
   getVerificationSummary,
 } from "../api/generalizedVerificationApi.js";
 import {
+  createEmptyAgentCredentialCandidateCollection,
+  createEmptyAgentDocumentUnderstanding,
+  createEmptyAgentRouteRecommendationCollection,
+  createEmptyAgentRunStatus,
   createEmptyAnalysisStatus,
   createEmptyCredentialBundleCollection,
   createEmptyCredentialAuditCollection,
   createEmptyCredentialCollection,
   createEmptyDocumentProfile,
+  createEmptyProviderCapabilityCollection,
+  createEmptyProviderExecutionStatus,
+  createEmptyProviderExecutionTraceCollection,
   createEmptySessionOverview,
   createEmptyVerificationExecutionStatus,
   createEmptyVerificationPlan,
@@ -37,6 +51,13 @@ function createEmptyWorkspaceData(sessionId) {
     verificationSummary: createEmptyVerificationSummary(sessionId),
     analysisStatus: createEmptyAnalysisStatus(sessionId),
     executionStatus: createEmptyVerificationExecutionStatus(sessionId),
+    providerExecutionTraces: createEmptyProviderExecutionTraceCollection(sessionId),
+    providerExecutionStatus: createEmptyProviderExecutionStatus(sessionId),
+    providerCapabilities: createEmptyProviderCapabilityCollection(sessionId),
+    agentDocumentUnderstanding: createEmptyAgentDocumentUnderstanding(sessionId),
+    agentCredentialCandidates: createEmptyAgentCredentialCandidateCollection(sessionId),
+    agentRouteRecommendations: createEmptyAgentRouteRecommendationCollection(sessionId),
+    agentRunStatus: createEmptyAgentRunStatus(sessionId),
   };
 }
 
@@ -78,6 +99,10 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
         }
 
         const artifactRequests = [
+          getAgentDocumentUnderstanding(sessionId, token),
+          getAgentCredentialCandidates(sessionId, token),
+          getAgentRouteRecommendations(sessionId, token),
+          getAgentRunStatus(sessionId, token),
           getDocumentProfile(sessionId, token),
           getCredentials(sessionId, token),
           getVerificationPlan(sessionId, token),
@@ -87,10 +112,17 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
           getVerificationSummary(sessionId, token),
           getAnalysisStatus(sessionId, token),
           getVerificationExecutionStatus(sessionId, token),
+          getProviderExecutionTraces(sessionId, token),
+          getProviderExecutionStatus(sessionId, token),
+          getProviderCapabilities(sessionId, token),
           session.document_available ? getSessionDocumentBlob(sessionId, token) : Promise.resolve(null),
         ];
 
         const [
+          agentDocumentUnderstandingResult,
+          agentCredentialCandidatesResult,
+          agentRouteRecommendationsResult,
+          agentRunStatusResult,
           documentProfileResult,
           credentialsResult,
           verificationPlanResult,
@@ -100,6 +132,9 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
           verificationSummaryResult,
           analysisStatusResult,
           executionStatusResult,
+          providerExecutionTracesResult,
+          providerExecutionStatusResult,
+          providerCapabilitiesResult,
           documentBlobResult,
         ] = await Promise.allSettled(artifactRequests);
 
@@ -108,6 +143,30 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
         }
 
         const warnings = [];
+        const agentDocumentUnderstanding = readSettledValue(
+          agentDocumentUnderstandingResult,
+          createEmptyAgentDocumentUnderstanding(sessionId),
+          "Agent document understanding",
+          warnings
+        );
+        const agentCredentialCandidates = readSettledValue(
+          agentCredentialCandidatesResult,
+          createEmptyAgentCredentialCandidateCollection(sessionId),
+          "Agent credential candidates",
+          warnings
+        );
+        const agentRouteRecommendations = readSettledValue(
+          agentRouteRecommendationsResult,
+          createEmptyAgentRouteRecommendationCollection(sessionId),
+          "Agent route recommendations",
+          warnings
+        );
+        const agentRunStatus = readSettledValue(
+          agentRunStatusResult,
+          createEmptyAgentRunStatus(sessionId),
+          "Agent run status",
+          warnings
+        );
         const documentProfile = readSettledValue(
           documentProfileResult,
           createEmptyDocumentProfile(sessionId),
@@ -162,6 +221,24 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
           "Execution status",
           warnings
         );
+        const providerExecutionTraces = readSettledValue(
+          providerExecutionTracesResult,
+          createEmptyProviderExecutionTraceCollection(sessionId),
+          "Provider execution traces",
+          warnings
+        );
+        const providerExecutionStatus = readSettledValue(
+          providerExecutionStatusResult,
+          createEmptyProviderExecutionStatus(sessionId),
+          "Provider execution status",
+          warnings
+        );
+        const providerCapabilities = readSettledValue(
+          providerCapabilitiesResult,
+          createEmptyProviderCapabilityCollection(sessionId),
+          "Provider capabilities",
+          warnings
+        );
 
         if (documentBlobResult.status === "fulfilled" && documentBlobResult.value) {
           nextObjectUrl = URL.createObjectURL(documentBlobResult.value);
@@ -176,6 +253,10 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
           documentUrl: nextObjectUrl,
           data: {
             session,
+            agentDocumentUnderstanding,
+            agentCredentialCandidates,
+            agentRouteRecommendations,
+            agentRunStatus,
             documentProfile,
             credentials,
             verificationPlan,
@@ -185,6 +266,9 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
             verificationSummary,
             analysisStatus,
             executionStatus,
+            providerExecutionTraces,
+            providerExecutionStatus,
+            providerCapabilities,
           },
         });
       } catch (requestError) {

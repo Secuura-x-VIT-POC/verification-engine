@@ -408,6 +408,8 @@ class VerificationExecutionServiceTests(unittest.TestCase):
         self.assertIsNotNone(session.verification_task_results_payload)
         self.assertIsNotNone(session.credential_verification_bundles_payload)
         self.assertIsNotNone(session.verification_execution_summary_payload)
+        self.assertIsNotNone(session.provider_execution_traces_payload)
+        self.assertEqual(session.provider_execution_status, "NOT_STARTED")
         self.assertEqual(artifacts["execution_summary"].succeeded_tasks, 4)
         db.close()
 

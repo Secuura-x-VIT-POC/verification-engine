@@ -23,6 +23,7 @@ class VerificationExecutionContext:
     connector_payload: list[dict[str, Any]]
     trust_outcome: str | None
     reason_codes: list[str]
+    provider_runtime: Any | None = None
 
 
 def build_execution_context(
@@ -33,6 +34,7 @@ def build_execution_context(
     connector_payload: Any,
     trust_outcome: str | None,
     reason_codes: list[str] | None,
+    provider_runtime: Any = None,
 ) -> VerificationExecutionContext:
     return VerificationExecutionContext(
         session_id=session_id,
@@ -41,6 +43,7 @@ def build_execution_context(
         connector_payload=normalize_connector_payload(connector_payload),
         trust_outcome=trust_outcome,
         reason_codes=list(reason_codes or []),
+        provider_runtime=provider_runtime,
     )
 
 

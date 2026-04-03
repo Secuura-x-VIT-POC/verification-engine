@@ -3,6 +3,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..verifier_providers import (
+    PROVIDER_EXECUTION_STATUS_FAILED,
+    PROVIDER_EXECUTION_STATUS_RUNNING,
+    ProviderExecutionRuntime,
+)
 from ..verification_domain.adapters import build_session_credentials, build_session_verification_plan
 from ..verification_domain.contracts import SessionCredentialCollection, SessionVerificationPlan
 from .adapters import build_execution_context
@@ -34,6 +39,7 @@ def build_execution_artifacts(
     credentials: SessionCredentialCollection | None = None,
     verification_plan: SessionVerificationPlan | None = None,
     registry: VerifierRegistry | None = None,
+    provider_runtime: ProviderExecutionRuntime | None = None,
 ) -> dict[str, Any]:
     credential_collection = credentials or build_session_credentials(session_id, extraction_payload)
     plan = verification_plan or build_session_verification_plan(
@@ -41,6 +47,7 @@ def build_execution_artifacts(
         extraction_payload,
         credentials=credential_collection,
     )
+    runtime = provider_runtime or ProviderExecutionRuntime()
     context = build_execution_context(
         session_id=session_id,
         document_type=credential_collection.document_type,
@@ -48,13 +55,21 @@ def build_execution_artifacts(
         connector_payload=connector_payload,
         trust_outcome=trust_outcome,
         reason_codes=reason_codes,
+        provider_runtime=runtime,
     )
     executor = VerificationTaskExecutor(registry=registry)
-    return executor.execute_plan(
+    artifacts = executor.execute_plan(
         credential_collection=credential_collection,
         verification_plan=plan,
         context=context,
     )
+    artifacts["provider_execution_traces"] = runtime.build_trace_collection(
+        session_id=session_id,
+        document_type=credential_collection.document_type,
+    )
+    artifacts["provider_execution_status"] = runtime.infer_status()
+    artifacts["provider_execution_error"] = runtime.error
+    return artifacts
 
 
 def persist_execution_artifacts(
@@ -65,6 +80,9 @@ def persist_execution_artifacts(
     verification_execution_summary=_UNSET,
     verification_execution_status=_UNSET,
     verification_execution_error=_UNSET,
+    provider_execution_traces=_UNSET,
+    provider_execution_status=_UNSET,
+    provider_execution_error=_UNSET,
 ) -> None:
     if verification_task_results is not _UNSET:
         session.verification_task_results_payload = _dump_model(verification_task_results)
@@ -76,6 +94,12 @@ def persist_execution_artifacts(
         session.verification_execution_status = verification_execution_status
     if verification_execution_error is not _UNSET:
         session.verification_execution_error = verification_execution_error
+    if provider_execution_traces is not _UNSET:
+        session.provider_execution_traces_payload = _dump_model(provider_execution_traces)
+    if provider_execution_status is not _UNSET:
+        session.provider_execution_status = provider_execution_status
+    if provider_execution_error is not _UNSET:
+        session.provider_execution_error = provider_execution_error
 
 
 def build_and_persist_execution_artifacts(
@@ -85,10 +109,20 @@ def build_and_persist_execution_artifacts(
     verification_plan: SessionVerificationPlan | None = None,
     registry: VerifierRegistry | None = None,
 ) -> dict[str, Any]:
+    resolved_credentials = credentials or _load_model(
+        SessionCredentialCollection,
+        getattr(session, "generalized_credentials_payload", None),
+    )
+    resolved_verification_plan = verification_plan or _load_model(
+        SessionVerificationPlan,
+        getattr(session, "verification_plan_payload", None),
+    )
     persist_execution_artifacts(
         session,
         verification_execution_status=EXECUTION_STATUS_RUNNING,
         verification_execution_error=None,
+        provider_execution_status=PROVIDER_EXECUTION_STATUS_RUNNING,
+        provider_execution_error=None,
     )
     artifacts = build_execution_artifacts(
         session.id,
@@ -96,8 +130,8 @@ def build_and_persist_execution_artifacts(
         connector_payload=session.connector_payload,
         trust_outcome=session.trust_outcome,
         reason_codes=list(session.reason_codes or []),
-        credentials=credentials,
-        verification_plan=verification_plan,
+        credentials=resolved_credentials,
+        verification_plan=resolved_verification_plan,
         registry=registry,
     )
     persist_execution_artifacts(
@@ -107,6 +141,9 @@ def build_and_persist_execution_artifacts(
         verification_execution_summary=artifacts["execution_summary"],
         verification_execution_status=EXECUTION_STATUS_READY,
         verification_execution_error=None,
+        provider_execution_traces=artifacts["provider_execution_traces"],
+        provider_execution_status=artifacts["provider_execution_status"],
+        provider_execution_error=artifacts["provider_execution_error"],
     )
     return artifacts
 
@@ -118,6 +155,8 @@ def mark_execution_failure(session, error: Exception | str) -> None:
         session,
         verification_execution_status=EXECUTION_STATUS_FAILED,
         verification_execution_error=error_message,
+        provider_execution_status=PROVIDER_EXECUTION_STATUS_FAILED,
+        provider_execution_error=error_message,
     )
 
 
@@ -131,6 +170,8 @@ def get_verification_task_results_for_session(session) -> VerificationTaskResult
         connector_payload=session.connector_payload,
         trust_outcome=session.trust_outcome,
         reason_codes=list(session.reason_codes or []),
+        credentials=_load_model(SessionCredentialCollection, getattr(session, "generalized_credentials_payload", None)),
+        verification_plan=_load_model(SessionVerificationPlan, getattr(session, "verification_plan_payload", None)),
     )["task_results"]
 
 
@@ -144,6 +185,8 @@ def get_credential_bundles_for_session(session) -> CredentialVerificationBundleC
         connector_payload=session.connector_payload,
         trust_outcome=session.trust_outcome,
         reason_codes=list(session.reason_codes or []),
+        credentials=_load_model(SessionCredentialCollection, getattr(session, "generalized_credentials_payload", None)),
+        verification_plan=_load_model(SessionVerificationPlan, getattr(session, "verification_plan_payload", None)),
     )["credential_bundles"]
 
 
@@ -157,6 +200,8 @@ def get_verification_execution_summary_for_session(session) -> SessionVerificati
         connector_payload=session.connector_payload,
         trust_outcome=session.trust_outcome,
         reason_codes=list(session.reason_codes or []),
+        credentials=_load_model(SessionCredentialCollection, getattr(session, "generalized_credentials_payload", None)),
+        verification_plan=_load_model(SessionVerificationPlan, getattr(session, "verification_plan_payload", None)),
     )["execution_summary"]
 
 

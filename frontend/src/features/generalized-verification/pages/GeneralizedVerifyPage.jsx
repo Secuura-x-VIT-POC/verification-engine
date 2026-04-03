@@ -23,6 +23,10 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
 
   const viewModel = buildWorkspaceViewModel({
     session: workspace.data.session,
+    agentDocumentUnderstanding: workspace.data.agentDocumentUnderstanding,
+    agentCredentialCandidates: workspace.data.agentCredentialCandidates,
+    agentRouteRecommendations: workspace.data.agentRouteRecommendations,
+    agentRunStatus: workspace.data.agentRunStatus,
     documentProfile: workspace.data.documentProfile,
     credentials: workspace.data.credentials,
     verificationPlan: workspace.data.verificationPlan,
@@ -32,6 +36,9 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
     verificationSummary: workspace.data.verificationSummary,
     analysisStatus: workspace.data.analysisStatus,
     executionStatus: workspace.data.executionStatus,
+    providerExecutionTraces: workspace.data.providerExecutionTraces,
+    providerExecutionStatus: workspace.data.providerExecutionStatus,
+    providerCapabilities: workspace.data.providerCapabilities,
   });
 
   useEffect(() => {
@@ -103,6 +110,18 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
             </div>
           ) : null}
 
+          {viewModel.messages.agent ? (
+            <div className="panel gv-info-banner">
+              <p>{viewModel.messages.agent}</p>
+            </div>
+          ) : null}
+
+          {viewModel.messages.provider ? (
+            <div className="panel gv-info-banner">
+              <p>{viewModel.messages.provider}</p>
+            </div>
+          ) : null}
+
           <div className="gv-workspace-layout">
             <WorkspaceLeftSidebar
               documentProfile={workspace.data.documentProfile}
@@ -153,8 +172,13 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
               session={workspace.data.session}
               analysisStatusLabel={viewModel.analysisStatusLabel}
               analysisStatus={workspace.data.analysisStatus}
+              agentStatusLabel={viewModel.agentStatusLabel}
+              agentUnderstandingSummary={viewModel.agentUnderstandingSummary}
               executionStatusLabel={viewModel.executionStatusLabel}
               executionStatus={workspace.data.executionStatus}
+              providerExecutionStatusLabel={viewModel.providerExecutionStatusLabel}
+              providerExecutionStatus={workspace.data.providerExecutionStatus}
+              providerExecutionSummary={viewModel.providerExecutionSummary}
               taskExecutionSummary={viewModel.taskExecutionSummary}
               routingSummary={viewModel.routingSummary}
               verificationSummary={workspace.data.verificationSummary}

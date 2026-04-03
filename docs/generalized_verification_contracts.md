@@ -2,22 +2,17 @@
 
 ## Purpose
 
-The generalized verification layer turns the existing session-driven verification pipeline into a broader document verification foundation without replacing the current FastAPI wiring, workflow state machine, or deterministic trust engine.
+This repository is a generalized document verification platform. The current architecture combines:
 
-Stage 4 adds a real per-credential verifier execution backbone on top of the Stage 2 and Stage 3 artifacts.
+- deterministic extraction and session workflow
+- generalized analysis contracts
+- per-credential verifier execution
+- provider-backed verifier integration
+- a bounded LangGraph enrichment layer
 
-The implementation remains intentionally:
+The LangGraph layer exists to improve document understanding, credential grouping, route suggestions, and reviewer-facing explanations. It does not decide final trust, bypass verifier execution, or replace the deterministic trust engine.
 
-- additive
-- deterministic
-- session-scoped
-- backward compatible with older rows
-- modular enough for future LangGraph orchestration
-- free of real provider credentials in this stage
-
-## Persisted Session Artifacts
-
-The `verification_sessions` row now stores two additive families of derived artifacts.
+## Persisted Session Artifact Families
 
 ### Generalized analysis artifacts
 
@@ -37,103 +32,94 @@ The `verification_sessions` row now stores two additive families of derived arti
 - `verification_execution_status`
 - `verification_execution_error`
 
-All of these fields are nullable and safe for older rows.
+### Provider execution artifacts
 
-## Core Analysis Contracts
+- `provider_execution_traces_payload`
+- `provider_execution_status`
+- `provider_execution_error`
+
+### Agent orchestration artifacts
+
+- `agent_document_understanding_payload`
+- `agent_credential_candidates_payload`
+- `agent_route_recommendations_payload`
+- `agent_explanations_payload`
+- `agent_run_summary_payload`
+- `agent_run_status`
+- `agent_run_error`
+
+All artifact fields are additive, nullable, and backward compatible with older rows.
+
+## Generalized Analysis Contracts
 
 ### `DocumentProfile`
 
-High-level description of the current document session.
+Session-level document classification summary:
 
-It captures:
-
-- session id
-- document type
-- document family
+- document type and family
 - page count
 - extraction methods used
-- whether PII was detected
-- detected credential categories
-- whether manual review is likely required
-- analysis notes
+- detected categories
+- PII detection
+- manual-review hints
+- notes
 
 ### `ExtractedCredential`
 
-Represents one extracted field, credential, claim, or identifier from a document.
-
-It captures:
+Field-level extracted data:
 
 - stable credential id
 - label and category
 - raw and normalized value
-- extraction confidence
-- grounding location
+- confidence
+- source text
+- page and bounding box
 - PII flag
-- whether verification is required
-- why the planner made that decision
+- verification requirement and reason
 - extraction method
 
 ### `VerificationTask`
 
-Represents one deterministic verification task derived from an extracted credential.
+Deterministic verification work item:
 
-It captures:
-
-- task id
-- referenced credential id
+- task id and credential id
 - selected verifier key and label
 - verification type
 - required flag
-- planned task status
+- status
 - reason codes
-- minimal input payload for the verifier execution layer
+- bounded input payload
 
 ### `VerifierRouteDecision`
 
-Represents the router's deterministic placeholder decision for a credential.
+Deterministic or reconciled route selection:
 
-It captures:
-
-- selected verifier key
-- verifier label
+- selected verifier key and label
 - route reason
-- fallback verifier keys
-- whether manual review is recommended
+- fallback verifiers
+- manual review recommendation
 
 ## Verifier Execution Contracts
 
-The new `backend/app/verifier_execution/` module is the per-credential execution boundary.
-
-It contains:
-
-- bounded execution contracts
-- verifier registry
-- sequential task executor
-- placeholder verifier implementations
-- session-scoped persistence helpers
+The `backend/app/verifier_execution/` module is the field-level execution boundary.
 
 ### `VerificationTaskResult`
-
-Represents the execution outcome for one verification task.
-
-It captures:
 
 - task id
 - credential id
 - verifier key and label
-- task execution status
-- field-level audit status
-- bounded outcome color
+- task status
+- audit status
+- outcome color
 - explanation
 - reason codes
 - matched, mismatched, and missing fields
 - raw result summary
 - confidence
-- executed timestamp
-- latency
-- manual review recommendation flag
+- execution time and latency
+- manual review flag
 
-Bounded task statuses used in this stage:
+Bounded task statuses:
 
 - `SUCCEEDED`
 - `PARTIAL`
@@ -143,150 +129,242 @@ Bounded task statuses used in this stage:
 
 ### `CredentialVerificationBundle`
 
-Represents all verifier attempts for one credential.
-
-It captures:
-
-- credential id
-- label and category
+- one credential id
 - selected task ids
-- number of results
+- result count
 - final audit status
 - final outcome color
 - explanation
-- reason codes
 - best result
 - all results
 
 ### `SessionVerificationExecutionSummary`
 
-Represents the session-scoped execution rollup.
-
-It captures:
-
-- total tasks
-- succeeded tasks
-- partial tasks
-- failed tasks
-- manual review tasks
-- skipped tasks
+- total, succeeded, partial, failed, manual-review, and skipped task counts
 - overall execution status
 - verifier keys used
 - start and completion timestamps
 
-### `SessionVerificationExecutionStatus`
-
-Represents the subordinate execution readiness state for UI and orchestration consumers.
-
-It captures:
-
-- session id
-- main workflow state
-- verification execution status
-- verification execution error
-- whether task results, bundles, and execution summary are available
-
-Bounded execution statuses used in this stage:
+Execution status values remain bounded:
 
 - `NOT_STARTED`
 - `RUNNING`
 - `READY`
 - `FAILED`
 
-## Stable Audit Contract
+## Verifier Provider Contracts
 
-### `CredentialAudit`
+The `backend/app/verifier_providers/` module is the outbound verifier boundary.
 
-Represents field-level audit data for UI overlays, hover cards, and drill-down details.
+### `ProviderCapability`
 
-It captures:
+- provider key and label
+- supported verifier keys and categories
+- batch, partial-match, document-upload, and field-lookup support
+- credential requirement flag
+- default timeout
+- enabled flag
 
-- document value and normalized value
-- verifier label
-- stable audit status
-- bounded outcome color
-- explanation and reason codes
+### `ProviderRequest`
+
+- request id
+- session id
+- task id
+- verifier key and provider key
+- minimized input payload
+- redacted payload snapshot
+- request mode
+- timeout
+- metadata
+
+### `ProviderResponse`
+
+- request id
+- provider key
+- bounded technical status
+- HTTP status
+- response summary
+- raw result reference
 - matched, mismatched, and missing fields
-- evidence blocks from extraction, task execution, connectors, and trust output
-- timestamp
+- confidence
+- reason codes
+- latency
+- manual-review flag
 
-Stable audit statuses:
+### `ProviderExecutionTrace`
 
-- `VERIFIED`
-- `MISMATCH`
-- `PARTIAL`
-- `UNVERIFIED`
-- `MANUAL_REVIEW`
-- `NOT_APPLICABLE`
+- request id
+- provider key and verifier key
+- start and completion timestamps
+- bounded technical status
+- redaction-applied flag
+- outbound mode
+- retry count
+- error summary
+- HTTP status
+- redacted response summary
+- fallback-used flag
 
-Stable color mapping:
+Provider technical statuses remain bounded:
 
-- `VERIFIED` -> `green`
-- `MISMATCH` -> `red`
-- `PARTIAL` -> `amber`
-- `UNVERIFIED` -> `amber`
-- `MANUAL_REVIEW` -> `amber`
-- `NOT_APPLICABLE` -> `neutral`
+- `SUCCESS`
+- `FAILED`
+- `TIMEOUT`
+- `DISABLED`
+- `BLOCKED`
+- `UNCONFIGURED`
+- `SKIPPED`
 
-## Generalized Analysis Service
+## Agent Orchestration Contracts
 
-`backend/app/verification_domain/service.py` remains the single place responsible for building and persisting generalized analysis artifacts.
+The `backend/app/agent_orchestration/` module is the bounded enrichment layer.
 
-Its audit assembly now prefers:
+### `AgentDocumentUnderstanding`
 
-1. true task results and credential bundles
-2. legacy connector or trust adaptation only when execution artifacts are absent
+- document type guess
+- document family guess
+- confidence
+- detected sections
+- detected entities
+- PII signals
+- credential candidate ids
+- reasoning summary
+- manual review recommendation
 
-This keeps field-level audits honest while staying backward compatible with older sessions.
+### `AgentCredentialCandidate`
 
-## Verifier Registry And Executor
+- candidate id
+- label and inferred category
+- source fields and grouped field ids
+- grouped values
+- confidence
+- verification recommendation and reason
+- possible verifier keys
+- ambiguity flags
 
-`backend/app/verifier_execution/registry.py` maps `verifier_key` to a verifier implementation.
+### `AgentRouteRecommendation`
 
-Current deterministic placeholder verifiers include:
+- candidate id
+- recommended verifier key
+- alternative verifier keys
+- route reason
+- confidence
+- manual review recommendation
 
-- `identity_db`
-- `address_check`
-- `passport_db`
-- `academic_registry`
-- `certificate_registry`
-- `license_registry`
-- `financial_registry`
-- `tax_authority`
-- `manual_review`
+### `AgentExplanationArtifact`
 
-Each verifier receives:
+- target type and target id
+- explanation kind
+- summary
+- structured reasons
+- caution notes
+- generation timestamp
 
-- one `VerificationTask`
-- the corresponding `ExtractedCredential`
-- session-scoped execution context
+### `AgentRunSummary`
 
-Each verifier returns one `VerificationTaskResult`.
+- session id
+- run status
+- executed nodes
+- provider used
+- start and completion timestamps
+- warnings
+- fallback flag
 
-The sequential executor in `backend/app/verifier_execution/executor.py` then builds:
+Agent run statuses remain bounded:
 
-- task results
-- credential bundles
-- execution summary
+- `NOT_STARTED`
+- `RUNNING`
+- `READY`
+- `FAILED`
 
-## Workflow Integration
+## LangGraph Structure
 
-The top-level workflow states remain unchanged.
+Stage 5 uses a bounded, linear LangGraph workflow:
 
-Stage 4 integrates per-credential execution into the existing runtime as a subordinate layer:
+1. `input_normalization`
+2. `document_understanding`
+3. `credential_grouping`
+4. `route_recommendation`
+5. `explanation_synthesis`
+6. `output_consolidation`
 
-1. extraction builds the document view
-2. generalized Pass A persists profile, credentials, plan, and routes
-3. current connector execution still runs as before
-4. generalized verifier execution runs task-by-task using the persisted plan
-5. legacy document-level trust evaluation still runs as before
-6. generalized Pass B builds audits and summary, now preferring task results
+There are no autonomous loops, no external tool invocation from the graph, and no trust-decision node.
 
-This keeps document-level deterministic trust evaluation separate from field-level evidence generation.
+## Provider Abstraction
+
+Agent providers live under `backend/app/agent_orchestration/providers/`.
+
+Current provider surface:
+
+- `analyze_document(...)`
+- `group_credentials(...)`
+- `recommend_routes(...)`
+- `generate_explanations(...)`
+
+Current implementations:
+
+- `DeterministicProvider`: default, local, test-safe, and enabled by default
+- `NvidiaProvider`: stub only, disabled by default, selected only through config, and falls back to deterministic behavior when unavailable
+
+Verifier providers live under `backend/app/verifier_providers/`.
+
+Current verifier-provider surface:
+
+- `get_capabilities(...)`
+- `prepare_request(...)`
+- `execute(...)`
+- `normalize_response(...)`
+
+Current verifier-provider implementations:
+
+- `LocalMockProvider`: default local fallback, no network, no fake live evidence
+- `IdentityHttpProvider`: optional HTTP JSON adapter for `identity_db`
+- `AcademicRegistryHttpProvider`: optional HTTP JSON adapter for `academic_registry`
+
+The verifier registry owns task semantics. Provider adapters only handle capability, outbound transport, and normalization.
+
+## Runtime Integration
+
+### Pass A
+
+After extraction:
+
+1. deterministic credentials and baseline plan are built
+2. agent Pass A runs through LangGraph
+3. route planning remains capability-aware and may reflect external-provider availability or bounded local fallback
+4. agent outputs may refine category assignment and route selection only through bounded reconciliation
+5. enriched generalized profile, credentials, and plan are persisted
+
+### Pass B
+
+After per-credential verifier execution:
+
+1. verifier execution attempts provider-backed verification when safely enabled
+2. provider traces are persisted without full raw payload retention
+3. deterministic task results and bundles are assembled from normalized execution outputs
+4. deterministic audits are built from real execution artifacts
+5. agent Pass B synthesizes bounded explanation artifacts
+6. agent explanations are merged into audits as clearly labeled reviewer-facing notes
+
+## Precedence And Reconciliation Policy
+
+The precedence model is explicit:
+
+1. extracted document values, geometry, and session-scoped evidence remain source-of-record
+2. agent outputs may enrich classification, grouping, route suggestions, and explanations
+3. deterministic verifier execution performs the actual verification tasks
+4. verifier providers may supply normalized field evidence but do not own trust policy
+5. deterministic trust evaluation remains the final document-level authority
+
+If agent and deterministic routing differ:
+
+- both are recorded through task input payloads and route reasoning
+- agent suggestions can only override a `manual_review` route through bounded reconciliation
+- deterministic verified evidence is never replaced by agent guesses
 
 ## Read Endpoints
 
-Generalized analysis endpoints:
+Generalized analysis:
 
 - `GET /session/{session_id}/credentials`
 - `GET /session/{session_id}/verification-plan`
@@ -295,39 +373,64 @@ Generalized analysis endpoints:
 - `GET /session/{session_id}/document-profile`
 - `GET /session/{session_id}/analysis-status`
 
-New execution endpoints:
+Verifier execution:
 
 - `GET /session/{session_id}/verification-task-results`
 - `GET /session/{session_id}/credential-bundles`
 - `GET /session/{session_id}/verification-execution-status`
 
-These endpoints prefer persisted payloads and fall back to deterministic compute-on-read when possible.
+Provider execution:
 
-## Provider Abstraction Note
+- `GET /session/{session_id}/provider-execution-traces`
+- `GET /session/{session_id}/provider-execution-status`
+- `GET /session/{session_id}/provider-capabilities`
 
-Real provider-backed verifiers are intentionally deferred.
+Agent orchestration:
 
-Future provider integrations should sit behind the verifier registry boundary so the repo does not lock into one provider.
+- `GET /session/{session_id}/agent-document-understanding`
+- `GET /session/{session_id}/agent-credential-candidates`
+- `GET /session/{session_id}/agent-route-recommendations`
+- `GET /session/{session_id}/agent-run-status`
 
-Possible future provider-backed responsibilities include:
+These endpoints prefer persisted payloads and return safe structured responses for older or partially populated sessions.
 
-- PII-sensitive identity lookup
-- academic registry federation
-- certificate authority checks
-- routing assistance
-- explanation enrichment
+## Security And Privacy Guardrails
 
-Stage 4 does not make outbound provider calls.
+- external agent providers are disabled unless explicitly enabled by config
+- the default provider is deterministic and local
+- external verifier providers are disabled unless explicitly enabled by config
+- payload minimization and redaction run before outbound verifier calls
+- full-document outbound transfer is not enabled by default
+- allowlisted domains, bounded timeouts, retries, and size limits gate HTTP providers
+- trace persistence stores redacted summaries and technical metadata only
+- extraction payload minimization is applied before provider-facing graph state is built
+- no full prompt or document dumps are written to logs
+- agent failure is subordinate and does not break the core deterministic workflow
+- provider technical failure is subordinate and falls back to bounded task outcomes such as `PARTIAL`, `UNVERIFIED`, or `MANUAL_REVIEW`
+- cleanup still purges derived artifacts along with source document state
 
 ## Stage Boundary
 
-This stage does not:
+Stage 5 adds LangGraph orchestration, but it still does not:
 
-- add LangGraph orchestration
-- add unconstrained LLM reasoning
-- replace deterministic trust scoring
-- remove legacy routes or pages
-- add mutation-heavy reviewer workflows
-- add real external verifier credentials
+- let the agent decide final trust outcome
+- remove deterministic planner/router/executor behavior
+- require external provider keys for normal repo use
+- add uncontrolled autonomous loops
+- add reviewer mutation flows
+- add real provider-backed verifier calls
 
-Future stages can build on the persisted generalized and execution artifacts to support richer verifier fan-out, orchestration, and provider-backed execution without rewriting the current session flow.
+Stage 6 adds provider-backed verifier plumbing, but it still does not:
+
+- require external verifier credentials for normal repo use
+- let providers bypass verifier normalization or trust policy
+- upload full documents by default
+- make outbound provider access mandatory
+
+## Deferred To Stage 7
+
+- richer provider-specific adapters beyond the initial HTTP examples
+- explicit reviewer override flows around provider failures or manual review
+- broader grouped-claim execution beyond the current per-credential backbone
+- deeper multi-provider reconciliation and retry policy
+- broader performance work for large document sessions and UI bundle size

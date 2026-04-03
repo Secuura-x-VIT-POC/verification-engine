@@ -9,6 +9,24 @@ from ..auth.routes import get_current_user
 from ..db.database import get_db
 from ..sessions.constants import SessionState
 from ..sessions.models import Session as SessionModel
+from ..agent_orchestration import (
+    AgentDocumentUnderstanding,
+    SessionAgentCredentialCandidateCollection,
+    SessionAgentRouteRecommendationCollection,
+    SessionAgentRunStatus,
+    get_agent_credential_candidates_for_session,
+    get_agent_document_understanding_for_session,
+    get_agent_route_recommendations_for_session,
+    get_agent_run_status_for_session,
+)
+from ..verifier_providers import (
+    ProviderCapabilityCollection,
+    ProviderExecutionTraceCollection,
+    SessionProviderExecutionStatus,
+    get_provider_capabilities_for_session,
+    get_provider_execution_status_for_session,
+    get_provider_execution_traces_for_session,
+)
 from ..verifier_execution import (
     CredentialVerificationBundleCollection,
     SessionVerificationExecutionStatus,
@@ -100,6 +118,90 @@ def get_session_result_route(
     session = _get_owned_session(db, session_id, user)
     payload = get_result_response(session)
     LOGGER.info("RESULT_FETCHED session_id=%s state=%s", session.id, session.status)
+    return payload
+
+
+@router.get("/session/{session_id}/agent-document-understanding", response_model=AgentDocumentUnderstanding)
+def get_session_agent_document_understanding_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> AgentDocumentUnderstanding:
+    session = _get_owned_session(db, session_id, user)
+    payload = get_agent_document_understanding_for_session(session)
+    LOGGER.info("AGENT_DOCUMENT_UNDERSTANDING_FETCHED session_id=%s type=%s", session.id, payload.document_type_guess)
+    return payload
+
+
+@router.get("/session/{session_id}/agent-credential-candidates", response_model=SessionAgentCredentialCandidateCollection)
+def get_session_agent_credential_candidates_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> SessionAgentCredentialCandidateCollection:
+    session = _get_owned_session(db, session_id, user)
+    payload = get_agent_credential_candidates_for_session(session)
+    LOGGER.info("AGENT_CREDENTIAL_CANDIDATES_FETCHED session_id=%s count=%s", session.id, len(payload.candidates))
+    return payload
+
+
+@router.get("/session/{session_id}/agent-route-recommendations", response_model=SessionAgentRouteRecommendationCollection)
+def get_session_agent_route_recommendations_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> SessionAgentRouteRecommendationCollection:
+    session = _get_owned_session(db, session_id, user)
+    payload = get_agent_route_recommendations_for_session(session)
+    LOGGER.info("AGENT_ROUTE_RECOMMENDATIONS_FETCHED session_id=%s count=%s", session.id, len(payload.recommendations))
+    return payload
+
+
+@router.get("/session/{session_id}/agent-run-status", response_model=SessionAgentRunStatus)
+def get_session_agent_run_status_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> SessionAgentRunStatus:
+    session = _get_owned_session(db, session_id, user)
+    payload = get_agent_run_status_for_session(session)
+    LOGGER.info("AGENT_RUN_STATUS_FETCHED session_id=%s status=%s", session.id, payload.agent_run_status)
+    return payload
+
+
+@router.get("/session/{session_id}/provider-execution-traces", response_model=ProviderExecutionTraceCollection)
+def get_session_provider_execution_traces_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> ProviderExecutionTraceCollection:
+    session = _get_owned_session(db, session_id, user)
+    payload = get_provider_execution_traces_for_session(session)
+    LOGGER.info("PROVIDER_EXECUTION_TRACES_FETCHED session_id=%s count=%s", session.id, len(payload.traces))
+    return payload
+
+
+@router.get("/session/{session_id}/provider-execution-status", response_model=SessionProviderExecutionStatus)
+def get_session_provider_execution_status_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> SessionProviderExecutionStatus:
+    session = _get_owned_session(db, session_id, user)
+    payload = get_provider_execution_status_for_session(session)
+    LOGGER.info("PROVIDER_EXECUTION_STATUS_FETCHED session_id=%s status=%s", session.id, payload.provider_execution_status)
+    return payload
+
+
+@router.get("/session/{session_id}/provider-capabilities", response_model=ProviderCapabilityCollection)
+def get_session_provider_capabilities_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> ProviderCapabilityCollection:
+    session = _get_owned_session(db, session_id, user)
+    payload = get_provider_capabilities_for_session(session)
+    LOGGER.info("PROVIDER_CAPABILITIES_FETCHED session_id=%s count=%s", session.id, len(payload.capabilities))
     return payload
 
 

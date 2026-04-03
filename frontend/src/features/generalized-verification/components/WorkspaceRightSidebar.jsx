@@ -18,8 +18,13 @@ export default function WorkspaceRightSidebar({
   session,
   analysisStatusLabel,
   analysisStatus,
+  agentStatusLabel,
+  agentUnderstandingSummary,
   executionStatusLabel,
   executionStatus,
+  providerExecutionStatusLabel,
+  providerExecutionStatus,
+  providerExecutionSummary,
   taskExecutionSummary,
   routingSummary,
   verificationSummary,
@@ -46,6 +51,37 @@ export default function WorkspaceRightSidebar({
 
         {analysisStatus.generalized_analysis_error ? (
           <p className="error-text">{analysisStatus.generalized_analysis_error}</p>
+        ) : null}
+      </div>
+
+      <div className="panel">
+        <p className="eyebrow">Agent-assisted understanding</p>
+        <div className="gv-meta-stack">
+          <span>
+            <strong>Status:</strong> {agentStatusLabel}
+          </span>
+          <span>
+            <strong>Type guess:</strong> {agentUnderstandingSummary.documentTypeGuess}
+          </span>
+          <span>
+            <strong>Family guess:</strong> {agentUnderstandingSummary.documentFamilyGuess}
+          </span>
+          <span>
+            <strong>Provider:</strong> {agentUnderstandingSummary.providerUsed || "deterministic"}
+          </span>
+        </div>
+        <p className="muted">{agentUnderstandingSummary.reasoningSummary}</p>
+        {agentUnderstandingSummary.manualReviewRecommended ? (
+          <p className="muted">Agent-assisted review: manual review recommended.</p>
+        ) : null}
+        {agentUnderstandingSummary.warnings.length ? (
+          <div className="gv-warning-list">
+            {agentUnderstandingSummary.warnings.map((warning) => (
+              <p key={warning} className="muted">
+                {warning}
+              </p>
+            ))}
+          </div>
         ) : null}
       </div>
 
@@ -82,6 +118,44 @@ export default function WorkspaceRightSidebar({
             ))}
           </div>
         ) : null}
+      </div>
+
+      <div className="panel">
+        <p className="eyebrow">Provider execution</p>
+        <div className="gv-meta-stack">
+          <span>
+            <strong>Status:</strong> {providerExecutionStatusLabel}
+          </span>
+          <span>
+            <strong>Traces:</strong> {providerExecutionSummary.traceCount}
+          </span>
+          <span>
+            <strong>Outbound attempted:</strong> {providerExecutionSummary.outboundAttempted ? "Yes" : "No"}
+          </span>
+          <span>
+            <strong>Fallback used:</strong> {providerExecutionSummary.fallbackUsed ? "Yes" : "No"}
+          </span>
+        </div>
+
+        {providerExecutionStatus.provider_execution_error ? (
+          <p className="error-text">{providerExecutionStatus.provider_execution_error}</p>
+        ) : null}
+
+        {providerExecutionSummary.providerKeysUsed.length ? (
+          <div className="gv-chip-row">
+            {providerExecutionSummary.providerKeysUsed.map((providerKey) => (
+              <span key={providerKey} className="gv-chip">
+                {providerKey}
+              </span>
+            ))}
+          </div>
+        ) : null}
+
+        {providerExecutionSummary.enabledProviders.length ? (
+          <p className="muted">Enabled providers: {providerExecutionSummary.enabledProviders.join(", ")}</p>
+        ) : (
+          <p className="muted">No external providers are enabled. The bounded local mock path remains available.</p>
+        )}
       </div>
 
       <div className="panel">

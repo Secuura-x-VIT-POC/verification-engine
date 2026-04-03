@@ -29,6 +29,20 @@ export const EXECUTION_STATUS_META = Object.freeze({
   FAILED: "Failed",
 });
 
+export const PROVIDER_EXECUTION_STATUS_META = Object.freeze({
+  NOT_STARTED: "Not started",
+  RUNNING: "Running",
+  READY: "Ready",
+  FAILED: "Failed",
+});
+
+export const AGENT_RUN_STATUS_META = Object.freeze({
+  NOT_STARTED: "Not started",
+  RUNNING: "Running",
+  READY: "Ready",
+  FAILED: "Failed",
+});
+
 export const TASK_STATUS_META = Object.freeze({
   SUCCEEDED: "Succeeded",
   PARTIAL: "Partial",
@@ -133,6 +147,83 @@ export function createEmptyVerificationExecutionStatus(sessionId = "") {
   };
 }
 
+export function createEmptyProviderExecutionTraceCollection(sessionId = "") {
+  return {
+    session_id: sessionId,
+    document_type: "unknown",
+    traces: [],
+  };
+}
+
+export function createEmptyProviderExecutionStatus(sessionId = "") {
+  return {
+    session_id: sessionId,
+    workflow_state: "UNKNOWN",
+    provider_execution_status: "NOT_STARTED",
+    provider_execution_error: null,
+    traces_available: false,
+    trace_count: 0,
+    provider_keys_used: [],
+    outbound_attempted: false,
+    fallback_used: false,
+  };
+}
+
+export function createEmptyProviderCapabilityCollection(sessionId = "") {
+  return {
+    session_id: sessionId,
+    capabilities: [],
+  };
+}
+
+export function createEmptyAgentDocumentUnderstanding(sessionId = "") {
+  return {
+    session_id: sessionId,
+    document_type_guess: "unknown",
+    document_family_guess: "unknown",
+    confidence: null,
+    detected_sections: [],
+    detected_entities: [],
+    pii_signals: [],
+    credential_candidates: [],
+    reasoning_summary: "No agent document understanding is available.",
+    manual_review_recommended: false,
+  };
+}
+
+export function createEmptyAgentCredentialCandidateCollection(sessionId = "") {
+  return {
+    session_id: sessionId,
+    document_type: "unknown",
+    candidates: [],
+  };
+}
+
+export function createEmptyAgentRouteRecommendationCollection(sessionId = "") {
+  return {
+    session_id: sessionId,
+    document_type: "unknown",
+    recommendations: [],
+  };
+}
+
+export function createEmptyAgentRunStatus(sessionId = "") {
+  return {
+    session_id: sessionId,
+    workflow_state: "UNKNOWN",
+    agent_run_status: "NOT_STARTED",
+    agent_run_error: null,
+    provider_used: null,
+    fallback_used: false,
+    warnings: [],
+    document_understanding_available: false,
+    credential_candidates_available: false,
+    route_recommendations_available: false,
+    explanations_available: false,
+    run_summary_available: false,
+  };
+}
+
 export function createEmptySessionOverview(sessionId = "") {
   return {
     session_id: sessionId,
@@ -145,6 +236,10 @@ export function createEmptySessionOverview(sessionId = "") {
     connector_ids: [],
     generalized_analysis_status: null,
     generalized_analysis_error: null,
+    agent_run_status: null,
+    agent_run_error: null,
+    provider_execution_status: null,
+    provider_execution_error: null,
     purge_status: null,
     purge_error: null,
     created_at: null,

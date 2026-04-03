@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from ..verifier_providers import build_default_provider_registry
 from .contracts import ExtractedCredential, VerifierRouteDecision
 
 
@@ -34,6 +35,9 @@ class RuleBasedVerifierRouter:
         "unknown": ["manual_review"],
     }
 
+    def __init__(self):
+        self.provider_registry = build_default_provider_registry()
+
     def route(self, credential: ExtractedCredential) -> VerifierRouteDecision:
         if not credential.requires_verification:
             return VerifierRouteDecision(
@@ -47,13 +51,36 @@ class RuleBasedVerifierRouter:
 
         if credential.category in self.ROUTE_BY_CATEGORY:
             verifier_key, verifier_label = self.ROUTE_BY_CATEGORY[credential.category]
+            provider = self.provider_registry.find_provider(
+                verifier_key=verifier_key,
+                category=credential.category,
+            )
+            if provider is None:
+                return VerifierRouteDecision(
+                    credential_id=credential.credential_id,
+                    selected_verifier_key="manual_review",
+                    selected_verifier_label="Manual Review",
+                    route_reason=f"No enabled provider path or local fallback is available for category '{credential.category}'.",
+                    fallback_verifiers=self.FALLBACKS_BY_CATEGORY.get(credential.category, ["manual_review"]),
+                    manual_review_recommended=True,
+                )
+
+            capability = provider.get_capabilities()
+            provider_note = (
+                f"Enabled provider '{capability.provider_key}' will be attempted first."
+                if provider.provider_key != "local_mock"
+                else "No external provider is enabled, so the bounded local mock path will be used."
+            )
             return VerifierRouteDecision(
                 credential_id=credential.credential_id,
                 selected_verifier_key=verifier_key,
                 selected_verifier_label=verifier_label,
-                route_reason=f"Category '{credential.category}' maps to placeholder verifier '{verifier_key}'.",
+                route_reason=(
+                    f"Category '{credential.category}' maps to verifier '{verifier_key}'. "
+                    f"{provider_note}"
+                ),
                 fallback_verifiers=self.FALLBACKS_BY_CATEGORY.get(credential.category, ["manual_review"]),
-                manual_review_recommended=False,
+                manual_review_recommended=provider.provider_key == "local_mock" and credential.category == "unknown",
             )
 
         return VerifierRouteDecision(

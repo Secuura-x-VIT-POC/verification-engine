@@ -3,6 +3,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..agent_orchestration.service import (
+    build_and_persist_agent_pass_a,
+    build_and_persist_agent_pass_b,
+    enrich_credential_audits_with_agent_explanations,
+    enrich_generalized_analysis,
+    mark_agent_failure,
+)
 from ..verifier_execution.service import (
     build_and_persist_execution_artifacts,
     get_credential_bundles_for_session,
@@ -182,18 +189,55 @@ def persist_analysis_artifacts(
 
 
 def build_and_persist_initial_analysis(session) -> dict[str, Any]:
-    credentials = build_credentials(session.id, session.extraction_payload)
-    verification_plan = build_verification_plan(
+    baseline_credentials = build_credentials(session.id, session.extraction_payload)
+    baseline_verification_plan = build_verification_plan(
         session.id,
         session.extraction_payload,
-        credentials=credentials,
+        credentials=baseline_credentials,
     )
-    document_profile = build_document_profile(
+    baseline_document_profile = build_document_profile(
         session.id,
         session.extraction_payload,
-        credentials=credentials,
-        verification_plan=verification_plan,
+        credentials=baseline_credentials,
+        verification_plan=baseline_verification_plan,
     )
+    credentials = baseline_credentials
+    verification_plan = baseline_verification_plan
+    document_profile = baseline_document_profile
+    if hasattr(session, "agent_document_understanding_payload"):
+        session.agent_document_understanding_payload = None
+    if hasattr(session, "agent_credential_candidates_payload"):
+        session.agent_credential_candidates_payload = None
+    if hasattr(session, "agent_route_recommendations_payload"):
+        session.agent_route_recommendations_payload = None
+    if hasattr(session, "agent_explanations_payload"):
+        session.agent_explanations_payload = None
+    if hasattr(session, "agent_run_summary_payload"):
+        session.agent_run_summary_payload = None
+    if hasattr(session, "agent_run_status"):
+        session.agent_run_status = "NOT_STARTED"
+    if hasattr(session, "agent_run_error"):
+        session.agent_run_error = None
+
+    try:
+        agent_artifacts = build_and_persist_agent_pass_a(
+            session,
+            document_profile=baseline_document_profile,
+            credentials=baseline_credentials,
+            verification_plan=baseline_verification_plan,
+        )
+        enriched = enrich_generalized_analysis(
+            document_profile=baseline_document_profile,
+            credentials=baseline_credentials,
+            verification_plan=baseline_verification_plan,
+            agent_artifacts=agent_artifacts,
+        )
+        document_profile = enriched["document_profile"]
+        credentials = enriched["credentials"]
+        verification_plan = enriched["verification_plan"]
+    except Exception as exc:  # pragma: no cover - defensive path
+        mark_agent_failure(session, exc)
+
     persist_analysis_artifacts(
         session,
         document_profile=document_profile,
@@ -208,6 +252,12 @@ def build_and_persist_initial_analysis(session) -> dict[str, Any]:
         session.credential_verification_bundles_payload = None
     if hasattr(session, "verification_execution_summary_payload"):
         session.verification_execution_summary_payload = None
+    if hasattr(session, "provider_execution_traces_payload"):
+        session.provider_execution_traces_payload = None
+    if hasattr(session, "provider_execution_status"):
+        session.provider_execution_status = "NOT_STARTED"
+    if hasattr(session, "provider_execution_error"):
+        session.provider_execution_error = None
     if hasattr(session, "verification_execution_status"):
         session.verification_execution_status = "NOT_STARTED"
     if hasattr(session, "verification_execution_error"):
@@ -220,12 +270,8 @@ def build_and_persist_initial_analysis(session) -> dict[str, Any]:
 
 
 def build_and_persist_final_analysis(session) -> dict[str, Any]:
-    credentials = build_credentials(session.id, session.extraction_payload)
-    verification_plan = build_verification_plan(
-        session.id,
-        session.extraction_payload,
-        credentials=credentials,
-    )
+    credentials = get_credentials_for_session(session)
+    verification_plan = get_verification_plan_for_session(session)
     if any(
         (
             session.verification_task_results_payload,
@@ -244,12 +290,7 @@ def build_and_persist_final_analysis(session) -> dict[str, Any]:
             credentials=credentials,
             verification_plan=verification_plan,
         )
-    document_profile = build_document_profile(
-        session.id,
-        session.extraction_payload,
-        credentials=credentials,
-        verification_plan=verification_plan,
-    )
+    document_profile = get_document_profile_for_session(session)
     credential_audits = assemble_credential_audits(
         session.id,
         session.extraction_payload,
@@ -261,6 +302,22 @@ def build_and_persist_final_analysis(session) -> dict[str, Any]:
         verification_plan=verification_plan,
         credential_bundles=execution_artifacts["credential_bundles"],
     )
+    try:
+        agent_artifacts = build_and_persist_agent_pass_b(
+            session,
+            document_profile=document_profile,
+            credentials=credentials,
+            verification_plan=verification_plan,
+            verification_task_results=execution_artifacts["task_results"],
+            credential_bundles=execution_artifacts["credential_bundles"],
+            credential_audits=credential_audits,
+        )
+        credential_audits = enrich_credential_audits_with_agent_explanations(
+            credential_audits,
+            agent_artifacts,
+        )
+    except Exception as exc:  # pragma: no cover - defensive path
+        mark_agent_failure(session, exc)
     verification_summary = build_verification_summary(
         session.id,
         session.extraction_payload,

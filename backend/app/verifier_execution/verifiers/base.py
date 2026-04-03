@@ -14,6 +14,10 @@ from ...verification_domain.contracts import (
     ExtractedCredential,
     VerificationTask,
 )
+from ...verifier_providers import (
+    PROVIDER_TECHNICAL_STATUS_SUCCESS,
+    PROVIDER_TECHNICAL_STATUS_TIMEOUT,
+)
 from ..adapters import (
     VerificationExecutionContext,
     document_confidence,
@@ -132,6 +136,10 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 ),
             )
 
+        provider_result = self._execute_via_provider(task, credential, context)
+        if provider_result is not None:
+            return provider_result
+
         return self.execute_without_connector(task, credential, context)
 
     @abstractmethod
@@ -223,3 +231,202 @@ class ConnectorAwareVerifier(CredentialVerifier):
 
     def has_strong_document_signal(self, credential: ExtractedCredential) -> bool:
         return document_confidence(credential) >= 0.75 and has_grounding(credential)
+
+    def build_provider_input_payload(
+        self,
+        task: VerificationTask,
+        credential: ExtractedCredential,
+        context: VerificationExecutionContext,
+    ) -> dict:
+        payload = {
+            "credential_id": credential.credential_id,
+            "label": credential.label,
+            "category": credential.category,
+            "value": credential.normalized_value or credential.value,
+            "page": credential.page,
+            "document_type": context.document_type,
+            "task_reason_codes": list(task.reason_codes or []),
+            "verification_type": task.verification_type,
+        }
+        if isinstance(task.input_payload, dict):
+            payload.update(task.input_payload)
+        if context.extraction_payload:
+            fields = dict(context.extraction_payload.get("fields") or {})
+            institution = fields.get("institution")
+            if isinstance(institution, dict):
+                institution = institution.get("value")
+            if institution:
+                payload["institution"] = institution
+        return payload
+
+    def _execute_via_provider(
+        self,
+        task: VerificationTask,
+        credential: ExtractedCredential,
+        context: VerificationExecutionContext,
+    ) -> VerificationTaskResult | None:
+        runtime = getattr(context, "provider_runtime", None)
+        if runtime is None:
+            return None
+
+        provider_input_payload = self.build_provider_input_payload(task, credential, context)
+        preferred_provider_key = None
+        if isinstance(task.input_payload, dict):
+            preferred_provider_key = task.input_payload.get("preferred_provider_key")
+
+        attempt = runtime.attempt_verification(
+            session_id=context.session_id,
+            verifier_key=task.verifier_key,
+            verifier_label=task.verifier_label,
+            category=credential.category,
+            task_id=task.task_id,
+            input_payload=provider_input_payload,
+            preferred_provider_key=preferred_provider_key,
+        )
+        if attempt is None:
+            return None
+
+        response = attempt.response
+        if response.technical_status == PROVIDER_TECHNICAL_STATUS_SUCCESS:
+            return self._build_successful_provider_result(
+                task=task,
+                credential=credential,
+                provider_key=attempt.provider_key,
+                provider_label=attempt.provider_label,
+                response=response,
+            )
+
+        fallback_result = self.execute_without_connector(task, credential, context)
+        runtime.mark_fallback_used(attempt.trace.request_id)
+        fallback_result.explanation = (
+            f"{fallback_result.explanation} "
+            f"Provider attempt via {attempt.provider_label} failed safely and local fallback logic was used."
+        ).strip()
+        fallback_result.reason_codes = _dedupe(
+            list(fallback_result.reason_codes or [])
+            + list(response.reason_codes or [])
+            + ["PROVIDER_FALLBACK_USED", f"PROVIDER_STATUS_{response.technical_status}"]
+        )
+        raw_summary = dict(fallback_result.raw_result_summary or {})
+        raw_summary.update(
+            {
+                "provider_key": attempt.provider_key,
+                "provider_label": attempt.provider_label,
+                "provider_technical_status": response.technical_status,
+                "provider_http_status": response.http_status,
+                "provider_latency_ms": response.latency_ms,
+                "provider_response_summary": dict(response.response_summary or {}),
+                "provider_fallback_used": True,
+            }
+        )
+        fallback_result.raw_result_summary = raw_summary
+        if response.technical_status == PROVIDER_TECHNICAL_STATUS_TIMEOUT:
+            fallback_result.manual_review_recommended = True
+        return fallback_result
+
+    def _build_successful_provider_result(
+        self,
+        *,
+        task: VerificationTask,
+        credential: ExtractedCredential,
+        provider_key: str,
+        provider_label: str,
+        response,
+    ) -> VerificationTaskResult:
+        matched_fields = dict(response.matched_fields or {})
+        mismatched_fields = dict(response.mismatched_fields or {})
+        missing_fields = list(response.missing_fields or [])
+        raw_summary = summarize_result(
+            execution_mode="provider_response",
+            task=task,
+            credential=credential,
+            extra={
+                "provider_key": provider_key,
+                "provider_label": provider_label,
+                "provider_technical_status": response.technical_status,
+                "provider_http_status": response.http_status,
+                "provider_latency_ms": response.latency_ms,
+                "provider_response_summary": dict(response.response_summary or {}),
+            },
+        )
+
+        if mismatched_fields:
+            return self.build_result(
+                task=task,
+                credential=credential,
+                task_status=TASK_STATUS_SUCCEEDED,
+                audit_status=AUDIT_STATUS_MISMATCH,
+                outcome_color=OUTCOME_COLOR_RED,
+                explanation=f"{task.verifier_label} received contradictory external evidence from {provider_label}.",
+                reason_codes=_dedupe(list(response.reason_codes or []) + ["PROVIDER_MISMATCH"]),
+                matched_fields=matched_fields,
+                mismatched_fields=mismatched_fields,
+                missing_fields=missing_fields,
+                raw_result_summary=raw_summary,
+                confidence=response.confidence,
+                manual_review_recommended=response.manual_review_recommended,
+            )
+
+        if matched_fields and missing_fields:
+            return self.build_result(
+                task=task,
+                credential=credential,
+                task_status=TASK_STATUS_PARTIAL,
+                audit_status=AUDIT_STATUS_PARTIAL,
+                outcome_color=OUTCOME_COLOR_AMBER,
+                explanation=f"{task.verifier_label} returned partial external evidence from {provider_label}.",
+                reason_codes=_dedupe(list(response.reason_codes or []) + ["PROVIDER_PARTIAL_MATCH"]),
+                matched_fields=matched_fields,
+                missing_fields=missing_fields,
+                raw_result_summary=raw_summary,
+                confidence=response.confidence,
+                manual_review_recommended=response.manual_review_recommended,
+            )
+
+        if matched_fields:
+            return self.build_result(
+                task=task,
+                credential=credential,
+                task_status=TASK_STATUS_SUCCEEDED,
+                audit_status=AUDIT_STATUS_VERIFIED,
+                outcome_color=OUTCOME_COLOR_GREEN,
+                explanation=f"{task.verifier_label} matched external evidence via {provider_label}.",
+                reason_codes=_dedupe(list(response.reason_codes or []) + ["PROVIDER_VERIFIED"]),
+                matched_fields=matched_fields,
+                raw_result_summary=raw_summary,
+                confidence=response.confidence,
+                manual_review_recommended=response.manual_review_recommended,
+            )
+
+        if response.manual_review_recommended:
+            return self.build_result(
+                task=task,
+                credential=credential,
+                task_status=TASK_STATUS_MANUAL_REVIEW,
+                audit_status=AUDIT_STATUS_MANUAL_REVIEW,
+                outcome_color=OUTCOME_COLOR_AMBER,
+                explanation=f"{task.verifier_label} completed via {provider_label}, but the provider recommended manual review.",
+                reason_codes=_dedupe(list(response.reason_codes or []) + ["PROVIDER_MANUAL_REVIEW"]),
+                missing_fields=missing_fields or [credential.label],
+                raw_result_summary=raw_summary,
+                confidence=response.confidence,
+                manual_review_recommended=True,
+            )
+
+        return self.build_result(
+            task=task,
+            credential=credential,
+            task_status=TASK_STATUS_PARTIAL,
+            audit_status=AUDIT_STATUS_UNVERIFIED,
+            outcome_color=OUTCOME_COLOR_AMBER,
+            explanation=f"{task.verifier_label} completed via {provider_label}, but no match evidence was returned.",
+            reason_codes=_dedupe(list(response.reason_codes or []) + ["PROVIDER_NO_MATCH"]),
+            missing_fields=missing_fields or [credential.label],
+            raw_result_summary=raw_summary,
+            confidence=response.confidence,
+            manual_review_recommended=response.manual_review_recommended,
+        )
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    return [value for value in dict.fromkeys(values) if value]

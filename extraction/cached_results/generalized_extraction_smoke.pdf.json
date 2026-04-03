@@ -1,0 +1,1062 @@
+{
+  "is_successful": true,
+  "used_ocr": false,
+  "fields": {
+    "candidate_name": {
+      "value": "Shivam Aher",
+      "confidence": 0.99,
+      "bounding_boxes": [
+        {
+          "page": 1,
+          "x0": 107.45,
+          "y0": 60.17,
+          "x1": 170.42,
+          "y1": 75.29
+        }
+      ],
+      "match_type": "exact"
+    },
+    "institution": {
+      "value": "VIT",
+      "confidence": 0.99,
+      "bounding_boxes": [
+        {
+          "page": 1,
+          "x0": 126.39,
+          "y0": 75.29,
+          "x1": 143.51,
+          "y1": 90.4
+        }
+      ],
+      "match_type": "exact"
+    },
+    "credential_type": {
+      "value": "Bachelor of Technology",
+      "confidence": 0.99,
+      "bounding_boxes": [
+        {
+          "page": 1,
+          "x0": 127.63,
+          "y0": 90.4,
+          "x1": 243.18,
+          "y1": 105.52
+        }
+      ],
+      "match_type": "exact"
+    },
+    "issue_date": {
+      "value": "01/01/2024",
+      "confidence": 0.99,
+      "bounding_boxes": [
+        {
+          "page": 1,
+          "x0": 130.7,
+          "y0": 135.75,
+          "x1": 185.74,
+          "y1": 150.86
+        }
+      ],
+      "match_type": "exact"
+    },
+    "document_id": {
+      "value": "ABCD123456",
+      "confidence": 0.99,
+      "bounding_boxes": [
+        {
+          "page": 1,
+          "x0": 170.42,
+          "y0": 150.86,
+          "x1": 237.67,
+          "y1": 165.97
+        }
+      ],
+      "match_type": "exact"
+    },
+    "email": {
+      "value": "shivam@example.com",
+      "confidence": 0.99,
+      "bounding_boxes": [
+        {
+          "page": 1,
+          "x0": 105.62,
+          "y0": 105.52,
+          "x1": 217.02,
+          "y1": 120.63
+        }
+      ],
+      "match_type": "exact"
+    },
+    "phone_number": {
+      "value": "9876543210",
+      "confidence": 0.99,
+      "bounding_boxes": [
+        {
+          "page": 1,
+          "x0": 109.92,
+          "y0": 120.63,
+          "x1": 171.08,
+          "y1": 135.75
+        }
+      ],
+      "match_type": "exact"
+    }
+  },
+  "raw_text": "Name: Shivam Aher\nUniversity: VIT\nCertificate: Bachelor of Technology\nEmail: shivam@example.com\nPhone: 9876543210\nIssue Date: 01/01/2024\nDocument Number: ABCD123456",
+  "spatial_text_map": [
+    {
+      "text": "Name:",
+      "bbox": [
+        72.0,
+        60.17,
+        104.39,
+        75.29
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "Shivam",
+      "bbox": [
+        107.45,
+        60.17,
+        144.13,
+        75.29
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "Aher",
+      "bbox": [
+        147.18,
+        60.17,
+        170.42,
+        75.29
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "University:",
+      "bbox": [
+        72.0,
+        75.29,
+        123.34,
+        90.4
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "VIT",
+      "bbox": [
+        126.39,
+        75.29,
+        143.51,
+        90.4
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "Certificate:",
+      "bbox": [
+        72.0,
+        90.4,
+        124.57,
+        105.52
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "Bachelor",
+      "bbox": [
+        127.63,
+        90.4,
+        171.03,
+        105.52
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "of",
+      "bbox": [
+        174.09,
+        90.4,
+        183.26,
+        105.52
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "Technology",
+      "bbox": [
+        186.32,
+        90.4,
+        243.18,
+        105.52
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "Email:",
+      "bbox": [
+        72.0,
+        105.52,
+        102.56,
+        120.63
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "shivam@example.com",
+      "bbox": [
+        105.62,
+        105.52,
+        217.02,
+        120.63
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "Phone:",
+      "bbox": [
+        72.0,
+        120.63,
+        106.86,
+        135.75
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "9876543210",
+      "bbox": [
+        109.92,
+        120.63,
+        171.08,
+        135.75
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "Issue",
+      "bbox": [
+        72.0,
+        135.75,
+        98.29,
+        150.86
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "Date:",
+      "bbox": [
+        101.35,
+        135.75,
+        127.64,
+        150.86
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "01/01/2024",
+      "bbox": [
+        130.7,
+        135.75,
+        185.74,
+        150.86
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "Document",
+      "bbox": [
+        72.0,
+        150.86,
+        122.13,
+        165.97
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "Number:",
+      "bbox": [
+        125.18,
+        150.86,
+        167.36,
+        165.97
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    },
+    {
+      "text": "ABCD123456",
+      "bbox": [
+        170.42,
+        150.86,
+        237.67,
+        165.97
+      ],
+      "page": 1,
+      "source": "native_text",
+      "confidence": 1.0
+    }
+  ],
+  "evidence_lines": [
+    {
+      "page": 1,
+      "text": "Name: Shivam Aher",
+      "bbox": {
+        "page": 1,
+        "x0": 72.0,
+        "y0": 60.17,
+        "x1": 170.42,
+        "y1": 75.29
+      },
+      "token_indices": [
+        0,
+        1,
+        2
+      ],
+      "source": "native_text"
+    },
+    {
+      "page": 1,
+      "text": "University: VIT",
+      "bbox": {
+        "page": 1,
+        "x0": 72.0,
+        "y0": 75.29,
+        "x1": 143.51,
+        "y1": 90.4
+      },
+      "token_indices": [
+        3,
+        4
+      ],
+      "source": "native_text"
+    },
+    {
+      "page": 1,
+      "text": "Certificate: Bachelor of Technology",
+      "bbox": {
+        "page": 1,
+        "x0": 72.0,
+        "y0": 90.4,
+        "x1": 243.18,
+        "y1": 105.52
+      },
+      "token_indices": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "source": "native_text"
+    },
+    {
+      "page": 1,
+      "text": "Email: shivam@example.com",
+      "bbox": {
+        "page": 1,
+        "x0": 72.0,
+        "y0": 105.52,
+        "x1": 217.02,
+        "y1": 120.63
+      },
+      "token_indices": [
+        9,
+        10
+      ],
+      "source": "native_text"
+    },
+    {
+      "page": 1,
+      "text": "Phone: 9876543210",
+      "bbox": {
+        "page": 1,
+        "x0": 72.0,
+        "y0": 120.63,
+        "x1": 171.08,
+        "y1": 135.75
+      },
+      "token_indices": [
+        11,
+        12
+      ],
+      "source": "native_text"
+    },
+    {
+      "page": 1,
+      "text": "Issue Date: 01/01/2024",
+      "bbox": {
+        "page": 1,
+        "x0": 72.0,
+        "y0": 135.75,
+        "x1": 185.74,
+        "y1": 150.86
+      },
+      "token_indices": [
+        13,
+        14,
+        15
+      ],
+      "source": "native_text"
+    },
+    {
+      "page": 1,
+      "text": "Document Number: ABCD123456",
+      "bbox": {
+        "page": 1,
+        "x0": 72.0,
+        "y0": 150.86,
+        "x1": 237.67,
+        "y1": 165.97
+      },
+      "token_indices": [
+        16,
+        17,
+        18
+      ],
+      "source": "native_text"
+    }
+  ],
+  "field_candidates": [
+    {
+      "candidate_id": "cand_0d3e96476d2c",
+      "label": "credential_title",
+      "category": "credential_title",
+      "raw_value": "Bachelor of Technology",
+      "normalized_value": "Bachelor of Technology",
+      "source_text": "Certificate: Bachelor of Technology",
+      "evidence_snippet": "Certificate: Bachelor of Technology",
+      "page": 1,
+      "bounding_box": {
+        "page": 1,
+        "x0": 127.63,
+        "y0": 90.4,
+        "x1": 243.18,
+        "y1": 105.52
+      },
+      "confidence": 0.99,
+      "grounding_match_type": "exact",
+      "is_pii": false,
+      "requires_verification": true,
+      "verification_reason": "Certificate should be checked via credential_registry.",
+      "extraction_method": "native_text",
+      "source": "native_text"
+    },
+    {
+      "candidate_id": "cand_ac2790ae322f",
+      "label": "document_id",
+      "category": "document_number",
+      "raw_value": "ABCD123456",
+      "normalized_value": "ABCD123456",
+      "source_text": "Document Number: ABCD123456",
+      "evidence_snippet": "Document Number: ABCD123456",
+      "page": 1,
+      "bounding_box": {
+        "page": 1,
+        "x0": 170.42,
+        "y0": 150.86,
+        "x1": 237.67,
+        "y1": 165.97
+      },
+      "confidence": 0.99,
+      "grounding_match_type": "exact",
+      "is_pii": false,
+      "requires_verification": true,
+      "verification_reason": "Document Number should be checked via issuer_portal.",
+      "extraction_method": "native_text",
+      "source": "native_text"
+    },
+    {
+      "candidate_id": "cand_fedae2175a70",
+      "label": "email",
+      "category": "email",
+      "raw_value": "shivam@example.com",
+      "normalized_value": "shivam@example.com",
+      "source_text": "Email: shivam@example.com",
+      "evidence_snippet": "Email: shivam@example.com",
+      "page": 1,
+      "bounding_box": {
+        "page": 1,
+        "x0": 105.62,
+        "y0": 105.52,
+        "x1": 217.02,
+        "y1": 120.63
+      },
+      "confidence": 0.99,
+      "grounding_match_type": "exact",
+      "is_pii": true,
+      "requires_verification": true,
+      "verification_reason": "Email should be checked via identity_registry.",
+      "extraction_method": "native_text",
+      "source": "native_text"
+    },
+    {
+      "candidate_id": "cand_9e5a3384dabd",
+      "label": "issue_date",
+      "category": "issue_date",
+      "raw_value": "01/01/2024",
+      "normalized_value": "2024-01-01",
+      "source_text": "Issue Date: 01/01/2024",
+      "evidence_snippet": "Issue Date: 01/01/2024",
+      "page": 1,
+      "bounding_box": {
+        "page": 1,
+        "x0": 130.7,
+        "y0": 135.75,
+        "x1": 185.74,
+        "y1": 150.86
+      },
+      "confidence": 0.99,
+      "grounding_match_type": "exact",
+      "is_pii": false,
+      "requires_verification": true,
+      "verification_reason": "Issue Date should be checked via issuer_portal.",
+      "extraction_method": "native_text",
+      "source": "native_text"
+    },
+    {
+      "candidate_id": "cand_e5f0ab5d426f",
+      "label": "issuer",
+      "category": "issuer",
+      "raw_value": "VIT",
+      "normalized_value": "VIT",
+      "source_text": "University: VIT",
+      "evidence_snippet": "University: VIT",
+      "page": 1,
+      "bounding_box": {
+        "page": 1,
+        "x0": 126.39,
+        "y0": 75.29,
+        "x1": 143.51,
+        "y1": 90.4
+      },
+      "confidence": 0.99,
+      "grounding_match_type": "exact",
+      "is_pii": false,
+      "requires_verification": true,
+      "verification_reason": "University should be checked via institution_registry.",
+      "extraction_method": "native_text",
+      "source": "native_text"
+    },
+    {
+      "candidate_id": "cand_894536186a2b",
+      "label": "name",
+      "category": "person_name",
+      "raw_value": "Shivam Aher",
+      "normalized_value": "Shivam Aher",
+      "source_text": "Name: Shivam Aher",
+      "evidence_snippet": "Name: Shivam Aher",
+      "page": 1,
+      "bounding_box": {
+        "page": 1,
+        "x0": 107.45,
+        "y0": 60.17,
+        "x1": 170.42,
+        "y1": 75.29
+      },
+      "confidence": 0.99,
+      "grounding_match_type": "exact",
+      "is_pii": true,
+      "requires_verification": true,
+      "verification_reason": "Name should be checked via identity_registry.",
+      "extraction_method": "native_text",
+      "source": "native_text"
+    },
+    {
+      "candidate_id": "cand_de6670318340",
+      "label": "phone_number",
+      "category": "phone_number",
+      "raw_value": "9876543210",
+      "normalized_value": "9876543210",
+      "source_text": "Phone: 9876543210",
+      "evidence_snippet": "Phone: 9876543210",
+      "page": 1,
+      "bounding_box": {
+        "page": 1,
+        "x0": 109.92,
+        "y0": 120.63,
+        "x1": 171.08,
+        "y1": 135.75
+      },
+      "confidence": 0.99,
+      "grounding_match_type": "exact",
+      "is_pii": true,
+      "requires_verification": true,
+      "verification_reason": "Phone should be checked via identity_registry.",
+      "extraction_method": "native_text",
+      "source": "native_text"
+    }
+  ],
+  "generalized_analysis": {
+    "document_profile_payload": {
+      "document_family_hints": [
+        "certificate",
+        "academic_record"
+      ],
+      "contains_pii": true,
+      "pii_categories": [
+        "email",
+        "phone_number"
+      ],
+      "likely_sections": [],
+      "likely_tables_present": false,
+      "likely_form_present": true,
+      "issuer_hints": [
+        "University: VIT"
+      ],
+      "structure_notes": [
+        "Document family hints: certificate, academic_record.",
+        "At least one page appears form-like with label/value pairs."
+      ],
+      "page_profiles": [
+        {
+          "page": 1,
+          "extraction_method": "native_text",
+          "word_count": 19,
+          "character_density": 22.5714,
+          "section_headers": [],
+          "likely_table": false,
+          "likely_form": true
+        }
+      ]
+    },
+    "generalized_credentials_payload": [
+      {
+        "credential_id": "cred_ee6c59d61d",
+        "label": "credential_title",
+        "category": "credential_title",
+        "value": "Bachelor of Technology",
+        "normalized_value": "Bachelor of Technology",
+        "source_text": "Certificate: Bachelor of Technology",
+        "confidence": 0.99,
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 127.63,
+          "y0": 90.4,
+          "x1": 243.18,
+          "y1": 105.52
+        },
+        "is_pii": false,
+        "requires_verification": true,
+        "verification_reason": "Certificate should be checked via credential_registry.",
+        "extraction_method": "native_text",
+        "candidate_ids": [
+          "cand_0d3e96476d2c"
+        ]
+      },
+      {
+        "credential_id": "cred_5e9fa01d7d",
+        "label": "document_id",
+        "category": "document_number",
+        "value": "ABCD123456",
+        "normalized_value": "ABCD123456",
+        "source_text": "Document Number: ABCD123456",
+        "confidence": 0.99,
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 170.42,
+          "y0": 150.86,
+          "x1": 237.67,
+          "y1": 165.97
+        },
+        "is_pii": false,
+        "requires_verification": true,
+        "verification_reason": "Document Number should be checked via issuer_portal.",
+        "extraction_method": "native_text",
+        "candidate_ids": [
+          "cand_ac2790ae322f"
+        ]
+      },
+      {
+        "credential_id": "cred_6de1f5f41e",
+        "label": "email",
+        "category": "email",
+        "value": "shivam@example.com",
+        "normalized_value": "shivam@example.com",
+        "source_text": "Email: shivam@example.com",
+        "confidence": 0.99,
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 105.62,
+          "y0": 105.52,
+          "x1": 217.02,
+          "y1": 120.63
+        },
+        "is_pii": true,
+        "requires_verification": true,
+        "verification_reason": "Email should be checked via identity_registry.",
+        "extraction_method": "native_text",
+        "candidate_ids": [
+          "cand_fedae2175a70"
+        ]
+      },
+      {
+        "credential_id": "cred_ae5d22c03b",
+        "label": "issue_date",
+        "category": "issue_date",
+        "value": "01/01/2024",
+        "normalized_value": "2024-01-01",
+        "source_text": "Issue Date: 01/01/2024",
+        "confidence": 0.99,
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 130.7,
+          "y0": 135.75,
+          "x1": 185.74,
+          "y1": 150.86
+        },
+        "is_pii": false,
+        "requires_verification": true,
+        "verification_reason": "Issue Date should be checked via issuer_portal.",
+        "extraction_method": "native_text",
+        "candidate_ids": [
+          "cand_9e5a3384dabd"
+        ]
+      },
+      {
+        "credential_id": "cred_ed49436a0c",
+        "label": "issuer",
+        "category": "issuer",
+        "value": "VIT",
+        "normalized_value": "VIT",
+        "source_text": "University: VIT",
+        "confidence": 0.99,
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 126.39,
+          "y0": 75.29,
+          "x1": 143.51,
+          "y1": 90.4
+        },
+        "is_pii": false,
+        "requires_verification": true,
+        "verification_reason": "University should be checked via institution_registry.",
+        "extraction_method": "native_text",
+        "candidate_ids": [
+          "cand_e5f0ab5d426f"
+        ]
+      },
+      {
+        "credential_id": "cred_c915ba6973",
+        "label": "name",
+        "category": "person_name",
+        "value": "Shivam Aher",
+        "normalized_value": "Shivam Aher",
+        "source_text": "Name: Shivam Aher",
+        "confidence": 0.99,
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 107.45,
+          "y0": 60.17,
+          "x1": 170.42,
+          "y1": 75.29
+        },
+        "is_pii": true,
+        "requires_verification": true,
+        "verification_reason": "Name should be checked via identity_registry.",
+        "extraction_method": "native_text",
+        "candidate_ids": [
+          "cand_894536186a2b"
+        ]
+      },
+      {
+        "credential_id": "cred_32ef56ca64",
+        "label": "phone_number",
+        "category": "phone_number",
+        "value": "9876543210",
+        "normalized_value": "9876543210",
+        "source_text": "Phone: 9876543210",
+        "confidence": 0.99,
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 109.92,
+          "y0": 120.63,
+          "x1": 171.08,
+          "y1": 135.75
+        },
+        "is_pii": true,
+        "requires_verification": true,
+        "verification_reason": "Phone should be checked via identity_registry.",
+        "extraction_method": "native_text",
+        "candidate_ids": [
+          "cand_de6670318340"
+        ]
+      }
+    ],
+    "verification_plan_payload": [
+      {
+        "plan_item_id": "plan_001",
+        "credential_id": "cred_ee6c59d61d",
+        "verifier_key": "credential_registry",
+        "verifier_type": "deterministic_lookup",
+        "priority": "high",
+        "reason": "Certificate should be checked via credential_registry.",
+        "status": "planned"
+      },
+      {
+        "plan_item_id": "plan_002",
+        "credential_id": "cred_5e9fa01d7d",
+        "verifier_key": "issuer_portal",
+        "verifier_type": "deterministic_lookup",
+        "priority": "high",
+        "reason": "Document Number should be checked via issuer_portal.",
+        "status": "planned"
+      },
+      {
+        "plan_item_id": "plan_003",
+        "credential_id": "cred_6de1f5f41e",
+        "verifier_key": "identity_registry",
+        "verifier_type": "deterministic_lookup",
+        "priority": "medium",
+        "reason": "Email should be checked via identity_registry.",
+        "status": "planned"
+      },
+      {
+        "plan_item_id": "plan_004",
+        "credential_id": "cred_ae5d22c03b",
+        "verifier_key": "issuer_portal",
+        "verifier_type": "deterministic_lookup",
+        "priority": "high",
+        "reason": "Issue Date should be checked via issuer_portal.",
+        "status": "planned"
+      },
+      {
+        "plan_item_id": "plan_005",
+        "credential_id": "cred_ed49436a0c",
+        "verifier_key": "institution_registry",
+        "verifier_type": "deterministic_lookup",
+        "priority": "high",
+        "reason": "University should be checked via institution_registry.",
+        "status": "planned"
+      },
+      {
+        "plan_item_id": "plan_006",
+        "credential_id": "cred_c915ba6973",
+        "verifier_key": "identity_registry",
+        "verifier_type": "deterministic_lookup",
+        "priority": "medium",
+        "reason": "Name should be checked via identity_registry.",
+        "status": "planned"
+      },
+      {
+        "plan_item_id": "plan_007",
+        "credential_id": "cred_32ef56ca64",
+        "verifier_key": "identity_registry",
+        "verifier_type": "deterministic_lookup",
+        "priority": "medium",
+        "reason": "Phone should be checked via identity_registry.",
+        "status": "planned"
+      }
+    ],
+    "credential_audits_payload": [
+      {
+        "audit_id": "audit_001",
+        "credential_id": "cred_ee6c59d61d",
+        "label": "credential_title",
+        "status": "extracted",
+        "confidence": 0.99,
+        "evidence": "Certificate: Bachelor of Technology",
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 127.63,
+          "y0": 90.4,
+          "x1": 243.18,
+          "y1": 105.52
+        },
+        "explanation": "credential_title was deterministically extracted and grounded from the PDF.",
+        "source_provenance": "page 1 / method=native_text"
+      },
+      {
+        "audit_id": "audit_002",
+        "credential_id": "cred_5e9fa01d7d",
+        "label": "document_id",
+        "status": "extracted",
+        "confidence": 0.99,
+        "evidence": "Document Number: ABCD123456",
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 170.42,
+          "y0": 150.86,
+          "x1": 237.67,
+          "y1": 165.97
+        },
+        "explanation": "document_id was deterministically extracted and grounded from the PDF.",
+        "source_provenance": "page 1 / method=native_text"
+      },
+      {
+        "audit_id": "audit_003",
+        "credential_id": "cred_6de1f5f41e",
+        "label": "email",
+        "status": "extracted",
+        "confidence": 0.99,
+        "evidence": "Email: shivam@example.com",
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 105.62,
+          "y0": 105.52,
+          "x1": 217.02,
+          "y1": 120.63
+        },
+        "explanation": "email was deterministically extracted and grounded from the PDF.",
+        "source_provenance": "page 1 / method=native_text"
+      },
+      {
+        "audit_id": "audit_004",
+        "credential_id": "cred_ae5d22c03b",
+        "label": "issue_date",
+        "status": "extracted",
+        "confidence": 0.99,
+        "evidence": "Issue Date: 01/01/2024",
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 130.7,
+          "y0": 135.75,
+          "x1": 185.74,
+          "y1": 150.86
+        },
+        "explanation": "issue_date was deterministically extracted and grounded from the PDF.",
+        "source_provenance": "page 1 / method=native_text"
+      },
+      {
+        "audit_id": "audit_005",
+        "credential_id": "cred_ed49436a0c",
+        "label": "issuer",
+        "status": "extracted",
+        "confidence": 0.99,
+        "evidence": "University: VIT",
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 126.39,
+          "y0": 75.29,
+          "x1": 143.51,
+          "y1": 90.4
+        },
+        "explanation": "issuer was deterministically extracted and grounded from the PDF.",
+        "source_provenance": "page 1 / method=native_text"
+      },
+      {
+        "audit_id": "audit_006",
+        "credential_id": "cred_c915ba6973",
+        "label": "name",
+        "status": "extracted",
+        "confidence": 0.99,
+        "evidence": "Name: Shivam Aher",
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 107.45,
+          "y0": 60.17,
+          "x1": 170.42,
+          "y1": 75.29
+        },
+        "explanation": "name was deterministically extracted and grounded from the PDF.",
+        "source_provenance": "page 1 / method=native_text"
+      },
+      {
+        "audit_id": "audit_007",
+        "credential_id": "cred_32ef56ca64",
+        "label": "phone_number",
+        "status": "extracted",
+        "confidence": 0.99,
+        "evidence": "Phone: 9876543210",
+        "page": 1,
+        "bounding_box": {
+          "page": 1,
+          "x0": 109.92,
+          "y0": 120.63,
+          "x1": 171.08,
+          "y1": 135.75
+        },
+        "explanation": "phone_number was deterministically extracted and grounded from the PDF.",
+        "source_provenance": "page 1 / method=native_text"
+      }
+    ],
+    "verification_summary_payload": {
+      "document_type": "certificate",
+      "total_candidates": 7,
+      "total_credentials": 7,
+      "total_pii_fields": 3,
+      "total_verification_tasks": 7,
+      "highlights_ready": true,
+      "summary_text": "Detected 7 grounded credential claims from a certificate document. PII fields detected: 3. Verification tasks prepared: 7."
+    },
+    "generalized_analysis_status": "completed",
+    "generalized_analysis_error": null
+  },
+  "metadata": {
+    "file_name": "generalized_extraction_smoke.pdf",
+    "file_type": "pdf",
+    "page_count": 1,
+    "size_bytes": 942,
+    "text_char_count": 164,
+    "extraction_method": "native_text",
+    "character_density": 1.5107,
+    "min_resolution_dpi": 300.0,
+    "is_scanned": false,
+    "sandboxed_processing": true
+  },
+  "safety_report": {
+    "sandboxed": true,
+    "malware_scan_engine": "sha256_blocklist",
+    "malware_scan_passed": true,
+    "file_size_bytes": 942,
+    "page_count": 1,
+    "min_resolution_dpi": 300.0,
+    "character_density": 1.5107,
+    "is_scanned": false
+  },
+  "warnings": [
+    {
+      "code": "OVERLAPPING_CANDIDATES_SUPPRESSED",
+      "message": "3 overlapping field candidates were suppressed in favor of more canonical grounded claims."
+    }
+  ],
+  "reason_code": null,
+  "error_message": null
+}

@@ -1,4 +1,8 @@
 PyMuPDF==1.23.8
+pypdf==5.1.0
 pytesseract==0.3.10
 Pillow==10.2.0
 pydantic==2.5.3
+fastapi==0.115.0
+python-multipart==0.0.9
+uvicorn==0.30.6

@@ -11,9 +11,3 @@ __pycache__/
 # OS Files
 .DS_Store
 Thumbs.db
-
-cached_results/*.json
-samples/*.pdf
-
-!cached_results/.gitkeep
-!samples/.gitkeep

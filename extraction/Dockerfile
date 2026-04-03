@@ -17,5 +17,5 @@ COPY . /app/extraction
 
 ENV PYTHONPATH=/app
 
-# Default command to run the demo caching script
-CMD ["python", "-m", "extraction.scripts.cache_demo"]
+# Default command to run the extraction API service
+CMD ["uvicorn", "extraction.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -8,7 +8,7 @@ Session-based document verification engine with extraction, grounding, trust eva
 
 This repository contains the core verification pipeline for the Secuura x VIT proof of concept.
 
-The system processes recruitment documents in a session-scoped, privacy-aware workflow. Documents are not processed at upload time; verification starts only when an authorized reviewer opens a session.
+The system processes generalized PDF evidence in a session-scoped, privacy-aware workflow. Documents are not processed at upload time; verification starts only when an authorized reviewer opens a session.
 
 The design prioritizes:
 - minimal data retention
@@ -25,9 +25,9 @@ The design prioritizes:
 - No background processing without reviewer action
 
 ### 2. Extraction Pipeline
-- Dedicated extraction service for document parsing/OCR
-- Canonical field extraction for downstream validation
-- Structured handoff into trust evaluation
+- Dedicated extraction service for safe PDF intake, native parsing, selective OCR, and spatial grounding
+- Generalized field candidate extraction, document profiling, PII hints, and credential-ready normalization
+- Structured handoff into verification planning, audit overlays, and downstream trust evaluation
 
 ### 3. Trust Evaluation Engine
 - Connector-based validation flow
@@ -129,6 +129,8 @@ After session completion:
 **Extraction**
 - Separate Python service in `extraction/`
 - OCR / parsing dependencies isolated from the API service
+- FastAPI extraction API exposed from `extraction/main.py`
+- Supports PDF text extraction, OCR fallback, and batch CLI processing
 
 **Frontend**
 - JavaScript frontend in `frontend/`
@@ -175,6 +177,29 @@ The goal of this project is to demonstrate:
 - privacy-preserving audit design
 
 It is not intended to be a production-ready verification platform.
+
+---
+
+## Extraction Service Quick Start
+
+From `verification-engine/`:
+
+```bash
+pip install -r extraction/requirements.txt
+uvicorn extraction.main:app --reload
+```
+
+Available endpoints:
+- `GET /health`
+- `POST /extract`
+- `POST /extract/batch`
+
+For local CLI extraction:
+
+```bash
+python -m extraction.scripts.run_extraction path/to/document.pdf
+python -m extraction.scripts.run_extraction path/to/pdf-directory --output-dir path/to/output-json
+```
 
 ---
 

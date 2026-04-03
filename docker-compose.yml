@@ -1,0 +1,7 @@
+services:
+  extraction:
+    build:
+      context: ./extraction
+    container_name: verification-extraction
+    ports:
+      - "8000:8000"

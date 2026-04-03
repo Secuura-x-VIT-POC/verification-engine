@@ -1,0 +1,34 @@
+{
+  "is_successful": false,
+  "used_ocr": false,
+  "fields": {
+    "candidate_name": null,
+    "institution": null,
+    "credential_type": null,
+    "issue_date": null,
+    "document_id": null,
+    "email": null,
+    "phone_number": null
+  },
+  "raw_text": "",
+  "spatial_text_map": [],
+  "evidence_lines": [],
+  "field_candidates": [],
+  "generalized_analysis": null,
+  "metadata": {
+    "file_name": "Report.pdf",
+    "file_type": "pdf",
+    "page_count": 0,
+    "size_bytes": 1060492,
+    "text_char_count": 0,
+    "extraction_method": "text",
+    "character_density": 0.0,
+    "min_resolution_dpi": 0.0,
+    "is_scanned": false,
+    "sandboxed_processing": false
+  },
+  "safety_report": null,
+  "warnings": [],
+  "reason_code": "MALFORMED_PDF",
+  "error_message": "Multiple definitions in dictionary at byte 0xf3568 for key /h.g0jgishpkrkf"
+}

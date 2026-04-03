@@ -4,7 +4,7 @@ from app.auth.schemas import UserCreate
 from .utils import create_token, decode_token
 from app.auth.models import User
 from app.auth.utils import hash_password, verify_password
-from app.db.databse import get_db
+from app.db.database import get_db
 from sqlalchemy.orm import Session
 from app.core.limiter import limiter
 router = APIRouter()

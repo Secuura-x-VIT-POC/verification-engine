@@ -1,8 +1,12 @@
 import json
 from app.connectors.schema import ConnectorResponse
+from app.sessions.constants import SessionState
+from pathlib import Path
 
+BASE_DIR = Path(__file__).resolve().parent
 def verify(data: dict):
-    with open("fixtures/vit_registry.json") as f:
+    file_path = BASE_DIR / "fixtures" / "vit_registry.json"
+    with open(file_path) as f:
         db = json.load(f)
 
     matched = {}
@@ -14,7 +18,7 @@ def verify(data: dict):
         else:
             mismatched.append(key)
 
-    status = "VERIFIED" if not mismatched else "NOT_VERIFIED"
+    status = SessionState.VERIFIED if not mismatched else "NOT_VERIFIED"
 
     return ConnectorResponse(
         connector_id="vit",

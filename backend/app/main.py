@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from app.auth.routes import router as auth_router
 from app.sessions.routes import router as session_router
 from app.connectors.routes import router as connector_router
-from app.db.databse import Base, engine
+from app.db.database import Base, engine
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.limiter import limiter
 from slowapi.middleware import SlowAPIMiddleware
@@ -16,7 +16,9 @@ app.add_middleware(SlowAPIMiddleware)
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 origins = [
-    "http://localhost:3000"
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173"
 ]
 
 app.add_middleware(

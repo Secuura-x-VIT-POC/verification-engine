@@ -1,5 +1,5 @@
 from sqlalchemy import Column, String, Boolean
-from app.db.databse import Base
+from app.db.database import Base
 import uuid
 
 class Session(Base):

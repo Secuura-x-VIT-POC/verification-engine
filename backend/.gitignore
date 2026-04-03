@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environment
+venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Database
+*.sqlite3
+
+# Uploads (VERY IMPORTANT)
+uploads/
+
+# Environment variables
+.env
+
+# Pytest
+.pytest_cache/
+
+# Migrations (if added later)
+alembic/versions/

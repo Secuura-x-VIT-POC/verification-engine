@@ -20,6 +20,10 @@ CATEGORY_KEYWORDS = {
         "college",
         "student",
         "transcript",
+        "report card",
+        "marksheet",
+        "mark sheet",
+        "grade report",
         "marks",
         "gpa",
         "cgpa",
@@ -152,7 +156,10 @@ def classify_credential_category(
     if _contains_any_keyword(primary_haystack, CATEGORY_KEYWORDS["identity"]):
         return "identity"
 
-    if "academic" in document_context and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS):
+    if (
+        any(token in document_context for token in ("academic", "transcript", "credential", "report card", "marksheet", "mark sheet", "grade report"))
+        and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS)
+    ):
         return "academic"
     if ("passport" in document_context or "travel" in document_context) and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS):
         return "passport"

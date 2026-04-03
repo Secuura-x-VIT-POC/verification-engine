@@ -149,6 +149,24 @@ class GeneralizedVerificationPlannerTests(unittest.TestCase):
         self.assertTrue(pii_flags["Full Name"])
         self.assertTrue(pii_flags["Home Address"])
 
+    def test_report_card_identifier_fields_are_classified_as_academic(self):
+        extraction_payload = {
+            "document_type": "report_card",
+            "fields": {
+                "student_name": "Demo Student",
+                "roll_number": "RC2026001",
+                "issue_date": "2026-03-10",
+            },
+        }
+
+        credentials = build_extracted_credentials(extraction_payload)
+        categories = {credential.label: credential.category for credential in credentials}
+        requirements = {credential.label: credential.requires_verification for credential in credentials}
+
+        self.assertEqual(categories["Roll Number"], "academic")
+        self.assertTrue(requirements["Roll Number"])
+        self.assertEqual(categories["Student Name"], "academic")
+
 
 class GeneralizedVerificationRoutingTests(unittest.TestCase):
     def test_rule_based_router_marks_entra_preference_with_local_fallback_by_default(self):

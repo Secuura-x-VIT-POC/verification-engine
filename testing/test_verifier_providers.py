@@ -343,6 +343,66 @@ class ProviderBackedExecutionTests(unittest.TestCase):
         self.assertEqual(result.raw_result_summary["provider_operating_mode"], "DEMO_MOCK")
         self.assertTrue(result.raw_result_summary["provider_is_demo_result"])
 
+    def test_local_mock_matches_aadhaar_value_from_local_verification_store(self):
+        credentials, plan = self._build_local_store_inputs(
+            session_id="provider-local-aadhaar",
+            document_type="aadhaar_card",
+            credential_id="aadhaar-number-1",
+            label="Aadhaar Number",
+            category="identity",
+            value="9999 8888 7777",
+            verifier_key="identity_db",
+            verifier_label="Identity Database",
+            verification_type="identity",
+        )
+
+        artifacts = build_execution_artifacts(
+            "provider-local-aadhaar",
+            {"document_type": "aadhaar_card"},
+            credentials=credentials,
+            verification_plan=plan,
+        )
+
+        result = artifacts["task_results"].results[0]
+        trace = artifacts["provider_execution_traces"].traces[0]
+
+        self.assertEqual(result.audit_status, "VERIFIED")
+        self.assertEqual(result.raw_result_summary["provider_key"], "local_mock")
+        self.assertEqual(result.matched_fields["aadhaar_number"], "9999 8888 7777")
+        self.assertEqual(trace.provider_key, "local_mock")
+        self.assertEqual(trace.response_summary["match_status"], "verified")
+
+    def test_local_mock_reports_pan_mismatch_from_local_verification_store(self):
+        credentials, plan = self._build_local_store_inputs(
+            session_id="provider-local-pan",
+            document_type="pan_card",
+            credential_id="pan-number-1",
+            label="PAN Number",
+            category="tax",
+            value="ZZZZZ9999Z",
+            verifier_key="tax_authority",
+            verifier_label="Tax Authority",
+            verification_type="tax",
+        )
+
+        artifacts = build_execution_artifacts(
+            "provider-local-pan",
+            {"document_type": "pan_card"},
+            credentials=credentials,
+            verification_plan=plan,
+        )
+
+        result = artifacts["task_results"].results[0]
+        trace = artifacts["provider_execution_traces"].traces[0]
+
+        self.assertEqual(result.audit_status, "MISMATCH")
+        self.assertEqual(result.raw_result_summary["provider_key"], "local_mock")
+        self.assertEqual(
+            result.mismatched_fields["pan_number"]["expected_value"],
+            "ABCDE1234F",
+        )
+        self.assertEqual(trace.response_summary["match_status"], "mismatch")
+
     def test_execution_falls_back_safely_when_provider_domain_is_blocked(self):
         credentials, plan = self._build_identity_inputs()
         base_url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
@@ -431,6 +491,68 @@ class ProviderBackedExecutionTests(unittest.TestCase):
                             else None
                         ),
                         "planned_provider_key": planned_provider_key,
+                    },
+                )
+            ],
+        )
+        return credentials, plan
+
+    @staticmethod
+    def _build_local_store_inputs(
+        *,
+        session_id,
+        document_type,
+        credential_id,
+        label,
+        category,
+        value,
+        verifier_key,
+        verifier_label,
+        verification_type,
+    ):
+        credentials = SessionCredentialCollection(
+            session_id=session_id,
+            document_type=document_type,
+            credentials=[
+                ExtractedCredential(
+                    credential_id=credential_id,
+                    label=label,
+                    category=category,
+                    value=value,
+                    normalized_value=value,
+                    confidence=0.98,
+                    page=1,
+                    bounding_box=BoundingBox(page=1, x0=10, y0=10, x1=40, y1=20),
+                    requires_verification=True,
+                )
+            ],
+        )
+        plan = SessionVerificationPlan(
+            session_id=session_id,
+            document_type=document_type,
+            route_decisions=[
+                VerifierRouteDecision(
+                    credential_id=credential_id,
+                    selected_verifier_key=verifier_key,
+                    selected_verifier_label=verifier_label,
+                    route_reason="fixture-backed local verification",
+                    planned_provider_key="local_mock",
+                    planned_provider_label="Local Mock Provider",
+                )
+            ],
+            tasks=[
+                VerificationTask(
+                    task_id=f"task-{credential_id}",
+                    credential_id=credential_id,
+                    verifier_key=verifier_key,
+                    verifier_label=verifier_label,
+                    verification_type=verification_type,
+                    required=True,
+                    status="PLANNED",
+                    input_payload={
+                        "label": label,
+                        "value": value,
+                        "planned_provider_key": "local_mock",
                     },
                 )
             ],

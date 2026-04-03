@@ -475,7 +475,10 @@ def _collect_extraction_methods(
 
 def _infer_document_family(document_type: str, detected_categories: list[str]) -> str:
     normalized_document_type = document_type.lower()
-    if "academic" in normalized_document_type or "transcript" in normalized_document_type or "credential" in normalized_document_type:
+    if any(
+        token in normalized_document_type
+        for token in ("academic", "transcript", "credential", "report_card", "marksheet", "mark_sheet", "grade_report")
+    ):
         return "academic_document"
     if any(token in normalized_document_type for token in ("passport", "identity", "license", "licence")):
         return "identity_document"

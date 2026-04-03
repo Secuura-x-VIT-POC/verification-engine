@@ -91,6 +91,10 @@ class VerifierRouteDecision(ContractModel):
     selected_verifier_key: str
     selected_verifier_label: str
     route_reason: str
+    preferred_provider_key: str | None = None
+    preferred_provider_label: str | None = None
+    planned_provider_key: str | None = None
+    planned_provider_label: str | None = None
     fallback_verifiers: list[str] = Field(default_factory=list)
     manual_review_recommended: bool = False
 

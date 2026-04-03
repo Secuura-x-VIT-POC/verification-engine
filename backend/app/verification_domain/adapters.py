@@ -289,6 +289,12 @@ def _build_task(credential: ExtractedCredential, decision: VerifierRouteDecision
         reason_codes.append("MANUAL_REVIEW_RECOMMENDED")
     else:
         reason_codes.append("AUTO_ROUTED")
+    if decision.preferred_provider_key == "entra_verified_id":
+        reason_codes.append("ENTRA_PREFERRED_ROUTE")
+    if decision.planned_provider_key == "local_mock":
+        reason_codes.append("LOCAL_PROVIDER_FALLBACK")
+    elif decision.planned_provider_key and decision.planned_provider_key != decision.preferred_provider_key:
+        reason_codes.append("SUPPLEMENTARY_PROVIDER_ROUTE")
 
     return VerificationTask(
         task_id=f"verify-{credential.credential_id}",
@@ -307,6 +313,10 @@ def _build_task(credential: ExtractedCredential, decision: VerifierRouteDecision
             "normalized_value": credential.normalized_value,
             "page": credential.page,
             "is_pii": credential.is_pii,
+            "preferred_provider_key": decision.preferred_provider_key,
+            "preferred_provider_label": decision.preferred_provider_label,
+            "planned_provider_key": decision.planned_provider_key,
+            "planned_provider_label": decision.planned_provider_label,
         },
     )
 

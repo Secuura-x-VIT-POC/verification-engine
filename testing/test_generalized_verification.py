@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -150,8 +151,16 @@ class GeneralizedVerificationPlannerTests(unittest.TestCase):
 
 
 class GeneralizedVerificationRoutingTests(unittest.TestCase):
-    def test_rule_based_router_maps_known_and_unknown_credentials(self):
+    def test_rule_based_router_marks_entra_preference_with_local_fallback_by_default(self):
         router_impl = RuleBasedVerifierRouter()
+        identity = ExtractedCredential(
+            credential_id="credential-identity",
+            label="Candidate Name",
+            category="identity",
+            value="Kanak Sharma",
+            normalized_value="Kanak Sharma",
+            requires_verification=True,
+        )
         academic = ExtractedCredential(
             credential_id="credential-1",
             label="Degree",
@@ -169,13 +178,65 @@ class GeneralizedVerificationRoutingTests(unittest.TestCase):
             requires_verification=True,
         )
 
+        identity_decision = router_impl.route(identity)
         academic_decision = router_impl.route(academic)
         unknown_decision = router_impl.route(unknown)
 
+        self.assertEqual(identity_decision.selected_verifier_key, "identity_db")
+        self.assertEqual(identity_decision.preferred_provider_key, "entra_verified_id")
+        self.assertEqual(identity_decision.planned_provider_key, "local_mock")
         self.assertEqual(academic_decision.selected_verifier_key, "academic_registry")
+        self.assertEqual(academic_decision.preferred_provider_key, "entra_verified_id")
         self.assertFalse(academic_decision.manual_review_recommended)
         self.assertEqual(unknown_decision.selected_verifier_key, "manual_review")
         self.assertTrue(unknown_decision.manual_review_recommended)
+
+    def test_rule_based_router_prefers_entra_when_enabled_and_uses_supplementary_when_not(self):
+        identity = ExtractedCredential(
+            credential_id="credential-identity",
+            label="Candidate Name",
+            category="identity",
+            value="Kanak Sharma",
+            normalized_value="Kanak Sharma",
+            requires_verification=True,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "VERIFIER_EXTERNAL_PROVIDER_ENABLED": "1",
+                "VERIFIER_ENABLED_PROVIDERS": "entra_verified_id,identity_http,local_mock",
+                "VERIFIER_PROVIDER_ENTRA_VERIFIED_ID_ENABLED": "1",
+                "VERIFIER_PROVIDER_ENTRA_VERIFIED_ID_BASE_URL": "https://entra.example.com",
+                "VERIFIER_PROVIDER_IDENTITY_HTTP_ENABLED": "1",
+                "VERIFIER_PROVIDER_IDENTITY_HTTP_BASE_URL": "https://identity.example.com",
+            },
+            clear=False,
+        ):
+            entra_router = RuleBasedVerifierRouter()
+            entra_decision = entra_router.route(identity)
+
+        with patch.dict(
+            os.environ,
+            {
+                "VERIFIER_EXTERNAL_PROVIDER_ENABLED": "1",
+                "VERIFIER_ENABLED_PROVIDERS": "identity_http,local_mock",
+                "VERIFIER_PROVIDER_ENTRA_VERIFIED_ID_ENABLED": "0",
+                "VERIFIER_PROVIDER_ENTRA_VERIFIED_ID_BASE_URL": "https://entra.example.com",
+                "VERIFIER_PROVIDER_IDENTITY_HTTP_ENABLED": "1",
+                "VERIFIER_PROVIDER_IDENTITY_HTTP_BASE_URL": "https://identity.example.com",
+            },
+            clear=False,
+        ):
+            supplementary_router = RuleBasedVerifierRouter()
+            supplementary_decision = supplementary_router.route(identity)
+
+        self.assertEqual(entra_decision.preferred_provider_key, "entra_verified_id")
+        self.assertEqual(entra_decision.planned_provider_key, "entra_verified_id")
+        self.assertIn("primary VC trust rail", entra_decision.route_reason)
+        self.assertEqual(supplementary_decision.preferred_provider_key, "entra_verified_id")
+        self.assertEqual(supplementary_decision.planned_provider_key, "identity_http")
+        self.assertIn("supplementary provider", supplementary_decision.route_reason.lower())
 
 
 class GeneralizedVerificationContractTests(unittest.TestCase):

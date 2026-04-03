@@ -11,6 +11,8 @@ This module is the bounded LangGraph enrichment layer for:
 
 It does not decide final trust and does not replace deterministic verifier execution.
 
+The product remains a generic PDF verification framework. Recruitment is only a sample use case. Microsoft Entra Verified ID is the primary VC trust rail for Entra-aligned credentials, while supplementary connectors remain additive.
+
 ## Design Rules
 
 - Keep the graph bounded and linear.
@@ -26,6 +28,7 @@ It does not decide final trust and does not replace deterministic verifier execu
 - Any future real provider integration belongs behind `providers/`.
 - Do not hardcode vendor-specific logic into node, workflow, or UI code.
 - Verifier-provider execution is a separate layer under `backend/app/verifier_providers/` and must remain distinct from agent providers.
+- Agent route assistance may point toward Entra-first verification, but final execution still flows through the deterministic verifier registry and provider capability checks.
 
 ## Reconciliation Rules
 

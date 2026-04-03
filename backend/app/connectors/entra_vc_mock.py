@@ -10,10 +10,10 @@ def verify(data: dict) -> ConnectorResponse:
 
     if is_valid:
         return ConnectorResponse(
-            connector_id="entra_vc_mock",
+            connector_id="entra_verified_id_mock",
             assurance_class="HIGH",
             status="VERIFIED",
-            reason_codes=["VC_VALID"],
+            reason_codes=["ENTRA_VERIFIED_ID_VALID"],
             matched_claims=data,
             mismatched_claims={},
             source_timestamp=datetime.now(timezone.utc),
@@ -21,10 +21,10 @@ def verify(data: dict) -> ConnectorResponse:
         )
 
     return ConnectorResponse(
-        connector_id="entra_vc_mock",
+        connector_id="entra_verified_id_mock",
         assurance_class="HIGH",
         status="INVALID",
-        reason_codes=["INVALID_CERTIFICATE"],
+        reason_codes=["ENTRA_VERIFIED_ID_INVALID"],
         matched_claims={},
         mismatched_claims=data,
         source_timestamp=datetime.now(timezone.utc),

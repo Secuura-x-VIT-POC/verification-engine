@@ -7,7 +7,7 @@ class IdentityHttpProvider(GenericHttpJsonProvider):
     def __init__(self, *, config, client):
         super().__init__(
             provider_key="identity_http",
-            provider_label="Identity HTTP Provider",
+            provider_label="Supplementary Identity HTTP Provider",
             config=config,
             client=client,
             supported_verifier_keys=["identity_db"],

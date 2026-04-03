@@ -81,16 +81,23 @@ def load_provider_runtime_policy() -> ProviderRuntimePolicy:
     global_domain_allowlist = tuple(_read_csv("VERIFIER_PROVIDER_DOMAIN_ALLOWLIST"))
 
     provider_configs = {
+        "entra_verified_id": _build_provider_config(
+            provider_key="entra_verified_id",
+            provider_label="Microsoft Entra Verified ID",
+            default_timeout_ms=default_timeout_ms,
+            default_retry_budget=default_retry_budget,
+            global_domain_allowlist=global_domain_allowlist,
+        ),
         "identity_http": _build_provider_config(
             provider_key="identity_http",
-            provider_label="Identity HTTP Provider",
+            provider_label="Supplementary Identity HTTP Provider",
             default_timeout_ms=default_timeout_ms,
             default_retry_budget=default_retry_budget,
             global_domain_allowlist=global_domain_allowlist,
         ),
         "academic_registry_http": _build_provider_config(
             provider_key="academic_registry_http",
-            provider_label="Academic Registry HTTP Provider",
+            provider_label="Supplementary Academic Registry HTTP Provider",
             default_timeout_ms=default_timeout_ms,
             default_retry_budget=default_retry_budget,
             global_domain_allowlist=global_domain_allowlist,

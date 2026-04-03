@@ -127,6 +127,12 @@ export default function WorkspaceRightSidebar({
             <strong>Status:</strong> {providerExecutionStatusLabel}
           </span>
           <span>
+            <strong>Primary trust rail:</strong> {providerExecutionSummary.primaryTrustRailLabel}
+          </span>
+          <span>
+            <strong>Entra enabled:</strong> {providerExecutionSummary.primaryTrustRailEnabled ? "Yes" : "No"}
+          </span>
+          <span>
             <strong>Traces:</strong> {providerExecutionSummary.traceCount}
           </span>
           <span>
@@ -151,11 +157,17 @@ export default function WorkspaceRightSidebar({
           </div>
         ) : null}
 
-        {providerExecutionSummary.enabledProviders.length ? (
-          <p className="muted">Enabled providers: {providerExecutionSummary.enabledProviders.join(", ")}</p>
+        {providerExecutionSummary.enabledExternalProviders.length ? (
+          <p className="muted">Enabled external providers: {providerExecutionSummary.enabledExternalProviders.join(", ")}</p>
         ) : (
           <p className="muted">No external providers are enabled. The bounded local mock path remains available.</p>
         )}
+        {!providerExecutionSummary.primaryTrustRailEnabled ? (
+          <p className="muted">
+            Microsoft Entra Verified ID is the primary VC trust rail for Entra-aligned credentials, but it is not
+            enabled in this environment.
+          </p>
+        ) : null}
       </div>
 
       <div className="panel">

@@ -7,7 +7,7 @@ class AcademicRegistryHttpProvider(GenericHttpJsonProvider):
     def __init__(self, *, config, client):
         super().__init__(
             provider_key="academic_registry_http",
-            provider_label="Academic Registry HTTP Provider",
+            provider_label="Supplementary Academic Registry HTTP Provider",
             config=config,
             client=client,
             supported_verifier_keys=["academic_registry"],

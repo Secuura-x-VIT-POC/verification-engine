@@ -153,6 +153,10 @@ export function normalizeVerificationPlan(payload, sessionId = "") {
         selected_verifier_key: asString(normalizedDecision.selected_verifier_key, "manual_review"),
         selected_verifier_label: asString(normalizedDecision.selected_verifier_label, "Manual review"),
         route_reason: asString(normalizedDecision.route_reason, "No route reason available."),
+        preferred_provider_key: asNullableString(normalizedDecision.preferred_provider_key),
+        preferred_provider_label: asNullableString(normalizedDecision.preferred_provider_label),
+        planned_provider_key: asNullableString(normalizedDecision.planned_provider_key),
+        planned_provider_label: asNullableString(normalizedDecision.planned_provider_label),
         fallback_verifiers: asStringArray(normalizedDecision.fallback_verifiers),
         manual_review_recommended: asBoolean(normalizedDecision.manual_review_recommended),
       };

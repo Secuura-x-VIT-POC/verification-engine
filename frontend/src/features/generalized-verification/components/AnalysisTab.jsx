@@ -45,11 +45,23 @@ export default function AnalysisTab({ rows, emptyMessage }) {
                   <p>{row.verifierLabel}</p>
                 </div>
                 <div>
+                  <span className="gv-detail-key">Route preference</span>
+                  <p>{row.routeDispositionLabel || "Standard route"}</p>
+                </div>
+                <div>
+                  <span className="gv-detail-key">Preferred provider</span>
+                  <p>{row.preferredProviderLabel || "No provider preference"}</p>
+                </div>
+                <div>
+                  <span className="gv-detail-key">Planned provider</span>
+                  <p>{row.plannedProviderLabel || "No provider planned"}</p>
+                </div>
+                <div>
                   <span className="gv-detail-key">Task outcome</span>
                   <p>{row.taskStatus || "Pending"}</p>
                 </div>
                 <div>
-                  <span className="gv-detail-key">Provider</span>
+                  <span className="gv-detail-key">Executed provider</span>
                   <p>{row.providerLabel || "No provider used"}</p>
                 </div>
                 <div>
@@ -62,6 +74,7 @@ export default function AnalysisTab({ rows, emptyMessage }) {
                 <div className="gv-analysis-notes">
                   {row.verificationReason ? <p><strong>Why verify:</strong> {row.verificationReason}</p> : null}
                   {row.routeReason ? <p><strong>Route reason:</strong> {row.routeReason}</p> : null}
+                  {row.routeDispositionMessage ? <p><strong>Provider path:</strong> {row.routeDispositionMessage}</p> : null}
                   {row.providerTechnicalStatus ? <p><strong>Provider status:</strong> {row.providerTechnicalStatus}</p> : null}
                   {row.providerFallbackUsed ? <p><strong>Provider fallback:</strong> Local deterministic fallback was used.</p> : null}
                   {row.agentRouteReason ? <p><strong>Agent-assisted:</strong> {row.agentRouteReason}</p> : null}

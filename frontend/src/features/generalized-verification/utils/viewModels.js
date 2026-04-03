@@ -8,6 +8,13 @@ import {
   TASK_STATUS_META,
 } from "../types/contracts.js";
 
+const KNOWN_LABELS = Object.freeze({
+  entra_verified_id: "Microsoft Entra Verified ID",
+  identity_http: "Supplementary Identity HTTP Provider",
+  academic_registry_http: "Supplementary Academic Registry HTTP Provider",
+  local_mock: "Local Mock Provider",
+});
+
 function toDisplayText(value, fallback = "Not available") {
   if (value === null || value === undefined || value === "") {
     return fallback;
@@ -123,7 +130,7 @@ function buildExecutionInfo(bundle) {
     verifierKey: bundle.best_result?.verifier_key || null,
     selectedTaskIds: bundle.selected_task_ids,
     providerKey: rawSummary.provider_key || null,
-    providerLabel: rawSummary.provider_label || labelFromVerifierKey(rawSummary.provider_key),
+    providerLabel: rawSummary.provider_label || labelFromKey(rawSummary.provider_key),
     providerTechnicalStatus: rawSummary.provider_technical_status || null,
     providerLatencyMs: rawSummary.provider_latency_ms ?? null,
     providerFallbackUsed: Boolean(rawSummary.provider_fallback_used),
@@ -155,13 +162,62 @@ function createAgentRouteLookup(routeCollection) {
 }
 
 function labelFromVerifierKey(verifierKey) {
-  if (!verifierKey) {
+  return labelFromKey(verifierKey);
+}
+
+function labelFromKey(key) {
+  if (!key) {
     return null;
   }
-  return verifierKey
+  if (KNOWN_LABELS[key]) {
+    return KNOWN_LABELS[key];
+  }
+  return key
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function buildRouteProviderInfo(routeDecision, task) {
+  const inputPayload = task?.input_payload || {};
+  const preferredProviderKey = routeDecision?.preferred_provider_key || inputPayload.preferred_provider_key || null;
+  const preferredProviderLabel =
+    routeDecision?.preferred_provider_label || inputPayload.preferred_provider_label || labelFromKey(preferredProviderKey);
+  const plannedProviderKey = routeDecision?.planned_provider_key || inputPayload.planned_provider_key || null;
+  const plannedProviderLabel =
+    routeDecision?.planned_provider_label || inputPayload.planned_provider_label || labelFromKey(plannedProviderKey);
+
+  let routeDispositionLabel = null;
+  let routeDispositionMessage = null;
+
+  if (preferredProviderKey === "entra_verified_id" && plannedProviderKey === "entra_verified_id") {
+    routeDispositionLabel = "Entra-first route";
+    routeDispositionMessage = `${preferredProviderLabel} is the primary VC trust rail for this credential in the current environment.`;
+  } else if (preferredProviderKey === "entra_verified_id" && plannedProviderKey && plannedProviderKey !== "local_mock") {
+    routeDispositionLabel = "Supplementary route";
+    routeDispositionMessage = `${preferredProviderLabel} is preferred for this credential, but ${plannedProviderLabel} is the current supplementary execution path.`;
+  } else if (preferredProviderKey === "entra_verified_id" && plannedProviderKey === "local_mock") {
+    routeDispositionLabel = "Entra unavailable";
+    routeDispositionMessage = `${preferredProviderLabel} is preferred for this credential, but it is not enabled here, so the bounded local mock path is planned.`;
+  } else if (plannedProviderKey === "local_mock") {
+    routeDispositionLabel = "Local fallback";
+    routeDispositionMessage = "No external provider is enabled for this route, so the bounded local mock path is planned.";
+  } else if (plannedProviderKey) {
+    routeDispositionLabel = "Supplementary route";
+    routeDispositionMessage = `${plannedProviderLabel} is the planned provider path for this credential.`;
+  } else if (routeDecision?.selected_verifier_key === "manual_review") {
+    routeDispositionLabel = "Manual review";
+    routeDispositionMessage = "No executable provider path is available for this credential.";
+  }
+
+  return {
+    preferredProviderKey,
+    preferredProviderLabel,
+    plannedProviderKey,
+    plannedProviderLabel,
+    routeDispositionLabel,
+    routeDispositionMessage,
+  };
 }
 
 function buildAgentInfo(credentialId, candidateLookup, routeLookup) {
@@ -213,11 +269,13 @@ export function buildAuditDetailViewModels(
     const task = taskByCredentialId[credential.credential_id];
     const bundle = bundleLookup[credential.credential_id];
     const agentInfo = buildAgentInfo(credential.credential_id, agentCandidateLookup, agentRouteLookup);
+    const routeProviderInfo = buildRouteProviderInfo(routeDecision, task);
 
     if (!audit && !bundle) {
       const detail = createFallbackAuditDetail(credential, planResponse);
       return {
         ...detail,
+        ...routeProviderInfo,
         agentAssisted: Boolean(agentInfo),
         agentInfo,
         agentExplanation: null,
@@ -247,6 +305,7 @@ export function buildAuditDetailViewModels(
         routeReason: routeDecision?.route_reason || null,
         isFallback: false,
         execution: buildExecutionInfo(bundle),
+        ...routeProviderInfo,
         agentAssisted: Boolean(agentInfo),
         agentInfo,
         agentExplanation: null,
@@ -278,6 +337,7 @@ export function buildAuditDetailViewModels(
       routeReason: routeDecision?.route_reason || null,
       isFallback: false,
       execution: buildExecutionInfo(bundle),
+      ...routeProviderInfo,
       agentAssisted: Boolean(agentInfo) || Boolean(extractAgentExplanation(audit.evidence)),
       agentInfo,
       agentExplanation: extractAgentExplanation(audit.evidence),
@@ -330,6 +390,11 @@ export function buildAnalysisRows(
       reasonCodes: detail?.reasonCodes || task?.reason_codes || [],
       routeReason: routeDecision?.route_reason || null,
       taskStatus: detail?.execution?.status || null,
+      preferredProviderKey: detail?.preferredProviderKey || null,
+      preferredProviderLabel: detail?.preferredProviderLabel || null,
+      plannedProviderLabel: detail?.plannedProviderLabel || null,
+      routeDispositionLabel: detail?.routeDispositionLabel || null,
+      routeDispositionMessage: detail?.routeDispositionMessage || null,
       providerLabel: detail?.execution?.providerLabel || null,
       providerTechnicalStatus: detail?.execution?.providerTechnicalStatus || null,
       providerFallbackUsed: detail?.execution?.providerFallbackUsed || false,
@@ -466,6 +531,8 @@ export function buildTaskExecutionSummary(taskResults, executionStatus) {
 export function buildProviderExecutionSummary(providerExecutionTraces, providerExecutionStatus, providerCapabilities) {
   const traces = Array.isArray(providerExecutionTraces?.traces) ? providerExecutionTraces.traces : [];
   const capabilities = Array.isArray(providerCapabilities?.capabilities) ? providerCapabilities.capabilities : [];
+  const entraCapability = capabilities.find((capability) => capability.provider_key === "entra_verified_id") || null;
+  const enabledCapabilities = capabilities.filter((capability) => capability.enabled);
   return {
     overallStatus: providerExecutionStatus?.provider_execution_status || "NOT_STARTED",
     overallLabel: buildProviderExecutionStatusLabel(providerExecutionStatus?.provider_execution_status),
@@ -473,7 +540,12 @@ export function buildProviderExecutionSummary(providerExecutionTraces, providerE
     providerKeysUsed: providerExecutionStatus?.provider_keys_used || [],
     outboundAttempted: Boolean(providerExecutionStatus?.outbound_attempted),
     fallbackUsed: Boolean(providerExecutionStatus?.fallback_used),
-    enabledProviders: capabilities.filter((capability) => capability.enabled).map((capability) => capability.provider_label),
+    enabledProviders: enabledCapabilities.map((capability) => capability.provider_label),
+    enabledExternalProviders: enabledCapabilities
+      .filter((capability) => capability.provider_key !== "local_mock")
+      .map((capability) => capability.provider_label),
+    primaryTrustRailLabel: entraCapability?.provider_label || "Microsoft Entra Verified ID",
+    primaryTrustRailEnabled: Boolean(entraCapability?.enabled),
   };
 }
 
@@ -547,6 +619,7 @@ export function buildWorkspaceViewModel({
     providerExecutionStatus,
     providerCapabilities
   );
+  const entraPreferredInPlan = analysisRows.some((row) => row.preferredProviderKey === "entra_verified_id");
   const agentUnderstandingSummary = buildAgentUnderstandingSummary(agentDocumentUnderstanding, agentRunStatus);
   const selectedCredentialId =
     highlightItems[0]?.credentialId || auditDetails[0]?.credentialId || credentials.credentials[0]?.credential_id || null;
@@ -596,6 +669,8 @@ export function buildWorkspaceViewModel({
         providerExecutionStatus.provider_execution_error ||
         (providerExecutionStatus.provider_execution_status === "FAILED"
           ? "Provider-backed execution failed safely. Bounded fallback results are shown where available."
+          : entraPreferredInPlan && !providerExecutionSummary.primaryTrustRailEnabled
+            ? "Microsoft Entra Verified ID is the preferred VC trust rail for some credentials, but it is not enabled in this environment. Supplementary providers or manual review are shown where applicable."
           : null),
       document: !session.document_available
         ? "No PDF is currently stored for this session."

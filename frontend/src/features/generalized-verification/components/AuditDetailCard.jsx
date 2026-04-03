@@ -49,7 +49,12 @@ export default function AuditDetailCard({ detail, compact = false }) {
         ) : null}
         {detail.execution?.providerLabel ? (
           <span>
-            <strong>Provider:</strong> {detail.execution.providerLabel}
+            <strong>Executed provider:</strong> {detail.execution.providerLabel}
+          </span>
+        ) : null}
+        {detail.preferredProviderLabel ? (
+          <span>
+            <strong>Preferred provider:</strong> {detail.preferredProviderLabel}
           </span>
         ) : null}
         <span>
@@ -112,6 +117,11 @@ export default function AuditDetailCard({ detail, compact = false }) {
                 <span>
                   <strong>Attempts:</strong> {detail.execution.resultCount}
                 </span>
+                {detail.routeDispositionLabel ? (
+                  <span>
+                    <strong>Route:</strong> {detail.routeDispositionLabel}
+                  </span>
+                ) : null}
                 {detail.execution.providerTechnicalStatus ? (
                   <span>
                     <strong>Provider status:</strong> {detail.execution.providerTechnicalStatus}
@@ -123,6 +133,7 @@ export default function AuditDetailCard({ detail, compact = false }) {
                   </span>
                 ) : null}
               </div>
+              {detail.routeDispositionMessage ? <p className="muted">{detail.routeDispositionMessage}</p> : null}
               {detail.execution.providerFallbackUsed ? (
                 <p className="muted">Provider-backed execution fell back to the bounded local verifier path.</p>
               ) : null}

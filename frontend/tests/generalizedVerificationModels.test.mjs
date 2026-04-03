@@ -120,6 +120,10 @@ export const checks = [
               selected_verifier_key: "passport_db",
               selected_verifier_label: "Passport DB",
               route_reason: "Passport category mapped to registry",
+              preferred_provider_key: null,
+              preferred_provider_label: null,
+              planned_provider_key: null,
+              planned_provider_label: null,
               fallback_verifiers: [],
               manual_review_recommended: false,
             },
@@ -403,14 +407,18 @@ export const checks = [
           {
             session_id: "session-1",
             route_decisions: [
-              {
-                credential_id: "residency-1",
-                selected_verifier_key: "address_check",
-                selected_verifier_label: "Address Check",
-                route_reason: "Baseline route",
-                fallback_verifiers: [],
-                manual_review_recommended: false,
-              },
+            {
+              credential_id: "residency-1",
+              selected_verifier_key: "address_check",
+              selected_verifier_label: "Address Check",
+              route_reason: "Baseline route",
+              preferred_provider_key: null,
+              preferred_provider_label: null,
+              planned_provider_key: "local_mock",
+              planned_provider_label: "Local Mock Provider",
+              fallback_verifiers: [],
+              manual_review_recommended: false,
+            },
             ],
             tasks: [],
           },
@@ -471,7 +479,7 @@ export const checks = [
           capabilities: [
             {
               provider_key: "identity_http",
-              provider_label: "Identity HTTP Provider",
+              provider_label: "Supplementary Identity HTTP Provider",
               supported_verifier_keys: ["identity_db"],
               supported_categories: ["identity"],
               enabled: true,
@@ -486,7 +494,101 @@ export const checks = [
       assert.equal(summary.traceCount, 1);
       assert.equal(summary.overallLabel, "Ready");
       assert.equal(summary.providerKeysUsed[0], "identity_http");
-      assert.equal(summary.enabledProviders[0], "Identity HTTP Provider");
+      assert.equal(summary.enabledProviders[0], "Supplementary Identity HTTP Provider");
+    },
+  },
+  {
+    name: "workspace view model labels Entra-first and fallback routes honestly",
+    run() {
+      const viewModel = buildWorkspaceViewModel({
+        session: createEmptySessionOverview("session-1"),
+        agentDocumentUnderstanding: createEmptyAgentDocumentUnderstanding("session-1"),
+        agentCredentialCandidates: createEmptyAgentCredentialCandidateCollection("session-1"),
+        agentRouteRecommendations: createEmptyAgentRouteRecommendationCollection("session-1"),
+        agentRunStatus: createEmptyAgentRunStatus("session-1"),
+        documentProfile: createEmptyDocumentProfile("session-1"),
+        credentials: normalizeCredentialCollection(
+          {
+            session_id: "session-1",
+            credentials: [
+              {
+                credential_id: "name-1",
+                label: "Candidate Name",
+                category: "identity",
+                value: "Kanak Sharma",
+                requires_verification: true,
+              },
+            ],
+          },
+          "session-1"
+        ),
+        verificationPlan: normalizeVerificationPlan(
+          {
+            session_id: "session-1",
+            route_decisions: [
+              {
+                credential_id: "name-1",
+                selected_verifier_key: "identity_db",
+                selected_verifier_label: "Identity Database",
+                route_reason: "Identity credential.",
+                preferred_provider_key: "entra_verified_id",
+                preferred_provider_label: "Microsoft Entra Verified ID",
+                planned_provider_key: "local_mock",
+                planned_provider_label: "Local Mock Provider",
+                fallback_verifiers: ["manual_review"],
+                manual_review_recommended: false,
+              },
+            ],
+            tasks: [
+              {
+                task_id: "task-1",
+                credential_id: "name-1",
+                verifier_key: "identity_db",
+                verifier_label: "Identity Database",
+                verification_type: "identity",
+                required: true,
+                status: "PLANNED",
+                reason_codes: ["ENTRA_PREFERRED_ROUTE", "LOCAL_PROVIDER_FALLBACK"],
+                input_payload: {
+                  preferred_provider_key: "entra_verified_id",
+                  preferred_provider_label: "Microsoft Entra Verified ID",
+                  planned_provider_key: "local_mock",
+                  planned_provider_label: "Local Mock Provider",
+                },
+              },
+            ],
+          },
+          "session-1"
+        ),
+        verificationTaskResults: createEmptyVerificationTaskResultCollection("session-1"),
+        credentialBundles: createEmptyCredentialBundleCollection("session-1"),
+        credentialAudits: createEmptyCredentialAuditCollection("session-1"),
+        verificationSummary: createEmptyVerificationSummary("session-1"),
+        analysisStatus: createEmptyAnalysisStatus("session-1"),
+        executionStatus: createEmptyVerificationExecutionStatus("session-1"),
+        providerExecutionTraces: createEmptyProviderExecutionTraceCollection("session-1"),
+        providerExecutionStatus: createEmptyProviderExecutionStatus("session-1"),
+        providerCapabilities: normalizeProviderCapabilities(
+          {
+            session_id: "session-1",
+            capabilities: [
+              {
+                provider_key: "local_mock",
+                provider_label: "Local Mock Provider",
+                supported_verifier_keys: ["identity_db"],
+                supported_categories: ["identity"],
+                enabled: true,
+              },
+            ],
+          },
+          "session-1"
+        ),
+      });
+
+      assert.equal(viewModel.analysisRows[0].routeDispositionLabel, "Entra unavailable");
+      assert.equal(viewModel.analysisRows[0].preferredProviderLabel, "Microsoft Entra Verified ID");
+      assert.match(viewModel.messages.provider, /preferred VC trust rail/i);
+      assert.equal(viewModel.providerExecutionSummary.primaryTrustRailEnabled, false);
     },
   },
 ];

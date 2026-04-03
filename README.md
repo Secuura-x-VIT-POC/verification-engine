@@ -1,182 +1,65 @@
 # Verification Engine
 
-Session-based document verification engine with extraction, grounding, trust evaluation, and audit-backed decisions.
+Generic PDF verification framework for session-scoped document review, connector validation, trust rendering, and secure cleanup.
 
----
+## Product Direction
 
-## Overview
+- The product is a generalized document verification platform, not a recruitment-only verifier.
+- Microsoft Entra Verified ID is the primary VC and identity trust rail for Entra-aligned credentials.
+- Other public or open verification APIs remain supplementary connectors.
+- JWT login is acceptable for the current POC, while Microsoft Entra is the target identity and access model.
 
-This repository contains the core verification pipeline for the Secuura x VIT proof of concept.
+## Core Flow
 
-The system processes recruitment documents in a session-scoped, privacy-aware workflow. Documents are not processed at upload time; verification starts only when an authorized reviewer opens a session.
+1. Upload and view experience
+   - Reviewers upload a PDF and open a bounded verification session.
+   - Processing remains session-scoped and privacy-aware.
+2. Extraction and grounding
+   - The extraction service parses the document, grounds fields to page geometry, and produces reusable session artifacts.
+3. Connector validation
+   - Deterministic planning builds per-credential verification tasks.
+   - The verifier registry executes those tasks through Microsoft Entra Verified ID when available, then supplementary providers, then honest fallback paths.
+4. Trust result rendering
+   - The generalized workspace renders field-level audits and a consolidated deterministic trust outcome.
+   - LangGraph enrichment can improve understanding and explanation, but it does not decide final trust.
+5. Secure cleanup
+   - Cleanup remains session-driven and minimizes retained content after review.
 
-The design prioritizes:
-- minimal data retention
-- deterministic verification logic
-- traceable audit outcomes
+## Architecture Layers
 
----
+- `backend/app/workflow/`: session runtime and existing top-level workflow state machine.
+- `backend/app/verification_domain/`: generalized profile, credential, plan, audit, and summary contracts.
+- `backend/app/verifier_execution/`: per-credential task execution and bundle assembly.
+- `backend/app/verifier_providers/`: provider registry, capability policy, safe HTTP client, and provider adapters.
+- `backend/app/agent_orchestration/`: bounded LangGraph enrichment for document understanding, grouping, routing assistance, and explanations.
+- `backend/app/trust/`: deterministic document-level trust evaluation.
+- `frontend/src/features/generalized-verification/`: generalized reviewer workspace.
+- `frontend/src/pages/VerifyPage.jsx`: legacy page kept alive during migration.
 
-## Key Features
+## Trust Rail Precedence
 
-### 1. Session-Based Processing
-- One-time upload tokens
-- Verification triggered on session open
-- No background processing without reviewer action
+- Microsoft Entra Verified ID is the primary path for VC-presentable identity, academic, and certificate-style credentials.
+- Supplementary providers are used only when Entra is unavailable or not applicable.
+- Manual review is the bounded fallback when executable evidence is insufficient.
+- Deterministic trust remains the final document-level authority.
 
-### 2. Extraction Pipeline
-- Dedicated extraction service for document parsing/OCR
-- Canonical field extraction for downstream validation
-- Structured handoff into trust evaluation
+## Security and Privacy
 
-### 3. Trust Evaluation Engine
-- Connector-based validation flow
-- Mock registry / credential connectors for the POC
-- Deterministic decision outcomes:
-  - Green -> verified by trusted source
-  - Amber -> valid document, but no high-assurance confirmation
-  - Red -> mismatch, failure, or policy violation
+- External verifier providers are optional and disabled by default.
+- Full-document outbound transfer is not enabled by default.
+- Payload minimization and redaction run before outbound provider calls.
+- Technical traces persist redacted summaries only.
+- Cleanup still purges derived artifacts with the source document state.
 
-### 4. Audit & Integrity
-- Audit receipt persistence in the database layer
-- Sealed nonce / receipt schema for tamper-evident records
-- Minimal retained metadata after processing
+## Governance
 
-### 5. Privacy-Aware Retention
-After session completion:
-- transient uploaded content can be cleaned up
-- only minimal audit metadata should remain
+- Secuura reviews the final architecture.
+- Secuura owns the final architecture in alignment with its broader platform architecture.
+- Future commercial rights remain with Secuura.
 
----
+## Status
 
-## Repository Structure
-
-  ```text
-  verification-engine/
-  |
-  |-- README.md                         # project overview and onboarding
-  |-- LICENSE
-  |-- docker-compose.yml                # local multi-service orchestration
-  |
-  |-- backend/
-  |   |-- Dockerfile                    # backend container
-  |   |-- requirements.txt              # backend Python dependencies
-  |   |
-  |   `-- app/
-  |       |-- main.py                   # FastAPI entrypoint
-  |       |
-  |       |-- audit/                    # audit logic and receipt handling
-  |       |-- auth/                     # authentication / authorization
-  |       |-- cleanup/                  # post-session cleanup
-  |       |-- connectors/               # external verification connectors
-  |       |   |-- broker.py
-  |       |   |-- entra_vc_mock.py
-  |       |   `-- vit_mock.py
-  |       |-- orchestrator/             # verification orchestration
-  |       |-- security/                 # security utilities and policies
-  |       |-- sessions/                 # session lifecycle management
-  |       |-- storage/                  # transient file / object handling
-  |       |-- trust/                    # trust evaluation engine
-  |       |-- uploads/                  # upload flow
-  |       `-- workflow/                 # end-to-end verification workflow
-  |
-  |-- extraction/
-  |   |-- Dockerfile                    # extraction service container
-  |   |-- requirements.txt              # extraction/OCR dependencies
-  |   |-- cached_results/               # cached extraction outputs
-  |   |-- grounding/                    # PDF field grounding logic
-  |   |-- ocr/                          # OCR pipeline
-  |   |-- parser/                       # document parsing
-  |   |-- samples/                      # sample documents / fixtures
-  |   `-- schema/                       # extraction output schemas
-  |
-  |-- frontend/
-  |   |-- Dockerfile                    # frontend container
-  |   |-- package.json                  # frontend dependencies and scripts
-  |   |
-  |   `-- src/
-  |       |-- audit_receipt/            # audit receipt UI
-  |       |-- components/               # shared UI components
-  |       |-- pages/                    # app pages/routes
-  |       |-- pdf_viewer/               # PDF viewer and grounding overlays
-  |       `-- trust_panel/              # trust decision UI
-  |
-  |-- db/
-  |   |-- audit_schema/                 # audit-related SQL definitions
-  |       |-- receipt.sql              # Audit receipt schema
-  |       `-- sealed_nonce.sql         # Nonce / integrity schema
-  |   `-- workflow_schema/              # workflow/session database schema
-  ```
-
----
-
-## Service Layout
-
-- `backend/`: API and verification orchestration layer
-- `backend/app/connectors/`: mocked trust and credential verification connectors used by the POC
-- `extraction/`: extraction/OCR service container and dependencies
-- `frontend/`: reviewer-facing frontend application
-- `db/audit_schema/`: SQL definitions for audit-related persistence
-
----
-
-## Tech Stack
-
-**Backend**
-- FastAPI
-- Python dependency set in `backend/requirements.txt`
-
-**Extraction**
-- Separate Python service in `extraction/`
-- OCR / parsing dependencies isolated from the API service
-
-**Frontend**
-- JavaScript frontend in `frontend/`
-- Containerized separately via `frontend/Dockerfile`
-
-**Data / Infra**
-- SQL schema under `db/audit_schema/`
-- Docker Compose for local multi-service orchestration
-
----
-
-## Security Model (POC vs Production)
-
-### Implemented in POC
-- Session-scoped verification
-- Connector-based trust evaluation
-- Audit-oriented database schema
-- Containerized local deployment
-
-### Documented for Production (not fully implemented here)
-- Worker isolation
-- stronger key management
-- service-to-service hardening
-- production-grade orchestration and recovery controls
-
----
-
-## Limitations
-
-This repository is a proof of concept, not a production system.
-
-- Connectors are mocked
-- Some production security controls are architectural goals rather than fully implemented features
-- The current repository structure is service-oriented, but still intentionally lightweight for demo use
-
----
-
-## Goal
-
-The goal of this project is to demonstrate:
-
-- secure document verification workflows
-- trust-based decision systems
-- privacy-preserving audit design
-
-It is not intended to be a production-ready verification platform.
-
----
+This repository is a POC implementation of the verification backbone and reviewer workspace. Mock paths remain available so the repo works without live provider credentials, but the architecture is now aligned for Entra-first verification with supplementary connectors.
 
 ## License
 

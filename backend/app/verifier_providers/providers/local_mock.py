@@ -88,9 +88,17 @@ class LocalMockProvider(VerifierProvider):
         technical_status = str(fixture.get("technical_status") or PROVIDER_TECHNICAL_STATUS_SUCCESS)
         summary = as_dict(fixture.get("response_summary"))
         if not summary:
+            preferred_provider_key = str(request.input_payload.get("preferred_provider_key") or "")
+            preferred_provider_label = str(request.input_payload.get("preferred_provider_label") or "")
+            note = "No live external evidence is configured in this environment."
+            if preferred_provider_key == "entra_verified_id":
+                note = (
+                    f"{preferred_provider_label or 'Microsoft Entra Verified ID'} is not configured in this "
+                    "environment, so the bounded local mock path was used."
+                )
             summary = {
                 "mode": "local_fixture",
-                "note": "No live external evidence is configured in this environment.",
+                "note": note,
             }
         missing_fields = as_string_list(fixture.get("missing_fields"))
         if not missing_fields:

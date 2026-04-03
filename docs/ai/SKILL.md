@@ -4,7 +4,10 @@
 
 - This repository is a generalized document verification platform.
 - It must not be treated as recruitment-only, transcript-only, or passport-only.
+- Microsoft Entra Verified ID is the primary VC and identity trust rail for Entra-aligned credentials.
+- Other public or open verification APIs are supplementary connectors behind the verifier-provider layer.
 - The platform accepts PDFs, extracts candidate credentials, builds bounded verification plans, executes per-credential verification, and produces session-scoped audits plus consolidated outcomes.
+- JWT login is acceptable for the POC, but Microsoft Entra is the target identity and access model.
 
 ## Current Architecture Layers
 
@@ -87,6 +90,7 @@ All of these are additive, nullable, and must remain backward compatible with ol
 
 - External verifier providers must remain optional and disabled by default unless explicitly configured.
 - The default verifier-provider path is `local_mock`, which is local-only and must not pretend to be live evidence.
+- Prefer `entra_verified_id` for VC-presentable identity, academic, and certificate-style credentials when it is executable.
 - Real outbound verifier integrations belong under `backend/app/verifier_providers/`.
 - Use the provider registry, policy loader, and safe HTTP client instead of making direct network calls.
 - Do not log raw secrets, raw request bodies, or full sensitive provider responses.
@@ -116,6 +120,7 @@ All of these are additive, nullable, and must remain backward compatible with ol
 - The legacy verify flow and the generalized workspace must coexist during migration.
 - Additive changes are preferred over rewrites.
 - New generalized UI work belongs under `frontend/src/features/generalized-verification/`.
+- When UI wording refers to the primary VC trust rail, use explicit Microsoft Entra Verified ID naming instead of vague generic VC language.
 
 ## Future Direction
 

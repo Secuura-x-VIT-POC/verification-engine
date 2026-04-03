@@ -36,15 +36,21 @@ from backend.app.verifier_providers.registry import build_default_provider_regis
 
 
 class _ProviderHandler(BaseHTTPRequestHandler):
-    response_payload = {
+    identity_response_payload = {
         "matched_fields": {"name": "Kanak Sharma"},
         "reason_codes": ["HTTP_PROVIDER_MATCH"],
         "confidence": 0.99,
         "response_summary": {"source": "identity-http-fixture"},
     }
+    entra_response_payload = {
+        "verified_claims": {"name": "Kanak Sharma"},
+        "reason_codes": ["ENTRA_VERIFIED_ID_MATCH"],
+        "confidence": 0.99,
+        "presentation_summary": {"source": "entra-fixture", "presentation_state": "verified"},
+    }
 
     def do_POST(self):  # noqa: N802
-        if self.path != "/verify/identity":
+        if self.path not in {"/verify/identity", "/presentations/verify"}:
             self.send_response(404)
             self.end_headers()
             return
@@ -58,7 +64,12 @@ class _ProviderHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps(self.response_payload).encode("utf-8"))
+        response_payload = (
+            self.entra_response_payload
+            if self.path == "/presentations/verify"
+            else self.identity_response_payload
+        )
+        self.wfile.write(json.dumps(response_payload).encode("utf-8"))
 
     def log_message(self, format, *args):  # noqa: A003
         return
@@ -72,6 +83,30 @@ class ProviderRegistryTests(unittest.TestCase):
 
         self.assertIsNotNone(provider)
         self.assertEqual(provider.provider_key, "local_mock")
+
+    def test_registry_prefers_entra_verified_id_when_enabled(self):
+        with patch.dict(
+            os.environ,
+            {
+                "VERIFIER_EXTERNAL_PROVIDER_ENABLED": "1",
+                "VERIFIER_ENABLED_PROVIDERS": "entra_verified_id,identity_http,local_mock",
+                "VERIFIER_PROVIDER_ENTRA_VERIFIED_ID_ENABLED": "1",
+                "VERIFIER_PROVIDER_ENTRA_VERIFIED_ID_BASE_URL": "https://entra.example.com",
+                "VERIFIER_PROVIDER_IDENTITY_HTTP_ENABLED": "1",
+                "VERIFIER_PROVIDER_IDENTITY_HTTP_BASE_URL": "https://identity.example.com",
+            },
+            clear=False,
+        ):
+            registry = build_default_provider_registry()
+
+        provider = registry.find_provider(
+            verifier_key="identity_db",
+            category="identity",
+            preferred_provider_key="entra_verified_id",
+        )
+
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.provider_key, "entra_verified_id")
 
 
 class ProviderPolicyTests(unittest.TestCase):
@@ -153,6 +188,38 @@ class ProviderBackedExecutionTests(unittest.TestCase):
         self.assertEqual(trace.provider_key, "identity_http")
         self.assertFalse(trace.fallback_used)
 
+    def test_execution_prefers_entra_verified_id_when_enabled(self):
+        credentials, plan = self._build_identity_inputs(preferred_provider_key="entra_verified_id")
+        base_url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+        with patch.dict(
+            os.environ,
+            {
+                "VERIFIER_EXTERNAL_PROVIDER_ENABLED": "1",
+                "VERIFIER_ENABLED_PROVIDERS": "entra_verified_id,identity_http,local_mock",
+                "VERIFIER_PROVIDER_ENTRA_VERIFIED_ID_ENABLED": "1",
+                "VERIFIER_PROVIDER_ENTRA_VERIFIED_ID_BASE_URL": base_url,
+                "VERIFIER_PROVIDER_IDENTITY_HTTP_ENABLED": "1",
+                "VERIFIER_PROVIDER_IDENTITY_HTTP_BASE_URL": base_url,
+            },
+            clear=False,
+        ):
+            artifacts = build_execution_artifacts(
+                "provider-entra-session",
+                {"document_type": "identity_document"},
+                credentials=credentials,
+                verification_plan=plan,
+            )
+
+        result = artifacts["task_results"].results[0]
+        trace = artifacts["provider_execution_traces"].traces[0]
+
+        self.assertEqual(result.audit_status, "VERIFIED")
+        self.assertEqual(result.raw_result_summary["provider_key"], "entra_verified_id")
+        self.assertEqual(result.raw_result_summary["provider_label"], "Microsoft Entra Verified ID")
+        self.assertEqual(trace.provider_key, "entra_verified_id")
+        self.assertEqual(trace.response_summary["trust_rail"], "Microsoft Entra Verified ID")
+
     def test_execution_falls_back_safely_when_provider_domain_is_blocked(self):
         credentials, plan = self._build_identity_inputs()
         base_url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
@@ -185,7 +252,7 @@ class ProviderBackedExecutionTests(unittest.TestCase):
         self.assertTrue(trace.fallback_used)
 
     @staticmethod
-    def _build_identity_inputs():
+    def _build_identity_inputs(preferred_provider_key=None, planned_provider_key=None):
         credentials = SessionCredentialCollection(
             session_id="provider-http-session",
             document_type="identity_document",
@@ -212,6 +279,14 @@ class ProviderBackedExecutionTests(unittest.TestCase):
                     selected_verifier_key="identity_db",
                     selected_verifier_label="Identity Database",
                     route_reason="identity",
+                    preferred_provider_key=preferred_provider_key,
+                    preferred_provider_label=(
+                        "Microsoft Entra Verified ID"
+                        if preferred_provider_key == "entra_verified_id"
+                        else None
+                    ),
+                    planned_provider_key=planned_provider_key,
+                    planned_provider_label=None,
                 )
             ],
             tasks=[
@@ -223,7 +298,17 @@ class ProviderBackedExecutionTests(unittest.TestCase):
                     verification_type="identity",
                     required=True,
                     status="PLANNED",
-                    input_payload={"label": "Candidate Name", "value": "Kanak Sharma"},
+                    input_payload={
+                        "label": "Candidate Name",
+                        "value": "Kanak Sharma",
+                        "preferred_provider_key": preferred_provider_key,
+                        "preferred_provider_label": (
+                            "Microsoft Entra Verified ID"
+                            if preferred_provider_key == "entra_verified_id"
+                            else None
+                        ),
+                        "planned_provider_key": planned_provider_key,
+                    },
                 )
             ],
         )

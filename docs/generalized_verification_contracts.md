@@ -10,6 +10,8 @@ This repository is a generalized document verification platform. The current arc
 - provider-backed verifier integration
 - a bounded LangGraph enrichment layer
 
+Microsoft Entra Verified ID is the primary VC and identity trust rail for Entra-aligned credentials. Supplementary public or open verification APIs remain additive connectors behind the same verifier-provider boundary.
+
 The LangGraph layer exists to improve document understanding, credential grouping, route suggestions, and reviewer-facing explanations. It does not decide final trust, bypass verifier execution, or replace the deterministic trust engine.
 
 ## Persisted Session Artifact Families
@@ -96,6 +98,8 @@ Deterministic or reconciled route selection:
 
 - selected verifier key and label
 - route reason
+- preferred provider key and label
+- planned provider key and label
 - fallback verifiers
 - manual review recommendation
 
@@ -318,8 +322,9 @@ Current verifier-provider surface:
 Current verifier-provider implementations:
 
 - `LocalMockProvider`: default local fallback, no network, no fake live evidence
-- `IdentityHttpProvider`: optional HTTP JSON adapter for `identity_db`
-- `AcademicRegistryHttpProvider`: optional HTTP JSON adapter for `academic_registry`
+- `EntraVerifiedIdProvider`: optional Microsoft Entra Verified ID adapter for VC-presentable identity, academic, and certificate-style credentials
+- `IdentityHttpProvider`: optional supplementary HTTP JSON adapter for `identity_db`
+- `AcademicRegistryHttpProvider`: optional supplementary HTTP JSON adapter for `academic_registry`
 
 The verifier registry owns task semantics. Provider adapters only handle capability, outbound transport, and normalization.
 
@@ -331,7 +336,7 @@ After extraction:
 
 1. deterministic credentials and baseline plan are built
 2. agent Pass A runs through LangGraph
-3. route planning remains capability-aware and may reflect external-provider availability or bounded local fallback
+3. route planning remains capability-aware, prefers Microsoft Entra Verified ID for Entra-aligned credentials, and records when supplementary or local fallback paths are used instead
 4. agent outputs may refine category assignment and route selection only through bounded reconciliation
 5. enriched generalized profile, credentials, and plan are persisted
 
@@ -353,14 +358,16 @@ The precedence model is explicit:
 1. extracted document values, geometry, and session-scoped evidence remain source-of-record
 2. agent outputs may enrich classification, grouping, route suggestions, and explanations
 3. deterministic verifier execution performs the actual verification tasks
-4. verifier providers may supply normalized field evidence but do not own trust policy
-5. deterministic trust evaluation remains the final document-level authority
+4. Microsoft Entra Verified ID is the primary provider path for VC-presentable identity and credential classes when enabled
+5. supplementary verifier providers may supply normalized field evidence but do not own trust policy
+6. deterministic trust evaluation remains the final document-level authority
 
 If agent and deterministic routing differ:
 
 - both are recorded through task input payloads and route reasoning
 - agent suggestions can only override a `manual_review` route through bounded reconciliation
 - deterministic verified evidence is never replaced by agent guesses
+- provider preference metadata records when Entra was preferred but unavailable
 
 ## Read Endpoints
 
@@ -399,6 +406,7 @@ These endpoints prefer persisted payloads and return safe structured responses f
 - external agent providers are disabled unless explicitly enabled by config
 - the default provider is deterministic and local
 - external verifier providers are disabled unless explicitly enabled by config
+- Microsoft Entra Verified ID is optional in the repo and must be explicitly configured before any outbound Entra call is attempted
 - payload minimization and redaction run before outbound verifier calls
 - full-document outbound transfer is not enabled by default
 - allowlisted domains, bounded timeouts, retries, and size limits gate HTTP providers
@@ -427,9 +435,16 @@ Stage 6 adds provider-backed verifier plumbing, but it still does not:
 - upload full documents by default
 - make outbound provider access mandatory
 
-## Deferred To Stage 7
+## Entra Alignment Notes
 
-- richer provider-specific adapters beyond the initial HTTP examples
+- Microsoft Entra Verified ID is the explicit primary trust rail for VC-presentable identity, academic, and certificate-style credentials.
+- Supplementary providers remain available for categories or environments where Entra is not executable.
+- JWT-based login remains acceptable for the current POC, but Microsoft Entra is the target identity and access model.
+
+## Deferred To Stage 8
+
+- real tenant-specific Microsoft Entra Verified ID configuration and presentation templates
+- richer supplementary provider adapters beyond the current examples
 - explicit reviewer override flows around provider failures or manual review
 - broader grouped-claim execution beyond the current per-credential backbone
 - deeper multi-provider reconciliation and retry policy

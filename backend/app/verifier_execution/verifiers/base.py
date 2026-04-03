@@ -272,7 +272,10 @@ class ConnectorAwareVerifier(CredentialVerifier):
         provider_input_payload = self.build_provider_input_payload(task, credential, context)
         preferred_provider_key = None
         if isinstance(task.input_payload, dict):
-            preferred_provider_key = task.input_payload.get("preferred_provider_key")
+            preferred_provider_key = (
+                task.input_payload.get("planned_provider_key")
+                or task.input_payload.get("preferred_provider_key")
+            )
 
         attempt = runtime.attempt_verification(
             session_id=context.session_id,

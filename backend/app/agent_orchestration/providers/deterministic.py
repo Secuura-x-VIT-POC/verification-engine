@@ -169,6 +169,11 @@ class DeterministicProvider(AgentProvider):
                     route_reason=(
                         f"Agent-assisted grouping mapped '{candidate.label}' to category '{candidate.category}' "
                         f"and recommends '{recommended_verifier}'."
+                        + (
+                            " Microsoft Entra Verified ID is the preferred VC trust rail for this category when enabled."
+                            if candidate.category in {"identity", "academic", "certificate"}
+                            else ""
+                        )
                     ),
                     confidence=confidence,
                     manual_review_recommended=manual_review,
@@ -334,7 +339,10 @@ def _build_group_candidates(credentials) -> list[AgentCredentialCandidate]:
                 },
                 confidence=round(_average_confidence(identity_fields), 2),
                 verification_recommended=True,
-                verification_reason="Grouped identity fields strengthen the need for a bounded identity verifier.",
+                verification_reason=(
+                    "Grouped identity fields strengthen the need for bounded identity verification, "
+                    "with Microsoft Entra Verified ID preferred when that trust rail is enabled."
+                ),
                 possible_verifier_keys=["identity_db", "manual_review"],
                 ambiguity_flags=[],
             )

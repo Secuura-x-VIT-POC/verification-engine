@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..verifier_providers import build_default_provider_registry
+from ..verification_domain.routing import preferred_provider_for_category
 from ..verification_domain.contracts import EvidenceItem
 
 
@@ -16,6 +17,13 @@ VERIFIER_LABELS = {
     "financial_registry": "Financial Registry",
     "tax_authority": "Tax Authority",
     "manual_review": "Manual Review",
+}
+
+PROVIDER_LABELS = {
+    "entra_verified_id": "Microsoft Entra Verified ID",
+    "identity_http": "Supplementary Identity HTTP Provider",
+    "academic_registry_http": "Supplementary Academic Registry HTTP Provider",
+    "local_mock": "Local Mock Provider",
 }
 
 PII_CATEGORIES = {"identity", "address", "passport", "license", "financial", "tax"}
@@ -241,9 +249,28 @@ def _apply_route_recommendation(
         )
         decision.manual_review_recommended = recommendation.manual_review_recommended
 
+    preferred_provider_key, preferred_provider_label = preferred_provider_for_category(candidate.category)
+    planned_provider = PROVIDER_REGISTRY.find_provider(
+        verifier_key=decision.selected_verifier_key,
+        category=candidate.category,
+        preferred_provider_key=preferred_provider_key,
+    )
+    decision.preferred_provider_key = preferred_provider_key
+    decision.preferred_provider_label = preferred_provider_label
+    decision.planned_provider_key = planned_provider.provider_key if planned_provider is not None else None
+    decision.planned_provider_label = (
+        PROVIDER_LABELS.get(planned_provider.provider_key, planned_provider.provider_key.replace("_", " ").title())
+        if planned_provider is not None
+        else None
+    )
+
     if task is not None:
         task.input_payload = dict(task.input_payload or {})
         task.input_payload["agent_assisted"] = assistant_payload
+        task.input_payload["preferred_provider_key"] = decision.preferred_provider_key
+        task.input_payload["preferred_provider_label"] = decision.preferred_provider_label
+        task.input_payload["planned_provider_key"] = decision.planned_provider_key
+        task.input_payload["planned_provider_label"] = decision.planned_provider_label
         task.reason_codes = _dedupe(list(task.reason_codes or []) + ["AGENT_ASSISTED"])
         if len(candidate.grouped_field_ids) > 1:
             task.reason_codes = _dedupe(list(task.reason_codes or []) + ["AGENT_GROUPED_CREDENTIAL"])

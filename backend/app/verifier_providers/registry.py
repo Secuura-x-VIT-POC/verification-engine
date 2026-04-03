@@ -4,7 +4,12 @@ from .base import VerifierProvider
 from .contracts import ProviderCapability, ProviderCapabilityCollection
 from .http_client import SafeHttpJsonClient
 from .policies import build_local_mock_config, load_provider_runtime_policy
-from .providers import AcademicRegistryHttpProvider, IdentityHttpProvider, LocalMockProvider
+from .providers import (
+    AcademicRegistryHttpProvider,
+    EntraVerifiedIdProvider,
+    IdentityHttpProvider,
+    LocalMockProvider,
+)
 
 
 class ProviderRegistry:
@@ -50,6 +55,10 @@ def build_default_provider_registry() -> ProviderRegistry:
         response_size_limit_bytes=policy.response_size_limit_bytes,
     )
     registry = ProviderRegistry()
+
+    entra_config = policy.config_for("entra_verified_id")
+    if entra_config is not None and policy.is_provider_enabled("entra_verified_id"):
+        registry.register(EntraVerifiedIdProvider(config=entra_config, client=client))
 
     identity_config = policy.config_for("identity_http")
     if identity_config is not None and policy.is_provider_enabled("identity_http"):

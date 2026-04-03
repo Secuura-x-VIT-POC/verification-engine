@@ -5,14 +5,16 @@ export default function HighlightOverlay({ boxes, pageWidth, pageHeight }) {
     return null;
   }
 
-  const scaleX = pageWidth / 600;
-  const scaleY = pageHeight / 800;
-  const normalizedBoxes = Array.isArray(boxes) ? boxes : Object.entries(boxes);
+  const normalizedBoxes = Array.isArray(boxes)
+    ? boxes
+    : Object.entries(boxes).map(([key, box]) => ({
+        key,
+        ...box,
+      }));
 
   return (
     <>
-      {normalizedBoxes.map((entry) => {
-        const [key, box] = Array.isArray(entry) ? entry : [entry.key, entry];
+      {normalizedBoxes.map((box) => {
         const x0 = box.x0 ?? box.x1 ?? 0;
         const y0 = box.y0 ?? box.y1 ?? 0;
         const x1 = box.x1 ?? box.x2 ?? 0;
@@ -20,15 +22,15 @@ export default function HighlightOverlay({ boxes, pageWidth, pageHeight }) {
 
         return (
           <div
-            key={key}
+            key={box.key}
             className="highlight-box"
             style={{
-              left: `${x0 * scaleX}px`,
-              top: `${y0 * scaleY}px`,
-              width: `${Math.max(x1 - x0, 0) * scaleX}px`,
-              height: `${Math.max(y1 - y0, 0) * scaleY}px`,
+              left: `${x0}px`,
+              top: `${y0}px`,
+              width: `${Math.max(x1 - x0, 0)}px`,
+              height: `${Math.max(y1 - y0, 0)}px`,
             }}
-            title={key}
+            title={box.key}
           />
         );
       })}

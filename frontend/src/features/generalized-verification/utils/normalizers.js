@@ -78,6 +78,11 @@ function asObject(value) {
   return {};
 }
 
+function asEnum(value, allowedValues, fallback) {
+  const normalized = asString(value, fallback);
+  return allowedValues.includes(normalized) ? normalized : fallback;
+}
+
 export function normalizeBoundingBox(payload, fallbackPage = null) {
   const box = asObject(payload);
   const page = asInteger(box.page) ?? fallbackPage;
@@ -197,8 +202,12 @@ export function normalizeCredentialAudits(payload, sessionId = "") {
         document_value: normalizedAudit.document_value ?? null,
         normalized_value: asNullableString(normalizedAudit.normalized_value),
         verifier_label: asString(normalizedAudit.verifier_label, "Verifier unavailable"),
-        audit_status: asString(normalizedAudit.audit_status, "UNVERIFIED"),
-        outcome_color: asString(normalizedAudit.outcome_color, "amber"),
+        audit_status: asEnum(normalizedAudit.audit_status,
+        ["VERIFIED", "MISMATCH", "PARTIAL", "UNVERIFIED", "MANUAL_REVIEW", "NOT_APPLICABLE"],
+        "UNVERIFIED"),
+        outcome_color: asEnum(normalizedAudit.outcome_color,
+        ["green", "red", "amber", "neutral"],
+        "amber"),
         explanation: asString(normalizedAudit.explanation, "No audit explanation is available yet."),
         reason_codes: asStringArray(normalizedAudit.reason_codes),
         matched_fields: asObject(normalizedAudit.matched_fields),
@@ -239,7 +248,9 @@ export function normalizeAnalysisStatus(payload, sessionId = "") {
   return {
     session_id: asString(status.session_id, sessionId),
     workflow_state: asString(status.workflow_state, "UNKNOWN"),
-    generalized_analysis_status: asString(status.generalized_analysis_status, "NOT_STARTED"),
+    generalized_analysis_status: asEnum(status.generalized_analysis_status,
+      ["NOT_STARTED", "PROFILED", "CREDENTIALS_BUILT", "PLAN_BUILT", "AUDITS_ASSEMBLED", "READY", "FAILED"],
+      "NOT_STARTED"),
     generalized_analysis_error: asNullableString(status.generalized_analysis_error),
     document_profile_available: asBoolean(status.document_profile_available),
     credentials_available: asBoolean(status.credentials_available),
@@ -263,9 +274,15 @@ export function normalizeVerificationTaskResults(payload, sessionId = "") {
         credential_id: asString(normalizedResult.credential_id, `credential-${index + 1}`),
         verifier_key: asString(normalizedResult.verifier_key, "manual_review"),
         verifier_label: asString(normalizedResult.verifier_label, "Manual review"),
-        task_status: asString(normalizedResult.task_status, "PARTIAL"),
-        audit_status: asString(normalizedResult.audit_status, "UNVERIFIED"),
-        outcome_color: asString(normalizedResult.outcome_color, "amber"),
+        task_status: asEnum(normalizedResult.task_status,
+        ["SUCCEEDED", "PARTIAL", "FAILED", "MANUAL_REVIEW", "SKIPPED"],
+        "PARTIAL"),
+        audit_status: asEnum(normalizedResult.audit_status,
+        ["VERIFIED", "MISMATCH", "PARTIAL", "UNVERIFIED", "MANUAL_REVIEW", "NOT_APPLICABLE"],
+        "UNVERIFIED"),
+        outcome_color: asEnum(normalizedResult.outcome_color,
+        ["green", "red", "amber", "neutral"],
+        "amber"),
         explanation: asString(normalizedResult.explanation, "No execution explanation is available."),
         reason_codes: asStringArray(normalizedResult.reason_codes),
         matched_fields: asObject(normalizedResult.matched_fields),
@@ -304,8 +321,12 @@ export function normalizeCredentialBundles(payload, sessionId = "") {
         category: asString(normalizedBundle.category, "unknown"),
         selected_task_ids: asStringArray(normalizedBundle.selected_task_ids),
         result_count: asInteger(normalizedBundle.result_count) ?? allResults.length,
-        final_audit_status: asString(normalizedBundle.final_audit_status, "UNVERIFIED"),
-        final_outcome_color: asString(normalizedBundle.final_outcome_color, "amber"),
+        final_audit_status:  asEnum(normalizedBundle.final_audit_status,
+        ["VERIFIED", "MISMATCH", "PARTIAL", "UNVERIFIED", "MANUAL_REVIEW", "NOT_APPLICABLE"],
+        "UNVERIFIED"),
+        final_outcome_color: asEnum(normalizedBundle.final_outcome_color,
+        ["green", "red", "amber", "neutral"],
+        "amber"),
         explanation: asString(normalizedBundle.explanation, "No bundle explanation is available."),
         reason_codes: asStringArray(normalizedBundle.reason_codes),
         best_result: bestResult,
@@ -320,7 +341,9 @@ export function normalizeVerificationExecutionStatus(payload, sessionId = "") {
   return {
     session_id: asString(status.session_id, sessionId),
     workflow_state: asString(status.workflow_state, "UNKNOWN"),
-    verification_execution_status: asString(status.verification_execution_status, "NOT_STARTED"),
+    verification_execution_status: asEnum(status.verification_execution_status,
+      ["NOT_STARTED", "RUNNING", "READY", "FAILED"],
+      "NOT_STARTED"),
     verification_execution_error: asNullableString(status.verification_execution_error),
     task_results_available: asBoolean(status.task_results_available),
     credential_bundles_available: asBoolean(status.credential_bundles_available),
@@ -365,14 +388,18 @@ export function normalizeProviderExecutionStatus(payload, sessionId = "") {
   return {
     session_id: asString(status.session_id, sessionId),
     workflow_state: asString(status.workflow_state, "UNKNOWN"),
-    provider_execution_status: asString(status.provider_execution_status, "NOT_STARTED"),
+    provider_execution_status: asEnum(status.provider_execution_status,
+      ["NOT_STARTED", "RUNNING", "READY", "FAILED"],
+      "NOT_STARTED"),
     provider_execution_error: asNullableString(status.provider_execution_error),
     traces_available: asBoolean(status.traces_available),
     trace_count: asInteger(status.trace_count) ?? 0,
     provider_keys_used: asStringArray(status.provider_keys_used),
     outbound_attempted: asBoolean(status.outbound_attempted),
     fallback_used: asBoolean(status.fallback_used),
-    provider_operating_mode: asString(status.provider_operating_mode, "LIVE_DISABLED"),
+    provider_operating_mode: asEnum(status.provider_operating_mode,
+      ["DEMO_MOCK", "LOCAL_MOCK", "EXTERNAL_CONFIGURED", "LIVE_DISABLED", "MANUAL_ONLY"],
+      "LIVE_DISABLED"),
     execution_environment_label: asNullableString(status.execution_environment_label),
     demo_profile_key: asNullableString(status.demo_profile_key),
     provider_transition_notes: asStringArray(status.provider_transition_notes),
@@ -402,7 +429,9 @@ export function normalizeProviderCapabilities(payload, sessionId = "") {
         requires_credentials: asBoolean(normalizedCapability.requires_credentials),
         default_timeout_ms: asInteger(normalizedCapability.default_timeout_ms) ?? 0,
         enabled: asBoolean(normalizedCapability.enabled),
-        operating_mode: asString(normalizedCapability.operating_mode, "LIVE_DISABLED"),
+        operating_mode:  asEnum(normalizedCapability.operating_mode,
+      ["DEMO_MOCK", "LOCAL_MOCK", "EXTERNAL_CONFIGURED", "LIVE_DISABLED", "MANUAL_ONLY"],
+      "LIVE_DISABLED"),
         execution_environment_label: asNullableString(normalizedCapability.execution_environment_label),
         demo_supported: asBoolean(normalizedCapability.demo_supported),
       };
@@ -415,7 +444,9 @@ export function normalizeProviderOperatingMode(payload, sessionId = "") {
   return {
     session_id: asString(mode.session_id, sessionId),
     workflow_state: asString(mode.workflow_state, "UNKNOWN"),
-    provider_operating_mode: asString(mode.provider_operating_mode, "LIVE_DISABLED"),
+    provider_operating_mode:  asEnum(mode.provider_operating_mode,
+      ["DEMO_MOCK", "LOCAL_MOCK", "EXTERNAL_CONFIGURED", "LIVE_DISABLED", "MANUAL_ONLY"],
+      "LIVE_DISABLED"),
     execution_environment_label: asString(mode.execution_environment_label, "Local environment"),
     demo_profile_key: asNullableString(mode.demo_profile_key),
     preferred_provider_rail: asString(mode.preferred_provider_rail, "entra_verified_id"),
@@ -435,7 +466,9 @@ export function normalizeDemoProfile(payload, sessionId = "") {
     profile_label: asString(profile.profile_label, "No seeded demo profile"),
     description: asString(profile.description, "No seeded demo profile is active for this session."),
     scenario_family: asString(profile.scenario_family, "none"),
-    provider_operating_mode: asString(profile.provider_operating_mode, "LIVE_DISABLED"),
+    provider_operating_mode: asEnum(mode.provider_operating_mode,
+      ["DEMO_MOCK", "LOCAL_MOCK", "EXTERNAL_CONFIGURED", "LIVE_DISABLED", "MANUAL_ONLY"],
+      "LIVE_DISABLED"),
     seeded: asBoolean(profile.seeded),
     notes: asStringArray(profile.notes),
   };
@@ -518,7 +551,9 @@ export function normalizeAgentRunStatus(payload, sessionId = "") {
   return {
     session_id: asString(status.session_id, sessionId),
     workflow_state: asString(status.workflow_state, "UNKNOWN"),
-    agent_run_status: asString(status.agent_run_status, "NOT_STARTED"),
+    agent_run_status:  asEnum(status.agent_run_status,
+      ["NOT_STARTED", "RUNNING", "READY", "FAILED"],
+      "NOT_STARTED"),
     agent_run_error: asNullableString(status.agent_run_error),
     provider_used: asNullableString(status.provider_used),
     fallback_used: asBoolean(status.fallback_used),

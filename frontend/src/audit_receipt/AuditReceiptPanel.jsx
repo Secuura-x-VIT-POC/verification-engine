@@ -19,11 +19,19 @@ export default function AuditReceiptPanel({ audit }) {
         <strong>Reason Codes:</strong> {(audit.reason_codes || []).join(", ") || "None"}
       </p>
       <p>
+        <strong>Connector IDs:</strong> {(audit.connector_ids || []).join(", ") || "None"}
+      </p>
+      <p>
         <strong>Issued At:</strong> {audit.issued_at}
       </p>
       <p>
+        <strong>Key Version:</strong> {audit.key_version || "Not available"}
+      </p>
+      <p>
         <strong>Document Commitment:</strong>{" "}
-        {audit.document_commitment ? `${audit.document_commitment.slice(0, 18)}...` : "Unavailable"}
+        {audit.document_commitment
+          ? `${audit.document_commitment.slice(0, 18)}...`
+          : "Unavailable"}
       </p>
     </div>
   );

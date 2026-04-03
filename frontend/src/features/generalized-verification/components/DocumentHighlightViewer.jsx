@@ -33,6 +33,7 @@ export default function DocumentHighlightViewer({
   return (
     <div className="gv-document-scroll">
       {viewerError ? <p className="error-text">{viewerError}</p> : null}
+
       <Document
         file={documentUrl}
         onLoadSuccess={({ numPages: loadedPageCount }) => {
@@ -43,14 +44,23 @@ export default function DocumentHighlightViewer({
         loading={<p className="muted">Loading PDF preview...</p>}
       >
         {buildPageNumbers(pageCount).map((pageNumber) => {
-          const pageHighlights = highlightItems.filter((item) => Number(item.page || 1) === pageNumber);
+          const pageHighlights = highlightItems.filter(
+            (item) => Number(item.page || 1) === pageNumber
+          );
 
           return (
             <div key={pageNumber} className="gv-document-page">
-              <div className="gv-document-page-meta">Page {pageNumber}</div>
+              <div className="gv-document-page-meta-row">
+                <div className="gv-document-page-meta">Page {pageNumber}</div>
+                <div className="gv-document-page-meta-count">
+                  {pageHighlights.length} highlight{pageHighlights.length === 1 ? "" : "s"}
+                </div>
+              </div>
+
               <div className="gv-document-page-frame">
                 <Page
                   pageNumber={pageNumber}
+                  width={560}
                   renderAnnotationLayer={false}
                   renderTextLayer={false}
                 />

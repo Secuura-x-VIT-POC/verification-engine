@@ -12,7 +12,10 @@ function renderFieldPairs(fields) {
       {entries.map(([key, value]) => (
         <div key={key} className="gv-detail-pill">
           <span className="gv-detail-key">{key}</span>
-          <span>{String(value)}</span>
+          <span>{typeof value === "object" && value !== null
+            ? JSON.stringify(value, null, 2)
+            : String(value)}
+          </span>
         </div>
       ))}
     </div>
@@ -52,23 +55,36 @@ export default function AuditDetailCard({ detail, compact = false }) {
             <strong>Executed provider:</strong> {detail.execution.providerLabel}
           </span>
         ) : null}
-        {detail.execution?.providerOperatingModeLabel ? (
-          <span>
-            <strong>Provider mode:</strong> {detail.execution.providerOperatingModeLabel}
-          </span>
-        ) : null}
         {detail.preferredProviderLabel ? (
           <span>
             <strong>Preferred provider:</strong> {detail.preferredProviderLabel}
           </span>
         ) : null}
-        <span>
-          <strong>Value:</strong> {detail.documentValue}
-        </span>
+      </div>
+
+      <div className="gv-compact-summary-grid">
+        <div className="gv-compact-summary-card">
+          <span className="gv-detail-key">Value</span>
+          <p>{detail.documentValue}</p>
+        </div>
+
         {detail.normalizedValue ? (
-          <span>
-            <strong>Normalized:</strong> {detail.normalizedValue}
-          </span>
+          <div className="gv-compact-summary-card">
+            <span className="gv-detail-key">Normalized</span>
+            <p>{detail.normalizedValue}</p>
+          </div>
+        ) : null}
+
+        <div className="gv-compact-summary-card">
+          <span className="gv-detail-key">Category</span>
+          <p>{detail.category}</p>
+        </div>
+
+        {detail.timestamp ? (
+          <div className="gv-compact-summary-card">
+            <span className="gv-detail-key">Updated</span>
+            <p>{detail.timestamp}</p>
+          </div>
         ) : null}
       </div>
 
@@ -90,7 +106,33 @@ export default function AuditDetailCard({ detail, compact = false }) {
         </div>
       ) : null}
 
-      {compact ? null : (
+      {compact ? (
+        <>
+          {detail.routeDispositionMessage ? (
+            <p className="muted">{detail.routeDispositionMessage}</p>
+          ) : null}
+
+          {renderFieldPairs(detail.mismatchedFields) ? (
+            <section className="gv-card-section">
+              <h3>Mismatched fields</h3>
+              {renderFieldPairs(detail.mismatchedFields)}
+            </section>
+          ) : null}
+
+          {detail.missingFields.length ? (
+            <section className="gv-card-section">
+              <h3>Missing fields</h3>
+              <div className="gv-chip-row">
+                {detail.missingFields.map((field) => (
+                  <span key={field} className="gv-chip gv-chip-muted">
+                    {field}
+                  </span>
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </>
+      ) : (
         <>
           {detail.agentInfo || detail.agentExplanation ? (
             <section className="gv-card-section">
@@ -148,13 +190,17 @@ export default function AuditDetailCard({ detail, compact = false }) {
                 <p className="muted">Seeded demo profile: {detail.execution.providerDemoProfileKey}</p>
               ) : null}
               {detail.execution.providerIsDemoResult ? (
-                <p className="muted">This provider result is a deterministic demo-mock response, not a live external call.</p>
+                <p className="muted">
+                  This provider result is a deterministic demo-mock response, not a live external call.
+                </p>
               ) : null}
               {detail.execution.providerIsLiveResult ? (
                 <p className="muted">This provider result came from a live-configured provider path.</p>
               ) : null}
               {detail.execution.providerFallbackUsed ? (
-                <p className="muted">Provider-backed execution fell back to the bounded local verifier path.</p>
+                <p className="muted">
+                  Provider-backed execution fell back to the bounded local verifier path.
+                </p>
               ) : null}
               {detail.execution.providerTransitionNotes?.length ? (
                 <div className="gv-warning-list">
@@ -213,17 +259,11 @@ export default function AuditDetailCard({ detail, compact = false }) {
         </>
       )}
 
-      <div className="gv-card-footer">
-        <span>
-          <strong>Category:</strong> {detail.category}
-        </span>
-        {detail.timestamp ? (
-          <span>
-            <strong>Updated:</strong> {detail.timestamp}
-          </span>
-        ) : null}
-        {detail.isFallback ? <span className="muted">Derived from extracted data only</span> : null}
-      </div>
+      {!compact ? (
+        <div className="gv-card-footer">
+          {detail.isFallback ? <span className="muted">Derived from extracted data only</span> : null}
+        </div>
+      ) : null}
     </article>
   );
 }

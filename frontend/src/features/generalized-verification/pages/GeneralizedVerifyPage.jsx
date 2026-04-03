@@ -1,4 +1,4 @@
-import React, { startTransition, useEffect, useState } from "react";
+import React, { startTransition, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getGeneralizedVerifyPath, getLegacyVerifyPath } from "../../../routes/paths";
 import { useGeneralizedVerificationWorkspace } from "../hooks/useGeneralizedVerificationWorkspace";
@@ -14,12 +14,54 @@ import WorkspaceRightSidebar from "../components/WorkspaceRightSidebar";
 import WorkspaceTabNav from "../components/WorkspaceTabNav";
 import "../generalizedVerification.css";
 
+function matchesFilters(item, filters) {
+  if (!item) return false;
+
+  if (filters.status !== "ALL") {
+    const itemStatus = item.auditStatus || "UNVERIFIED";
+    if (itemStatus !== filters.status) {
+      return false;
+    }
+  }
+
+  if (filters.category !== "ALL") {
+    const itemCategory = item.category || "UNCATEGORIZED";
+    if (itemCategory !== filters.category) {
+      return false;
+    }
+  }
+
+  if (filters.piiOnly && !item.isPii && !item.pii) {
+    return false;
+  }
+
+  if (filters.manualReviewOnly) {
+    const needsManualReview =
+      item.auditStatus === "MANUAL_REVIEW" ||
+      item.agentManualReviewRecommended ||
+      item.manualReviewRecommended ||
+      item.requiresManualReview;
+    if (!needsManualReview) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export default function GeneralizedVerifyPage({ auth, onLogout }) {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const workspace = useGeneralizedVerificationWorkspace({ sessionId, token: auth.token });
+
   const [activeTab, setActiveTab] = useState("document");
   const [selectedCredentialId, setSelectedCredentialId] = useState(null);
+  const [filters, setFilters] = useState({
+    status: "ALL",
+    category: "ALL",
+    piiOnly: false,
+    manualReviewOnly: false,
+  });
 
   const viewModel = buildWorkspaceViewModel({
     session: workspace.data.session,
@@ -43,10 +85,54 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
     demoProfile: workspace.data.demoProfile,
   });
 
+  const availableCategories = useMemo(() => {
+    const rawCategories = (viewModel.analysisRows || [])
+      .map((row) => row.category)
+      .filter(Boolean);
+    return Array.from(new Set(rawCategories)).sort((a, b) => a.localeCompare(b));
+  }, [viewModel.analysisRows]);
+
+  const filteredCredentialItems = useMemo(
+    () => viewModel.credentialItems.filter((item) => matchesFilters(item, filters)),
+    [viewModel.credentialItems, filters]
+  );
+
+  const filteredAnalysisRows = useMemo(
+    () => viewModel.analysisRows.filter((row) => matchesFilters(row, filters)),
+    [viewModel.analysisRows, filters]
+  );
+
+  const filteredAuditDetails = useMemo(
+    () => viewModel.auditDetails.filter((detail) => matchesFilters(detail, filters)),
+    [viewModel.auditDetails, filters]
+  );
+
+  const filteredHighlightItems = useMemo(
+    () =>
+      viewModel.highlightItems.filter((item) => {
+        const matchingAudit = viewModel.auditDetails.find(
+          (detail) => detail.credentialId === item.credentialId
+        );
+        const matchingAnalysis = viewModel.analysisRows.find(
+          (row) => row.credentialId === item.credentialId
+        );
+        return matchesFilters(
+          {
+            ...matchingAudit,
+            ...matchingAnalysis,
+            ...item,
+            category: matchingAudit?.category || matchingAnalysis?.category,
+          },
+          filters
+        );
+      }),
+    [viewModel.highlightItems, viewModel.auditDetails, viewModel.analysisRows, filters]
+  );
+
   useEffect(() => {
     const selectableIds = [
-      ...viewModel.highlightItems.map((item) => item.credentialId),
-      ...viewModel.auditDetails.map((detail) => detail.credentialId),
+      ...filteredHighlightItems.map((item) => item.credentialId),
+      ...filteredAuditDetails.map((detail) => detail.credentialId),
     ];
 
     if (!selectableIds.length) {
@@ -55,11 +141,14 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
     }
 
     if (!selectedCredentialId || !selectableIds.includes(selectedCredentialId)) {
-      setSelectedCredentialId(viewModel.selectedCredentialId);
+      setSelectedCredentialId(selectableIds[0]);
     }
-  }, [selectedCredentialId, viewModel.auditDetails, viewModel.highlightItems, viewModel.selectedCredentialId]);
+  }, [selectedCredentialId, filteredAuditDetails, filteredHighlightItems]);
 
-  const selectedAuditDetail = getAuditDetailByCredentialId(viewModel.auditDetails, selectedCredentialId);
+  const selectedAuditDetail = getAuditDetailByCredentialId(
+    filteredAuditDetails,
+    selectedCredentialId
+  );
 
   return (
     <div className="page gv-page">
@@ -67,7 +156,9 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
         <div>
           <p className="eyebrow">Generalized verification workspace</p>
           <h1>Session {workspace.data.session.session_id || sessionId}</h1>
-          <p className="muted">Read-only reviewer workspace for document profile, routing, audits, and overlays.</p>
+          <p className="muted">
+            Read-only reviewer workspace for document profile, routing, audits, and overlays.
+          </p>
         </div>
         <div className="header-actions">
           <button
@@ -77,7 +168,11 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
           >
             Legacy Verify Page
           </button>
-          <button type="button" className="secondary-btn" onClick={() => startTransition(() => navigate("/upload"))}>
+          <button
+            type="button"
+            className="secondary-btn"
+            onClick={() => startTransition(() => navigate("/upload"))}
+          >
             New Upload
           </button>
           <button type="button" className="secondary-btn" onClick={onLogout}>
@@ -86,13 +181,16 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
         </div>
       </div>
 
-      {workspace.isLoading ? <p className="muted">Loading generalized verification artifacts...</p> : null}
+      {workspace.isLoading ? (
+        <p className="muted">Loading generalized verification artifacts...</p>
+      ) : null}
+
       {workspace.error ? (
         <div className="panel">
           <p className="error-text">{workspace.error}</p>
           <p className="muted">
-            This workspace stays read-only and will not retry verification automatically. You can return to the legacy
-            verify page if you need the existing verification flow.
+            This workspace stays read-only and will not retry verification automatically. You can
+            return to the legacy verify page if you need the existing verification flow.
           </p>
           <div className="action-row">
             <button
@@ -135,9 +233,12 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
               documentProfile={workspace.data.documentProfile}
               summaryStats={viewModel.summaryStats}
               statusCounts={viewModel.statusCounts}
-              credentialItems={viewModel.credentialItems}
+              credentialItems={filteredCredentialItems}
               selectedCredentialId={selectedCredentialId}
               onSelectCredential={setSelectedCredentialId}
+              filters={filters}
+              onChangeFilters={setFilters}
+              availableCategories={availableCategories}
             />
 
             <main className="gv-main-column">
@@ -159,7 +260,7 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
               {activeTab === "document" ? (
                 <DocumentTab
                   documentUrl={workspace.documentUrl}
-                  highlightItems={viewModel.highlightItems}
+                  highlightItems={filteredHighlightItems}
                   selectedAuditDetail={selectedAuditDetail}
                   onSelectCredential={setSelectedCredentialId}
                   selectedCredentialId={selectedCredentialId}
@@ -168,11 +269,17 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
               ) : null}
 
               {activeTab === "analysis" ? (
-                <AnalysisTab rows={viewModel.analysisRows} emptyMessage={viewModel.messages.credentials} />
+                <AnalysisTab
+                  rows={filteredAnalysisRows}
+                  emptyMessage={viewModel.messages.credentials}
+                />
               ) : null}
 
               {activeTab === "audit" ? (
-                <AuditTab auditDetails={viewModel.auditDetails} emptyMessage={viewModel.messages.audits} />
+                <AuditTab
+                  auditDetails={filteredAuditDetails}
+                  emptyMessage={viewModel.messages.audits}
+                />
               ) : null}
             </main>
 

@@ -1,6 +1,16 @@
 import React from "react";
 import AuditStatusBadge from "./AuditStatusBadge";
 
+const STATUS_OPTIONS = [
+  "ALL",
+  "VERIFIED",
+  "MISMATCH",
+  "PARTIAL",
+  "UNVERIFIED",
+  "MANUAL_REVIEW",
+  "NOT_APPLICABLE",
+];
+
 export default function WorkspaceLeftSidebar({
   documentProfile,
   summaryStats,
@@ -8,8 +18,25 @@ export default function WorkspaceLeftSidebar({
   credentialItems,
   selectedCredentialId,
   onSelectCredential,
+  filters,
+  onChangeFilters,
+  availableCategories,
 }) {
   const activeStatusCounts = Object.entries(statusCounts).filter(([, count]) => count > 0);
+
+  const flaggedCredentials = credentialItems.filter(
+    (item) =>
+      item.auditStatus === "MISMATCH" ||
+      item.auditStatus === "PARTIAL" ||
+      item.auditStatus === "MANUAL_REVIEW"
+  );
+
+  function updateFilter(key, value) {
+    onChangeFilters((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }
 
   return (
     <aside className="gv-sidebar">
@@ -27,7 +54,8 @@ export default function WorkspaceLeftSidebar({
             <strong>PII detected:</strong> {documentProfile.pii_detected ? "Yes" : "No"}
           </span>
           <span>
-            <strong>Manual review:</strong> {documentProfile.requires_manual_review ? "Recommended" : "Not flagged"}
+            <strong>Manual review:</strong>{" "}
+            {documentProfile.requires_manual_review ? "Recommended" : "Not flagged"}
           </span>
         </div>
 
@@ -40,6 +68,61 @@ export default function WorkspaceLeftSidebar({
             ))}
           </div>
         ) : null}
+      </div>
+
+      <div className="panel">
+        <p className="eyebrow">Review filters</p>
+
+        <div className="gv-filter-stack">
+          <label className="gv-filter-field">
+            <span className="gv-detail-key">Status</span>
+            <select
+              value={filters.status}
+              onChange={(event) => updateFilter("status", event.target.value)}
+            >
+              {STATUS_OPTIONS.map((status) => (
+                <option key={status} value={status}>
+                  {status}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="gv-filter-field">
+            <span className="gv-detail-key">Category</span>
+            <select
+              value={filters.category}
+              onChange={(event) => updateFilter("category", event.target.value)}
+            >
+              <option value="ALL">ALL</option>
+              {availableCategories.map((category) => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="gv-checkbox-row">
+            <input
+              type="checkbox"
+              checked={filters.piiOnly}
+              onChange={(event) => updateFilter("piiOnly", event.target.checked)}
+            />
+            <span>PII only</span>
+          </label>
+
+          <label className="gv-checkbox-row">
+            <input
+              type="checkbox"
+              checked={filters.manualReviewOnly}
+              onChange={(event) =>
+                updateFilter("manualReviewOnly", event.target.checked)
+              }
+            />
+            <span>Manual review only</span>
+          </label>
+        </div>
       </div>
 
       <div className="panel">

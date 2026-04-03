@@ -14,6 +14,18 @@ function OutcomeBadge({ outcome }) {
   return <span className="gv-status-badge gv-status-neutral">Pending</span>;
 }
 
+function ProviderStatusCard({ label, enabled, detail }) {
+  return (
+    <div className={`gv-provider-card ${enabled ? "is-enabled" : "is-disabled"}`}>
+      <div className="gv-provider-card-head">
+        <strong>{label}</strong>
+        <span className={`gv-provider-dot ${enabled ? "is-on" : "is-off"}`} />
+      </div>
+      <p>{detail}</p>
+    </div>
+  );
+}
+
 export default function WorkspaceRightSidebar({
   session,
   analysisStatusLabel,
@@ -36,20 +48,31 @@ export default function WorkspaceRightSidebar({
   return (
     <aside className="gv-sidebar">
       <div className="panel">
-        <p className="eyebrow">Readiness</p>
-        <div className="gv-meta-stack">
-          <span>
-            <strong>Workflow:</strong> <StatusBadge status={session.status} />
-          </span>
-          <span>
-            <strong>Analysis:</strong> {analysisStatusLabel}
-          </span>
-          {session.worker_phase ? (
-            <span>
-              <strong>Worker phase:</strong> {session.worker_phase}
-            </span>
-          ) : null}
+        <p className="eyebrow">Readiness layers</p>
+        <div className="gv-readiness-grid">
+          <div className="gv-readiness-card">
+            <span className="gv-detail-key">Workflow</span>
+            <div><StatusBadge status={session.status} /></div>
+          </div>
+          <div className="gv-readiness-card">
+            <span className="gv-detail-key">Analysis</span>
+            <p>{analysisStatusLabel}</p>
+          </div>
+          <div className="gv-readiness-card">
+            <span className="gv-detail-key">Execution</span>
+            <p>{executionStatusLabel}</p>
+          </div>
+          <div className="gv-readiness-card">
+            <span className="gv-detail-key">Agent</span>
+            <p>{agentStatusLabel}</p>
+          </div>
         </div>
+
+        {session.worker_phase ? (
+          <p className="muted" style={{ marginTop: "12px" }}>
+            Worker phase: {session.worker_phase}
+          </p>
+        ) : null}
 
         {analysisStatus.generalized_analysis_error ? (
           <p className="error-text">{analysisStatus.generalized_analysis_error}</p>
@@ -57,6 +80,35 @@ export default function WorkspaceRightSidebar({
       </div>
 
       <div className="panel">
+        <p className="eyebrow">External verifiers status</p>
+        <div className="gv-provider-status-list">
+          <ProviderStatusCard
+            label={providerExecutionSummary.primaryTrustRailLabel}
+            enabled={providerExecutionSummary.primaryTrustRailEnabled}
+            detail={
+              providerExecutionSummary.primaryTrustRailEnabled
+                ? "Configured as the preferred VC trust rail."
+                : "Preferred rail but not enabled in this environment."
+            }
+          />
+          <ProviderStatusCard
+            label="Supplementary providers"
+            enabled={providerExecutionSummary.enabledExternalProviders.length > 0}
+            detail={
+              providerExecutionSummary.enabledExternalProviders.length
+                ? providerExecutionSummary.enabledExternalProviders.join(", ")
+                : "No supplementary external providers enabled."
+            }
+          />
+          <ProviderStatusCard
+            label="Provider execution"
+            enabled={providerExecutionStatus.provider_execution_status === "READY"}
+            detail={providerExecutionStatusLabel}
+          />
+        </div>
+      </div>
+
+      {/*<div className="panel">
         <p className="eyebrow">Agent-assisted understanding</p>
         <div className="gv-meta-stack">
           <span>
@@ -86,6 +138,7 @@ export default function WorkspaceRightSidebar({
           </div>
         ) : null}
       </div>
+      */}
 
       <div className="panel">
         <p className="eyebrow">Task execution</p>
@@ -132,22 +185,26 @@ export default function WorkspaceRightSidebar({
             <strong>Mode:</strong> {providerExecutionSummary.operatingModeLabel}
           </span>
           <span>
-            <strong>Environment:</strong> {providerOperatingMode.execution_environment_label || "Not available"}
+            <strong>Environment:</strong>{" "}
+            {providerOperatingMode.execution_environment_label || "Not available"}
           </span>
           <span>
             <strong>Primary trust rail:</strong> {providerExecutionSummary.primaryTrustRailLabel}
           </span>
           <span>
-            <strong>Entra enabled:</strong> {providerExecutionSummary.primaryTrustRailEnabled ? "Yes" : "No"}
+            <strong>Entra enabled:</strong>{" "}
+            {providerExecutionSummary.primaryTrustRailEnabled ? "Yes" : "No"}
           </span>
           <span>
             <strong>Traces:</strong> {providerExecutionSummary.traceCount}
           </span>
           <span>
-            <strong>Outbound attempted:</strong> {providerExecutionSummary.outboundAttempted ? "Yes" : "No"}
+            <strong>Outbound attempted:</strong>{" "}
+            {providerExecutionSummary.outboundAttempted ? "Yes" : "No"}
           </span>
           <span>
-            <strong>Fallback used:</strong> {providerExecutionSummary.fallbackUsed ? "Yes" : "No"}
+            <strong>Fallback used:</strong>{" "}
+            {providerExecutionSummary.fallbackUsed ? "Yes" : "No"}
           </span>
         </div>
 
@@ -172,11 +229,18 @@ export default function WorkspaceRightSidebar({
         ) : null}
 
         {providerExecutionSummary.enabledExternalProviders.length ? (
-          <p className="muted">Enabled external providers: {providerExecutionSummary.enabledExternalProviders.join(", ")}</p>
+          <p className="muted">
+            Enabled external providers:{" "}
+            {providerExecutionSummary.enabledExternalProviders.join(", ")}
+          </p>
         ) : (
-          <p className="muted">No external providers are enabled. The bounded local mock path remains available.</p>
+          <p className="muted">
+            No external providers are enabled. The bounded local mock path remains available.
+          </p>
         )}
+
         {demoProfile.seeded ? <p className="muted">{demoProfile.description}</p> : null}
+
         {providerOperatingMode.provider_transition_notes.length ? (
           <div className="gv-warning-list">
             {providerOperatingMode.provider_transition_notes.map((note) => (
@@ -186,10 +250,11 @@ export default function WorkspaceRightSidebar({
             ))}
           </div>
         ) : null}
+
         {!providerExecutionSummary.primaryTrustRailEnabled ? (
           <p className="muted">
-            Microsoft Entra Verified ID is the primary VC trust rail for Entra-aligned credentials, but it is not
-            enabled in this environment.
+            Microsoft Entra Verified ID is the primary VC trust rail for Entra-aligned credentials,
+            but it is not enabled in this environment.
           </p>
         ) : null}
       </div>
@@ -233,7 +298,7 @@ export default function WorkspaceRightSidebar({
         ) : null}
       </div>
 
-      <div className="panel">
+      {/*<div className="panel">
         <p className="eyebrow">Reviewer actions</p>
         <div className="action-row">
           <button type="button" className="secondary-btn" disabled>
@@ -246,8 +311,11 @@ export default function WorkspaceRightSidebar({
             Add Note
           </button>
         </div>
-        <p className="muted">Mutation flows are intentionally deferred while the generalized workspace stays read-only.</p>
+        <p className="muted">
+          Mutation flows are intentionally deferred while the generalized workspace stays read-only.
+        </p>
       </div>
+      */}
 
       {warnings.length ? (
         <div className="panel">

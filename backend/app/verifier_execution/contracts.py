@@ -35,6 +35,17 @@ class VerificationTaskResult(ContractModel):
     credential_id: str
     verifier_key: str
     verifier_label: str
+    preferred_provider_key: str | None = None
+    preferred_provider_label: str | None = None
+    planned_provider_key: str | None = None
+    planned_provider_label: str | None = None
+    executed_provider_key: str | None = None
+    executed_provider_label: str | None = None
+    execution_mode: str | None = None
+    fallback_reason: str | None = None
+    is_live_result: bool = False
+    is_mock_result: bool = False
+    is_demo_result: bool = False
     task_status: str = TASK_STATUS_PARTIAL
     audit_status: str = AUDIT_STATUS_UNVERIFIED
     outcome_color: str = OUTCOME_COLOR_AMBER

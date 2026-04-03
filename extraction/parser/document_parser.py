@@ -50,16 +50,13 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
         native_text_insufficient = len(native_raw_text) < MIN_TEXT_THRESHOLD and native_word_count < SCANNED_WORD_COUNT_THRESHOLD
 
         selected_result = native_result
-        used_ocr = False
 
         if strategy == "ocr_only":
             selected_result = _run_parse_worker(path, mode="ocr", timeout_seconds=OCR_TIMEOUT_SECONDS)
-            used_ocr = True
             warnings.append(ExtractionWarning(code="FORCED_OCR", message="OCR-only strategy was used for this PDF."))
         elif strategy == "auto" and (is_scanned or native_text_insufficient):
             try:
                 selected_result = _run_parse_worker(path, mode="hybrid", timeout_seconds=OCR_TIMEOUT_SECONDS)
-                used_ocr = True
                 warnings.append(
                     ExtractionWarning(
                         code="OCR_FALLBACK",
@@ -67,7 +64,7 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
                     )
                 )
             except RuntimeError as exc:
-                if _is_tesseract_missing(str(exc)) and native_raw_text:
+                if _is_ocr_unavailable(str(exc)) and native_raw_text:
                     selected_result = native_result
                     warnings.append(
                         ExtractionWarning(
@@ -82,6 +79,17 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
                 ExtractionWarning(
                     code="SCANNED_TEXT_LAYER",
                     message="Text-only mode was used on a document that appears scanned.",
+                )
+            )
+
+        ocr_metadata = selected_result.get("ocr_metadata") or None
+        used_ocr = bool((ocr_metadata or {}).get("ocr_applied"))
+        warning_codes = list(dict.fromkeys((ocr_metadata or {}).get("warning_codes") or []))
+        for warning_code in warning_codes:
+            warnings.append(
+                ExtractionWarning(
+                    code=warning_code,
+                    message=_warning_message_for_code(warning_code),
                 )
             )
 
@@ -120,6 +128,7 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
             field_candidates=field_candidates,
             generalized_analysis=generalized_analysis,
             metadata=metadata,
+            ocr_metadata=ocr_metadata,
             enrichment_metadata=enrichment_metadata,
             safety_report=safety_report,
             warnings=warnings,
@@ -132,6 +141,7 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
             raw_text="",
             spatial_text_map=[],
             metadata=metadata,
+            ocr_metadata=None,
             safety_report=exc.safety_report or safety_report,
             warnings=warnings,
             reason_code=exc.reason_code,
@@ -146,6 +156,7 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
             raw_text="",
             spatial_text_map=[],
             metadata=metadata,
+            ocr_metadata=None,
             safety_report=safety_report,
             warnings=warnings,
             reason_code=reason_code,
@@ -159,6 +170,7 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
             raw_text="",
             spatial_text_map=[],
             metadata=metadata,
+            ocr_metadata=None,
             safety_report=safety_report,
             warnings=warnings,
             reason_code=_reason_code_for_exception(str(exc), default="UNEXPECTED_PIPELINE_ERROR"),
@@ -204,6 +216,7 @@ def _coerce_spatial_text_map(payload: list[dict]) -> list[SpatialTextToken]:
                 page=int(token_data.get("page", 0) or 0),
                 source=str(token_data.get("source", "native_text") or "native_text"),
                 confidence=float(token_data.get("confidence", 1.0) or 1.0),
+                polygon=token_data.get("polygon"),
             )
         )
     return tokens
@@ -280,7 +293,7 @@ def _build_canonical_schema(field_candidates) -> CanonicalSchema:
 
 def _reason_code_for_exception(message: str, default: str) -> str:
     lowered = message.lower()
-    if _is_tesseract_missing(lowered):
+    if _is_ocr_unavailable(lowered):
         return "OCR_ENGINE_UNAVAILABLE"
     malformed_markers = (
         "malformed pdf",
@@ -299,3 +312,29 @@ def _reason_code_for_exception(message: str, default: str) -> str:
 def _is_tesseract_missing(message: str) -> bool:
     lowered = message.lower()
     return "tesseractnotfounderror" in lowered or "tesseract is not installed" in lowered
+
+
+def _is_paddleocr_missing(message: str) -> bool:
+    lowered = message.lower()
+    markers = (
+        "paddleocr is unavailable",
+        "paddleocr could not initialize locally",
+        "paddleocr requires numpy",
+        "paddleocr is disabled",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _is_ocr_unavailable(message: str) -> bool:
+    return _is_tesseract_missing(message) or _is_paddleocr_missing(message)
+
+
+def _warning_message_for_code(code: str) -> str:
+    warning_map = {
+        "PADDLEOCR_UNAVAILABLE": "PaddleOCR was unavailable, so the pipeline fell back to the next local OCR backend.",
+        "TESSERACT_UNAVAILABLE": "Tesseract OCR was unavailable for at least one page.",
+        "OCR_NO_TEXT_DETECTED": "An OCR page produced no readable text tokens.",
+        "OCR_PAGE_FAILED_NATIVE_USED": "An OCR page failed and the parser reused the native PDF text layer instead.",
+        "OCR_DISABLED_BY_MODE": "OCR was disabled by backend mode, so only native PDF text was used.",
+    }
+    return warning_map.get(code, code.replace("_", " ").title())

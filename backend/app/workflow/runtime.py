@@ -166,6 +166,7 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
                 "field_details": [],
                 "field_candidates": [],
                 "generalized_analysis": None,
+                "ocr_metadata": None,
                 "enrichment_metadata": None,
                 "error_message": str(exc),
             }
@@ -378,6 +379,7 @@ def extract_document_payload(file_path: Path) -> dict[str, Any]:
             "warnings": raw_result.get("warnings") or [],
             "reason_code": raw_result.get("reason_code"),
             "metadata": raw_result.get("metadata"),
+            "ocr_metadata": raw_result.get("ocr_metadata"),
             "enrichment_metadata": raw_result.get("enrichment_metadata"),
             "safety_report": raw_result.get("safety_report"),
             "spatial_text_map": raw_result.get("spatial_text_map") or [],
@@ -700,6 +702,7 @@ def _fallback_extract_document(file_path: Path) -> dict[str, Any]:
         "raw_text": raw_text,
         "field_candidates": [],
         "generalized_analysis": None,
+        "ocr_metadata": None,
         "enrichment_metadata": None,
         "error_message": None,
     }

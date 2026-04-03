@@ -16,6 +16,7 @@ Generic PDF verification framework for session-scoped document review, connector
    - Processing remains session-scoped and privacy-aware.
 2. Extraction and grounding
    - The extraction service parses the document, grounds fields to page geometry, and produces reusable session artifacts.
+   - OCR stays local by default with the precedence `native PDF text -> PaddleOCR -> Tesseract fallback`.
 3. Connector validation
    - Deterministic planning builds per-credential verification tasks.
    - The verifier registry executes those tasks through Microsoft Entra Verified ID when available, then supplementary providers, then honest fallback paths.
@@ -60,6 +61,58 @@ Generic PDF verification framework for session-scoped document review, connector
 ## Status
 
 This repository is a POC implementation of the verification backbone and reviewer workspace. Stage 8 adds an explicit demo-mode transition layer so the repo can present Entra-first verification honestly before live tenant wiring exists. Mock paths remain available, demo mode is explicit, and the architecture remains aligned for later live Entra and supplementary-provider rollout.
+
+## Docker Compose Quick Start
+
+1. Copy `.env.example` to `.env`.
+2. Set the secrets and optional provider keys you actually want to use.
+3. Start the full stack:
+
+```powershell
+docker compose up --build
+```
+
+Default containerized behavior:
+
+- PostgreSQL runs inside Compose.
+- Compose includes a one-shot database bootstrap step, so reused Postgres volumes still get the configured app database if it is missing.
+- The backend runs the full generalized verifier pipeline.
+- OCR stays local inside the backend container.
+- OCR precedence is `native PDF text -> PaddleOCR -> Tesseract fallback`.
+- Local mock verification is enabled by default.
+- Microsoft Entra Verified ID remains the preferred trust rail architecturally, but live outbound execution is disabled by default.
+- NVIDIA reasoning and GLiNER enrichment remain optional and off unless configured.
+
+Default local URLs:
+
+- Frontend: `http://localhost:5173`
+- Backend API: `http://localhost:8000`
+- Backend health: `http://localhost:8000/healthz`
+- Backend readiness: `http://localhost:8000/readyz`
+
+Notes:
+
+- No host-side Python, Tesseract, or PaddleOCR install is required when running through Docker Compose.
+- The local verification store is available inside the backend container at `/app/backend/app/verifier_providers/fixtures/local_verification_records.json` unless overridden by `VERIFIER_LOCAL_VERIFICATION_STORE_PATH`.
+- That local verification store is mounted into the backend container from `backend/app/verifier_providers/fixtures/local_verification_records.json`, so updating the repo file updates the in-container truth store without rebuilding the image.
+- Uploaded PDFs are stored in the `backend_uploads` named volume.
+
+To confirm which OCR backend was actually used for a processed session:
+
+1. Upload and verify a document.
+2. Fetch the session payload:
+
+```powershell
+curl http://localhost:8000/sessions/<session_id>
+```
+
+3. Inspect `extraction.ocr_metadata.engine_used`, `extraction.ocr_metadata.engines_used`, and `extraction.ocr_metadata.fallback_used`.
+
+Expected values:
+
+- `engine_used: "native_text"` for text-rich PDFs
+- `engine_used: "paddleocr"` for scanned pages when PaddleOCR handled OCR
+- `engine_used: "tesseract"` only when PaddleOCR was unavailable or failed
 
 ## License
 

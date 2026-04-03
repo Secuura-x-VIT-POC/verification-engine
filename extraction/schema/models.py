@@ -19,6 +19,7 @@ class SpatialTextToken(BaseModel):
     page: int
     source: str = "native_text"
     confidence: float = 1.0
+    polygon: Optional[List[List[float]]] = None
 
 
 class EvidenceLine(BaseModel):
@@ -56,6 +57,29 @@ class EnrichmentMetadata(BaseModel):
     pii_provider: Optional[str] = None
     pii_model_used: Optional[str] = None
     fallback_used: bool = False
+    warning_codes: List[str] = Field(default_factory=list)
+
+
+class OcrPageMetadata(BaseModel):
+    page: int
+    engine: str
+    used_native_text: bool = False
+    average_confidence: Optional[float] = None
+    preprocessing_applied: List[str] = Field(default_factory=list)
+    warning_codes: List[str] = Field(default_factory=list)
+
+
+class OcrMetadata(BaseModel):
+    backend_mode: str = "AUTO"
+    engine_used: str = "native_text"
+    engines_used: List[str] = Field(default_factory=list)
+    native_text_used: bool = False
+    ocr_applied: bool = False
+    fallback_used: bool = False
+    average_confidence: Optional[float] = None
+    preprocessing_applied: List[str] = Field(default_factory=list)
+    pages_ocrd: List[int] = Field(default_factory=list)
+    page_metadata: List[OcrPageMetadata] = Field(default_factory=list)
     warning_codes: List[str] = Field(default_factory=list)
 
 
@@ -103,13 +127,17 @@ class FieldCandidate(BaseModel):
     evidence_snippet: str
     page: int
     bounding_box: Optional[BoundingBox] = None
+    context_bounding_box: Optional[BoundingBox] = None
     confidence: float = 0.0
     grounding_match_type: str = "none"
+    provenance_method: str = "none"
+    provenance_confidence: float = 0.0
     is_pii: bool = False
     requires_verification: bool = True
     verification_reason: str = ""
     extraction_method: str = "rule_based"
     source: str = "native_text"
+    source_engine: str = "native_text"
 
 
 class ExtractedCredential(BaseModel):
@@ -194,6 +222,7 @@ class ExtractionResult(BaseModel):
     field_candidates: List[FieldCandidate] = Field(default_factory=list)
     generalized_analysis: Optional[GeneralizedAnalysisPayload] = None
     metadata: Optional[DocumentMetadata] = None
+    ocr_metadata: Optional[OcrMetadata] = None
     enrichment_metadata: Optional[EnrichmentMetadata] = None
     safety_report: Optional[SafetyReport] = None
     warnings: List[ExtractionWarning] = Field(default_factory=list)

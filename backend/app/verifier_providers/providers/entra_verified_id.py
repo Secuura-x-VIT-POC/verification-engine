@@ -95,6 +95,7 @@ class EntraVerifiedIdProvider(GenericHttpJsonProvider):
                 normalized.get("transition_notes")
                 or request.metadata.get("provider_transition_notes")
             ),
+            is_mock_result=bool(normalized.get("is_mock_result")),
             is_demo_result=bool(
                 normalized.get("is_demo_result")
                 or str(request.metadata.get("provider_operating_mode") or self.config.operating_mode)

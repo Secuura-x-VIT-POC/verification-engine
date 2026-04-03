@@ -53,6 +53,18 @@ class NvidiaInferenceError(RuntimeError):
 
 
 def load_nvidia_inference_config() -> NvidiaInferenceConfig:
+    reasoning_toggle = os.getenv("NVIDIA_REASONING_ENABLED")
+    if reasoning_toggle is None:
+        reasoning_toggle = os.getenv("AGENT_ENABLE_REASONING")
+
+    pii_toggle = os.getenv("NVIDIA_GLINER_PREPROCESSING_ENABLED")
+    if pii_toggle is None:
+        pii_toggle = os.getenv("AGENT_ENABLE_PII_ENRICHMENT")
+
+    timeout_override = os.getenv("NVIDIA_TIMEOUT_MS")
+    if timeout_override is None:
+        timeout_override = os.getenv("AGENT_REQUEST_TIMEOUT_MS")
+
     return NvidiaInferenceConfig(
         api_key=(
             (os.getenv("NVIDIA_API_KEY") or "").strip()
@@ -73,14 +85,29 @@ def load_nvidia_inference_config() -> NvidiaInferenceConfig:
             (os.getenv("NVIDIA_PII_MODEL") or "").strip()
             or DEFAULT_NVIDIA_PII_MODEL
         ),
-        timeout_ms=_read_int("NVIDIA_TIMEOUT_MS", 4000),
+        timeout_ms=_read_int_from_value(timeout_override, 4000),
         retry_budget=_read_int("NVIDIA_RETRY_BUDGET", 0),
         max_input_chars=_read_int("NVIDIA_MAX_TEXT_LENGTH", 4000),
         request_size_limit_bytes=_read_int("NVIDIA_REQUEST_SIZE_LIMIT_BYTES", 65536),
         response_size_limit_bytes=_read_int("NVIDIA_RESPONSE_SIZE_LIMIT_BYTES", 65536),
-        reasoning_enabled=_read_bool("NVIDIA_REASONING_ENABLED", True),
-        pii_enrichment_enabled=_read_bool("NVIDIA_GLINER_PREPROCESSING_ENABLED", True),
+        reasoning_enabled=_read_bool_from_value(reasoning_toggle, True),
+        pii_enrichment_enabled=_read_bool_from_value(pii_toggle, True),
     )
+
+
+def _read_bool_from_value(raw_value: str | None, default: bool) -> bool:
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_int_from_value(raw_value: str | None, default: int) -> int:
+    if raw_value in (None, ""):
+        return default
+    try:
+        return max(int(raw_value), 0)
+    except ValueError:
+        return default
 
 
 class NvidiaChatClient:

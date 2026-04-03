@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import dataclass
 import re
 from typing import Any
 
 from .contracts import BoundingBox, ExtractedCredential
 
+
+PLANNING_STATUS_VERIFICATION_ELIGIBLE = "verification_eligible"
+PLANNING_STATUS_CONTEXT_ONLY = "context_only"
+PLANNING_STATUS_METADATA_ONLY = "metadata_only"
+PLANNING_STATUS_DISCARD = "discard"
 
 CATEGORY_KEYWORDS = {
     "passport": ("passport", "mrz", "travel document"),
@@ -29,25 +36,13 @@ CATEGORY_KEYWORDS = {
         "cgpa",
         "credential",
         "certificate number",
+        "board",
+        "roll number",
+        "seat number",
     ),
-    "certificate": ("certificate", "issuer", "certification", "completion", "awarded"),
-    "identity": ("name", "identity", "identity number", "national id", "aadhaar", "date of birth", "dob"),
+    "certificate": ("certificate", "certification", "completion", "awarded"),
+    "identity": ("identity", "national id", "aadhaar", "date of birth", "dob", "holder"),
 }
-
-METADATA_ONLY_KEYWORDS = (
-    "date",
-    "issued on",
-    "issue date",
-    "expiry",
-    "expires",
-    "page",
-    "watermark",
-    "stamp",
-    "seal",
-    "signature",
-    "qr",
-    "barcode",
-)
 
 PII_KEYWORDS = (
     "name",
@@ -64,81 +59,120 @@ PII_KEYWORDS = (
     "aadhaar",
     "pan",
     "ssn",
+    "phone",
+    "email",
 )
 
 IDENTIFIER_KEYWORDS = ("id", "identifier", "number", "registration", "roll", "account")
 
+NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z .'-]{2,}$")
+PAN_PATTERN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+AADHAAR_PATTERN = re.compile(r"^\d{12}$")
+PASSPORT_PATTERN = re.compile(r"^[A-Z][0-9]{6,8}$")
+LICENSE_PATTERN = re.compile(r"^[A-Z0-9-]{6,18}$")
+ALPHANUMERIC_ID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9-]{4,24}$")
+YEAR_PATTERN = re.compile(r"^(19|20)\d{2}$")
+DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$|^\d{2}[/-]\d{2}[/-]\d{4}$")
+PHONE_PATTERN = re.compile(r"^\d{10}$")
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+GRADE_PATTERN = re.compile(r"^(?:[A-F][+-]?|(?:\d{1,3}(?:\.\d+)?%?)|(?:\d(?:\.\d+)?/?10))$", re.IGNORECASE)
+
+ACADEMIC_FAMILY_HINTS = (
+    "academic",
+    "transcript",
+    "report_card",
+    "report card",
+    "marksheet",
+    "mark_sheet",
+    "mark sheet",
+    "grade_report",
+    "grade report",
+    "certificate",
+)
+IDENTITY_FAMILY_HINTS = ("identity", "aadhaar", "passport", "license", "licence")
+TAX_FAMILY_HINTS = ("tax", "pan")
+FINANCIAL_FAMILY_HINTS = ("financial", "bank", "statement")
+
+
+@dataclass(frozen=True)
+class PlannerEntry:
+    source_id: str
+    key: str
+    label: str
+    raw_value: Any
+    normalized_value: str | None
+    source_text: str | None
+    confidence: float | None
+    page: int | None
+    bounding_box: BoundingBox | None
+    source_category: str | None
+    extraction_method: str
+    explicit_requires_verification: bool | None
+    explicit_verification_reason: str | None
+    explicit_is_pii: bool | None
+    semantic_key: str
+
+
+@dataclass(frozen=True)
+class PlanningDecision:
+    planning_status: str
+    promoted_label: str
+    category: str
+    requires_verification: bool
+    verification_recommended: bool
+    eligibility_reason: str
+    grouping_reason: str | None = None
+
 
 def build_extracted_credentials(extraction_payload: dict[str, Any] | None) -> list[ExtractedCredential]:
+    credentials, _context_fields = build_planned_credentials(extraction_payload)
+    return credentials
+
+
+def build_planned_credentials(
+    extraction_payload: dict[str, Any] | None,
+) -> tuple[list[ExtractedCredential], list[ExtractedCredential]]:
     if not extraction_payload:
-        return []
+        return [], []
 
     document_type = _resolve_document_type(extraction_payload)
+    document_family = _resolve_document_family(extraction_payload)
     extraction_method = _resolve_extraction_method(extraction_payload)
+
+    entries = _build_planner_entries(
+        extraction_payload,
+        document_type=document_type,
+        document_family=document_family,
+        extraction_method=extraction_method,
+    )
+    if not entries:
+        return [], []
+
+    support_context = _build_support_context(entries, document_family=document_family)
     credentials: list[ExtractedCredential] = []
+    context_fields: list[ExtractedCredential] = []
 
-    for index, entry in enumerate(_iter_generalized_entries(extraction_payload), start=1):
-        label = entry["label"]
-        raw_value = entry["value"]
-        source_category = entry.get("source_category")
-        normalized_value = normalize_value(entry.get("normalized_value") or raw_value)
-        if not normalized_value and not _coerce_source_text(entry["source_text"], raw_value):
-            continue
-        category = classify_credential_category(
-            label=label,
-            key=entry["key"],
-            source_category=source_category,
-            normalized_value=normalized_value,
+    for index, entry in enumerate(entries, start=1):
+        decision = _determine_planning_decision(
+            entry,
             document_type=document_type,
+            document_family=document_family,
+            support_context=support_context,
         )
-        explicit_requires_verification = entry.get("requires_verification")
-        explicit_verification_reason = entry.get("verification_reason")
-        if explicit_requires_verification is None:
-            requires_verification, verification_reason = determine_verification_requirement(
-                label=label,
-                key=entry["key"],
-                category=category,
-                normalized_value=normalized_value,
-            )
-        else:
-            requires_verification = bool(explicit_requires_verification)
-            verification_reason = explicit_verification_reason or (
-                "This extracted credential is marked for verification in the generalized analysis payload."
-                if requires_verification
-                else "The generalized analysis payload marked this field as out of scope for direct verification."
-            )
-        bounding_box = _normalize_bounding_box(entry["bounding_box"])
-        page = _coerce_int(entry.get("page"))
-        if page is None and bounding_box is not None:
-            page = bounding_box.page
-        credentials.append(
-            ExtractedCredential(
-                credential_id=str(entry.get("credential_id") or _build_credential_id(entry["key"], index)),
-                label=label,
-                category=category,
-                value=raw_value,
-                normalized_value=normalized_value,
-                source_text=entry["source_text"],
-                confidence=_coerce_confidence(entry["confidence"]),
-                page=page,
-                bounding_box=bounding_box,
-                is_pii=(
-                    bool(entry["is_pii"])
-                    if entry.get("is_pii") is not None
-                    else is_pii_field(
-                        label=label,
-                        key=entry["key"],
-                        category=category,
-                        normalized_value=normalized_value,
-                    )
-                ),
-                requires_verification=requires_verification,
-                verification_reason=verification_reason,
-                extraction_method=entry["extraction_method"] or extraction_method,
-            )
-        )
+        if decision.planning_status == PLANNING_STATUS_DISCARD:
+            continue
 
-    return _dedupe_credentials(credentials)
+        credential = _build_credential(
+            entry,
+            decision,
+            credential_id=entry.source_id or _build_credential_id(entry.key, index),
+        )
+        if decision.planning_status == PLANNING_STATUS_VERIFICATION_ELIGIBLE:
+            credentials.append(credential)
+        else:
+            context_fields.append(credential)
+
+    return _dedupe_credentials(credentials), _dedupe_credentials(context_fields)
 
 
 def classify_credential_category(
@@ -148,7 +182,46 @@ def classify_credential_category(
     source_category: str | None = None,
     normalized_value: str | None = None,
     document_type: str | None = None,
+    semantic_key: str | None = None,
 ) -> str:
+    document_context = (document_type or "").replace("_", " ").lower()
+    normalized_source_category = (source_category or "").strip().lower()
+    normalized_semantic_key = (semantic_key or "").strip().lower()
+    semantic_or_source = normalized_semantic_key or normalized_source_category
+
+    if semantic_or_source in {"full_name", "date_of_birth", "aadhaar_number", "phone_number", "email"}:
+        return "identity"
+    if semantic_or_source == "address":
+        return "address"
+    if semantic_or_source == "passport_number":
+        return "passport"
+    if semantic_or_source == "license_number":
+        return "license"
+    if semantic_or_source == "pan_number":
+        return "tax"
+    if semantic_or_source in {
+        "student_name",
+        "roll_number",
+        "seat_number",
+        "institution_name",
+        "board_name",
+        "exam_year",
+        "marks",
+        "grade",
+        "result_status",
+    }:
+        return "academic"
+    if semantic_or_source == "document_number":
+        if any(token in document_context for token in ("passport", "travel")):
+            return "passport"
+        if any(token in document_context for token in ("license", "licence")):
+            return "license"
+        if any(token in document_context for token in ("tax", "pan")):
+            return "tax"
+        if any(token in document_context for token in ACADEMIC_FAMILY_HINTS):
+            return "academic"
+        return "identity"
+
     primary_haystack = " ".join(
         part
         for part in (
@@ -159,29 +232,6 @@ def classify_credential_category(
         )
         if part
     )
-    document_context = (document_type or "").replace("_", " ").lower()
-    normalized_source_category = (source_category or "").strip().lower()
-
-    if normalized_source_category in {"person_name", "date_of_birth", "national_identifier"}:
-        return "identity"
-    if normalized_source_category == "address":
-        return "address"
-    if normalized_source_category in {"passport_number", "passport_identifier"}:
-        return "passport"
-    if normalized_source_category in {"license_number", "license_identifier"}:
-        return "license"
-    if normalized_source_category in {"tax_identifier"}:
-        return "tax"
-    if normalized_source_category in {"email", "phone_number"}:
-        return "identity"
-    if normalized_source_category in {"issuer", "credential_title", "program_name", "program_branch", "registration_number", "score"}:
-        if any(
-            token in document_context
-            for token in ("academic", "transcript", "credential", "report card", "marksheet", "mark sheet", "grade report")
-        ):
-            return "academic"
-        if "certificate" in document_context:
-            return "certificate"
 
     if _contains_any_keyword(primary_haystack, CATEGORY_KEYWORDS["passport"]):
         return "passport"
@@ -200,47 +250,11 @@ def classify_credential_category(
     if _contains_any_keyword(primary_haystack, CATEGORY_KEYWORDS["identity"]):
         return "identity"
 
-    if (
-        any(token in document_context for token in ("academic", "transcript", "credential", "report card", "marksheet", "mark sheet", "grade report"))
-        and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS)
-    ):
+    if any(token in document_context for token in ACADEMIC_FAMILY_HINTS) and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS):
         return "academic"
-    if ("passport" in document_context or "travel" in document_context) and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS):
-        return "passport"
-    if ("license" in document_context or "licence" in document_context) and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS):
-        return "license"
-    if "address" in document_context and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS):
-        return "address"
-    if ("bank" in document_context or "financial" in document_context) and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS):
-        return "financial"
-    if "tax" in document_context and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS):
-        return "tax"
-    if ("identity" in document_context or "personal" in document_context) and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS):
+    if any(token in document_context for token in ("identity", "personal")) and _contains_any_keyword(primary_haystack, IDENTIFIER_KEYWORDS):
         return "identity"
     return "unknown"
-
-
-def determine_verification_requirement(
-    *,
-    label: str,
-    key: str | None = None,
-    category: str,
-    normalized_value: str | None = None,
-) -> tuple[bool, str]:
-    if not normalized_value:
-        return False, "No extracted value is available to verify."
-
-    haystack = " ".join(part for part in ((key or "").lower(), label.lower()) if part)
-    if _contains_any_keyword(haystack, METADATA_ONLY_KEYWORDS):
-        return False, "This appears to be supporting metadata rather than a standalone verifiable credential."
-
-    if category in {"identity", "address", "passport", "license", "academic", "financial", "tax", "certificate"}:
-        return True, f"Category '{category}' is mapped to a deterministic verifier route."
-
-    if _contains_any_keyword(haystack, IDENTIFIER_KEYWORDS):
-        return True, "The field looks like an identifier and should be reviewed through manual verification."
-
-    return False, "No deterministic verifier route is currently available for this extracted field."
 
 
 def is_pii_field(
@@ -263,6 +277,718 @@ def normalize_value(value: Any) -> str | None:
 
     text = re.sub(r"\s+", " ", str(value)).strip()
     return text or None
+
+
+def _build_planner_entries(
+    extraction_payload: dict[str, Any],
+    *,
+    document_type: str,
+    document_family: str,
+    extraction_method: str,
+) -> list[PlannerEntry]:
+    entries: list[PlannerEntry] = []
+    for index, entry in enumerate(_iter_generalized_entries(extraction_payload), start=1):
+        raw_value = entry["value"]
+        normalized_value = normalize_value(entry.get("normalized_value") or raw_value)
+        source_text = _coerce_source_text(entry["source_text"], raw_value)
+        if not normalized_value and not source_text:
+            continue
+
+        bounding_box = _normalize_bounding_box(entry["bounding_box"])
+        page = _coerce_int(entry.get("page"))
+        if page is None and bounding_box is not None:
+            page = bounding_box.page
+
+        label = normalize_value(entry["label"]) or f"Credential {index}"
+        key = str(entry["key"] or _slug(label) or f"candidate_{index}")
+        semantic_key = _infer_semantic_key(
+            label=label,
+            key=key,
+            source_category=entry.get("source_category"),
+            normalized_value=normalized_value,
+            document_type=document_type,
+            document_family=document_family,
+        )
+        entries.append(
+            PlannerEntry(
+                source_id=str(entry.get("credential_id") or _build_credential_id(key, index)),
+                key=key,
+                label=label,
+                raw_value=raw_value,
+                normalized_value=normalized_value,
+                source_text=source_text,
+                confidence=_coerce_confidence(entry.get("confidence")),
+                page=page,
+                bounding_box=bounding_box,
+                source_category=normalize_value(entry.get("source_category")),
+                extraction_method=str(entry.get("extraction_method") or extraction_method),
+                explicit_requires_verification=(
+                    bool(entry["requires_verification"])
+                    if entry.get("requires_verification") is not None
+                    else None
+                ),
+                explicit_verification_reason=normalize_value(entry.get("verification_reason")),
+                explicit_is_pii=(
+                    bool(entry["is_pii"])
+                    if entry.get("is_pii") is not None
+                    else None
+                ),
+                semantic_key=semantic_key,
+            )
+        )
+    return entries
+
+
+def _determine_planning_decision(
+    entry: PlannerEntry,
+    *,
+    document_type: str,
+    document_family: str,
+    support_context: dict[str, Any],
+) -> PlanningDecision:
+    if not _has_planner_grounding(entry):
+        return PlanningDecision(
+            planning_status=PLANNING_STATUS_DISCARD,
+            promoted_label=entry.label,
+            category="unknown",
+            requires_verification=False,
+            verification_recommended=False,
+            eligibility_reason="The extracted field has no usable source text or grounding metadata.",
+        )
+
+    if (entry.confidence or 0.0) < 0.55:
+        return PlanningDecision(
+            planning_status=PLANNING_STATUS_DISCARD,
+            promoted_label=entry.label,
+            category="unknown",
+            requires_verification=False,
+            verification_recommended=False,
+            eligibility_reason="The extracted field confidence is below the planner minimum threshold.",
+        )
+
+    value = entry.normalized_value or ""
+    semantic_key = entry.semantic_key
+
+    if semantic_key == "generic_name":
+        if _looks_like_name(value) and _supports_academic_name_promotion(entry, document_family, support_context):
+            return _eligible_decision(
+                promoted_label="Student Name",
+                category="academic",
+                reason="A strong name field was promoted because academic support fields were also detected.",
+                grouping_reason="Grouped with academic anchors such as roll number, institution, board, or marks.",
+            )
+        if _looks_like_name(value) and _supports_identity_name_promotion(entry, document_family, support_context):
+            return _eligible_decision(
+                promoted_label="Full Name",
+                category="identity",
+                reason="A strong name field was promoted because identity-grade supporting fields were also detected.",
+                grouping_reason="Grouped with identity anchors such as date of birth or government identifier.",
+            )
+        return _context_decision(
+            promoted_label="Name",
+            category="identity",
+            reason="Generic name fragments are retained as context until identity or academic support fields make them verification-grade.",
+        )
+
+    if semantic_key == "full_name":
+        if _looks_like_name(value) and _passes_name_quality(entry):
+            return _eligible_decision(
+                promoted_label="Full Name",
+                category="identity",
+                reason="This field is explicitly labeled as a full/holder/applicant name and has a strong multi-token value.",
+                grouping_reason=(
+                    "Identity anchors were also present."
+                    if _supports_identity_name_promotion(entry, document_family, support_context)
+                    else None
+                ),
+            )
+        return _context_decision(
+            promoted_label="Full Name",
+            category="identity",
+            reason="The extracted name did not meet minimum quality thresholds for verification.",
+        )
+
+    if semantic_key == "student_name":
+        if _looks_like_name(value) and _supports_academic_name_promotion(entry, document_family, support_context):
+            return _eligible_decision(
+                promoted_label="Student Name",
+                category="academic",
+                reason="This field is explicitly student-scoped and academic support fields are present.",
+                grouping_reason="Grouped with academic anchors such as roll number, institution, board, or marks.",
+            )
+        return _context_decision(
+            promoted_label="Student Name",
+            category="academic",
+            reason="Student name is kept as context until stronger academic support fields are present.",
+        )
+
+    if semantic_key == "date_of_birth":
+        if _passes_date_quality(entry):
+            return _eligible_decision(
+                promoted_label="Date of Birth",
+                category="identity",
+                reason="Date of birth is an inherently verifiable identity field with a normalized date value.",
+            )
+        return _metadata_decision(
+            promoted_label="Date of Birth",
+            category="identity",
+            reason="The date-of-birth candidate exists but did not meet planner quality thresholds.",
+        )
+
+    if semantic_key == "aadhaar_number":
+        if _passes_identifier_quality(entry, expected="aadhaar"):
+            return _eligible_decision(
+                promoted_label="Aadhaar Number",
+                category="identity",
+                reason="Aadhaar number matched a strong identifier pattern and is treated as a verification-grade identity claim.",
+            )
+        return _context_decision(
+            promoted_label="Aadhaar Number",
+            category="identity",
+            reason="The Aadhaar-like identifier was detected but did not meet planner quality thresholds.",
+        )
+
+    if semantic_key == "pan_number":
+        if _passes_identifier_quality(entry, expected="pan"):
+            return _eligible_decision(
+                promoted_label="PAN Number",
+                category="tax",
+                reason="PAN number matched a strong tax-identifier pattern and is treated as verification-grade.",
+            )
+        return _context_decision(
+            promoted_label="PAN Number",
+            category="tax",
+            reason="The PAN-like identifier was detected but did not meet planner quality thresholds.",
+        )
+
+    if semantic_key in {"passport_number", "license_number"}:
+        expected = "passport" if semantic_key == "passport_number" else "license"
+        category = "passport" if semantic_key == "passport_number" else "license"
+        promoted_label = "Passport Number" if semantic_key == "passport_number" else "License Number"
+        if _passes_identifier_quality(entry, expected=expected):
+            return _eligible_decision(
+                promoted_label=promoted_label,
+                category=category,
+                reason="The document number matches a strong document-specific identifier pattern.",
+            )
+        return _context_decision(
+            promoted_label=promoted_label,
+            category=category,
+            reason="The detected document number did not meet document-specific quality thresholds.",
+        )
+
+    if semantic_key in {"roll_number", "seat_number"}:
+        promoted_label = "Roll Number" if semantic_key == "roll_number" else "Seat Number"
+        if _passes_identifier_quality(entry, expected="academic_id") and _supports_academic_record(document_family, support_context):
+            return _eligible_decision(
+                promoted_label=promoted_label,
+                category="academic",
+                reason="Academic identifier fields are verification-grade when they are strong and the document context is academic.",
+                grouping_reason="Grouped with academic context such as student name, institution, board, or results.",
+            )
+        return _context_decision(
+            promoted_label=promoted_label,
+            category="academic",
+            reason="Academic identifiers stay as context until the document is clearly academic and the value is strong.",
+        )
+
+    if semantic_key in {"institution_name", "board_name"}:
+        promoted_label = "Institution Name" if semantic_key == "institution_name" else "Board Name"
+        if _passes_institution_quality(entry) and _supports_academic_record(document_family, support_context):
+            return _eligible_decision(
+                promoted_label=promoted_label,
+                category="academic",
+                reason="Issuer-like academic fields are promoted only when the surrounding academic record context is strong.",
+                grouping_reason="Grouped with student/roll/result anchors instead of promoted as a standalone issuer fragment.",
+            )
+        return _context_decision(
+            promoted_label=promoted_label,
+            category="academic",
+            reason="Issuer-like fields are retained as academic context until student/result anchors justify promotion.",
+        )
+
+    if semantic_key == "document_number":
+        if _passes_identifier_quality(entry, expected="generic_document") and _supports_document_identifier(entry, document_family, support_context):
+            category = classify_credential_category(
+                label=entry.label,
+                key=entry.key,
+                source_category=entry.source_category,
+                normalized_value=value,
+                document_type=document_type,
+                semantic_key="document_number",
+            )
+            return _eligible_decision(
+                promoted_label="Document Number",
+                category=category,
+                reason="Document number was promoted only because the identifier is strong and the document context supports verification.",
+                grouping_reason="Grouped with document context such as identity anchors or issuer/date support.",
+            )
+        return _metadata_decision(
+            promoted_label="Document Number",
+            category="unknown",
+            reason="Generic document numbers are retained as metadata unless document context makes them verification-grade.",
+        )
+
+    if semantic_key == "phone_number":
+        if _passes_phone_quality(entry):
+            return _eligible_decision(
+                promoted_label="Phone Number",
+                category="identity",
+                reason="Phone number is explicit and normalized to a usable mobile number.",
+            )
+        return _context_decision(
+            promoted_label="Phone Number",
+            category="identity",
+            reason="Phone-like text was detected but did not meet quality thresholds.",
+        )
+
+    if semantic_key == "email":
+        if _passes_email_quality(entry):
+            return _eligible_decision(
+                promoted_label="Email",
+                category="identity",
+                reason="Email is explicit, normalized, and suitable for verification workflows.",
+            )
+        return _context_decision(
+            promoted_label="Email",
+            category="identity",
+            reason="Email-like text was detected but did not meet planner quality thresholds.",
+        )
+
+    if semantic_key == "address":
+        if _passes_address_quality(entry):
+            return _eligible_decision(
+                promoted_label="Address",
+                category="address",
+                reason="Address is explicit and sufficiently grounded to remain a verification-grade address claim.",
+            )
+        return _context_decision(
+            promoted_label="Address",
+            category="address",
+            reason="Address text is retained as context because it is too weak or incomplete for deterministic verification.",
+        )
+
+    if semantic_key in {"marks", "grade", "result_status", "exam_year"}:
+        if _supports_academic_record(document_family, support_context) and _passes_academic_metric_quality(entry, semantic_key):
+            return _eligible_decision(
+                promoted_label=_display_label_for_semantic_key(semantic_key),
+                category="academic",
+                reason="Academic result fields are promoted only when the document context is clearly academic and the value is structured enough.",
+            )
+        return _metadata_decision(
+            promoted_label=_display_label_for_semantic_key(semantic_key),
+            category="academic",
+            reason="Academic metric fields remain metadata until the surrounding academic record context is strong enough.",
+        )
+
+    if semantic_key in {"issue_date", "expiry_date", "date_reference"}:
+        return _metadata_decision(
+            promoted_label=_display_label_for_semantic_key(semantic_key),
+            category="unknown",
+            reason="Date fields are retained as metadata in this step; they do not become standalone verification tasks by default.",
+        )
+
+    if semantic_key in {"credential_title", "program_name", "program_branch", "issuer", "registration_number"}:
+        return _context_decision(
+            promoted_label=_display_label_for_semantic_key(semantic_key),
+            category=classify_credential_category(
+                label=entry.label,
+                key=entry.key,
+                source_category=entry.source_category,
+                normalized_value=value,
+                document_type=document_type,
+                semantic_key=semantic_key,
+            ),
+            reason="This field is useful context for grouping and evidence, but not a standalone verification credential by default.",
+        )
+
+    fallback_category = classify_credential_category(
+        label=entry.label,
+        key=entry.key,
+        source_category=entry.source_category,
+        normalized_value=value,
+        document_type=document_type,
+        semantic_key=semantic_key,
+    )
+    return PlanningDecision(
+        planning_status=PLANNING_STATUS_DISCARD,
+        promoted_label=entry.label,
+        category=fallback_category,
+        requires_verification=False,
+        verification_recommended=False,
+        eligibility_reason="The field does not map to a bounded verification-grade semantic rule in the current planner.",
+    )
+
+
+def _build_credential(
+    entry: PlannerEntry,
+    decision: PlanningDecision,
+    *,
+    credential_id: str,
+) -> ExtractedCredential:
+    category = decision.category
+    normalized_value = normalize_value(entry.normalized_value or entry.raw_value)
+    is_pii = (
+        bool(entry.explicit_is_pii)
+        if entry.explicit_is_pii is not None
+        else is_pii_field(
+            label=decision.promoted_label,
+            key=entry.key,
+            category=category,
+            normalized_value=normalized_value,
+        )
+    )
+    verification_reason = (
+        decision.eligibility_reason
+        if decision.requires_verification
+        else entry.explicit_verification_reason or decision.eligibility_reason
+    )
+    return ExtractedCredential(
+        credential_id=credential_id,
+        label=decision.promoted_label,
+        category=category,
+        value=entry.raw_value,
+        normalized_value=normalized_value,
+        source_text=entry.source_text,
+        confidence=entry.confidence,
+        page=entry.page,
+        bounding_box=entry.bounding_box,
+        is_pii=is_pii,
+        requires_verification=decision.requires_verification,
+        verification_recommended=decision.verification_recommended,
+        verification_reason=verification_reason,
+        planning_status=decision.planning_status,
+        eligibility_reason=decision.eligibility_reason,
+        grouping_reason=decision.grouping_reason,
+        source_candidate_ids=[entry.source_id],
+        extraction_method=entry.extraction_method,
+    )
+
+
+def _build_support_context(entries: list[PlannerEntry], *, document_family: str) -> dict[str, Any]:
+    semantic_keys = [entry.semantic_key for entry in entries]
+    counts = Counter(semantic_keys)
+    return {
+        "document_family": document_family,
+        "semantic_counts": counts,
+        "has_identity_anchor": any(
+            key in counts
+            for key in ("date_of_birth", "aadhaar_number", "pan_number", "passport_number", "license_number", "document_number")
+        ),
+        "has_academic_anchor": any(
+            key in counts
+            for key in ("roll_number", "seat_number", "institution_name", "board_name", "marks", "grade", "result_status", "exam_year", "student_name")
+        ),
+        "has_document_anchor": any(
+            key in counts
+            for key in ("document_number", "issue_date", "expiry_date", "institution_name", "board_name", "issuer")
+        ),
+    }
+
+
+def _supports_identity_name_promotion(
+    entry: PlannerEntry,
+    document_family: str,
+    support_context: dict[str, Any],
+) -> bool:
+    lower_label = entry.label.lower()
+    return (
+        any(token in lower_label for token in ("full name", "holder name", "applicant name"))
+        or document_family in {"identity", "passport", "license", "tax"}
+        or bool(support_context["has_identity_anchor"])
+    )
+
+
+def _supports_academic_name_promotion(
+    entry: PlannerEntry,
+    document_family: str,
+    support_context: dict[str, Any],
+) -> bool:
+    lower_label = entry.label.lower()
+    return (
+        "student" in lower_label
+        or document_family == "academic"
+        or bool(support_context["has_academic_anchor"])
+    )
+
+
+def _supports_academic_record(document_family: str, support_context: dict[str, Any]) -> bool:
+    return document_family == "academic" or bool(support_context["has_academic_anchor"])
+
+
+def _supports_document_identifier(
+    entry: PlannerEntry,
+    document_family: str,
+    support_context: dict[str, Any],
+) -> bool:
+    lower_label = entry.label.lower()
+    if any(token in lower_label for token in ("passport", "license", "licence", "document number")):
+        return True
+    if document_family in {"identity", "passport", "license", "tax"}:
+        return True
+    return bool(support_context["has_identity_anchor"] and support_context["has_document_anchor"])
+
+
+def _passes_name_quality(entry: PlannerEntry) -> bool:
+    return _looks_like_name(entry.normalized_value) and (entry.confidence or 0.0) >= 0.75
+
+
+def _passes_date_quality(entry: PlannerEntry) -> bool:
+    return bool(entry.normalized_value and DATE_PATTERN.match(entry.normalized_value)) and (entry.confidence or 0.0) >= 0.7
+
+
+def _passes_identifier_quality(entry: PlannerEntry, *, expected: str) -> bool:
+    normalized_value = _compact_identifier(entry.normalized_value)
+    if not normalized_value or (entry.confidence or 0.0) < 0.72:
+        return False
+    if expected == "aadhaar":
+        return bool(AADHAAR_PATTERN.match(normalized_value))
+    if expected == "pan":
+        return bool(PAN_PATTERN.match(normalized_value))
+    if expected == "passport":
+        return bool(PASSPORT_PATTERN.match(normalized_value))
+    if expected == "license":
+        return bool(LICENSE_PATTERN.match(normalized_value))
+    if expected == "academic_id":
+        return bool(ALPHANUMERIC_ID_PATTERN.match(normalized_value)) and len(normalized_value) >= 6
+    return bool(ALPHANUMERIC_ID_PATTERN.match(normalized_value))
+
+
+def _passes_phone_quality(entry: PlannerEntry) -> bool:
+    return bool(entry.normalized_value and PHONE_PATTERN.match(_digits_only(entry.normalized_value))) and (entry.confidence or 0.0) >= 0.75
+
+
+def _passes_email_quality(entry: PlannerEntry) -> bool:
+    return bool(entry.normalized_value and EMAIL_PATTERN.match(entry.normalized_value)) and (entry.confidence or 0.0) >= 0.75
+
+
+def _passes_address_quality(entry: PlannerEntry) -> bool:
+    value = entry.normalized_value or ""
+    return len(value) >= 10 and any(character.isdigit() for character in value) and (entry.confidence or 0.0) >= 0.8
+
+
+def _passes_institution_quality(entry: PlannerEntry) -> bool:
+    value = entry.normalized_value or ""
+    collapsed = value.lower().strip()
+    if len(collapsed) < 4 or (entry.confidence or 0.0) < 0.75:
+        return False
+    if collapsed in {"issuer", "institution", "board", "school", "university", "college"}:
+        return False
+    return any(character.isalpha() for character in collapsed)
+
+
+def _passes_academic_metric_quality(entry: PlannerEntry, semantic_key: str) -> bool:
+    value = (entry.normalized_value or "").strip()
+    confidence = entry.confidence or 0.0
+    if semantic_key == "exam_year":
+        return bool(YEAR_PATTERN.match(value)) and confidence >= 0.72
+    if semantic_key == "result_status":
+        return value.lower() in {"pass", "passed", "fail", "failed", "distinction", "first class", "second class"} and confidence >= 0.7
+    return bool(GRADE_PATTERN.match(value)) and confidence >= 0.68
+
+
+def _has_planner_grounding(entry: PlannerEntry) -> bool:
+    return bool(entry.source_text or entry.bounding_box is not None)
+
+
+def _looks_like_name(value: str | None) -> bool:
+    if not value or not NAME_PATTERN.match(value):
+        return False
+    return len([part for part in value.split(" ") if part]) >= 2
+
+
+def _compact_identifier(value: str | None) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", value or "").upper()
+
+
+def _digits_only(value: str | None) -> str:
+    return re.sub(r"\D", "", value or "")
+
+
+def _eligible_decision(
+    *,
+    promoted_label: str,
+    category: str,
+    reason: str,
+    grouping_reason: str | None = None,
+) -> PlanningDecision:
+    return PlanningDecision(
+        planning_status=PLANNING_STATUS_VERIFICATION_ELIGIBLE,
+        promoted_label=promoted_label,
+        category=category,
+        requires_verification=True,
+        verification_recommended=True,
+        eligibility_reason=reason,
+        grouping_reason=grouping_reason,
+    )
+
+
+def _context_decision(
+    *,
+    promoted_label: str,
+    category: str,
+    reason: str,
+) -> PlanningDecision:
+    return PlanningDecision(
+        planning_status=PLANNING_STATUS_CONTEXT_ONLY,
+        promoted_label=promoted_label,
+        category=category,
+        requires_verification=False,
+        verification_recommended=False,
+        eligibility_reason=reason,
+    )
+
+
+def _metadata_decision(
+    *,
+    promoted_label: str,
+    category: str,
+    reason: str,
+) -> PlanningDecision:
+    return PlanningDecision(
+        planning_status=PLANNING_STATUS_METADATA_ONLY,
+        promoted_label=promoted_label,
+        category=category,
+        requires_verification=False,
+        verification_recommended=False,
+        eligibility_reason=reason,
+    )
+
+
+def _infer_semantic_key(
+    *,
+    label: str,
+    key: str | None,
+    source_category: str | None,
+    normalized_value: str | None,
+    document_type: str,
+    document_family: str,
+) -> str:
+    label_haystack = " ".join(
+        part.lower()
+        for part in ((label or ""), (key or ""), (source_category or ""))
+        if part
+    )
+    source = (source_category or "").strip().lower()
+    compact_value = _compact_identifier(normalized_value)
+
+    if source == "person_name" or "name" in label_haystack:
+        if "student" in label_haystack or "name of student" in label_haystack:
+            return "student_name"
+        if any(token in label_haystack for token in ("full name", "holder name", "applicant name")):
+            return "full_name"
+        return "generic_name"
+    if source == "date_of_birth":
+        return "date_of_birth"
+    if source == "address":
+        return "address"
+    if source == "email":
+        return "email"
+    if source == "phone_number":
+        return "phone_number"
+    if source == "issuer":
+        if "board" in label_haystack:
+            return "board_name"
+        if any(token in label_haystack for token in ("institution", "university", "college", "school", "institute")) or document_family == "academic":
+            return "institution_name"
+        return "issuer"
+    if source == "credential_title":
+        return "credential_title"
+    if source == "program_name":
+        return "program_name"
+    if source == "program_branch":
+        return "program_branch"
+    if source == "registration_number":
+        if "seat" in label_haystack:
+            return "seat_number"
+        if any(token in label_haystack for token in ("roll", "reg", "registration")) or document_family == "academic":
+            return "roll_number"
+        return "registration_number"
+    if source == "document_number":
+        if "passport" in label_haystack or PASSPORT_PATTERN.match(compact_value):
+            return "passport_number"
+        if any(token in label_haystack for token in ("license", "licence")) or LICENSE_PATTERN.match(compact_value):
+            return "license_number"
+        return "document_number"
+    if source == "license_number":
+        return "license_number"
+    if source == "tax_identifier":
+        if "pan" in label_haystack or PAN_PATTERN.match(compact_value):
+            return "pan_number"
+        return "tax_identifier"
+    if source == "national_identifier":
+        if "aadhaar" in label_haystack or AADHAAR_PATTERN.match(_digits_only(normalized_value)):
+            return "aadhaar_number"
+        return "government_identifier"
+    if source == "score":
+        if any(token in label_haystack for token in ("marks", "percentage", "cgpa", "gpa", "score")):
+            return "marks"
+        if "grade" in label_haystack:
+            return "grade"
+        return "marks"
+    if source == "issue_date":
+        return "issue_date"
+    if source == "expiry_date":
+        return "expiry_date"
+    if source == "date_reference":
+        if "exam year" in label_haystack or label_haystack.endswith(" year"):
+            return "exam_year"
+        if "result" in label_haystack:
+            return "result_status"
+        return "date_reference"
+
+    if "aadhaar" in label_haystack or AADHAAR_PATTERN.match(_digits_only(normalized_value)):
+        return "aadhaar_number"
+    if "pan" in label_haystack or PAN_PATTERN.match(compact_value):
+        return "pan_number"
+    if "passport" in label_haystack:
+        return "passport_number"
+    if any(token in label_haystack for token in ("license", "licence")):
+        return "license_number"
+    if any(token in label_haystack for token in ("roll number", "roll no", "seat number")):
+        return "roll_number"
+    if "institution" in label_haystack or "university" in label_haystack or "college" in label_haystack:
+        return "institution_name"
+    if "board" in label_haystack:
+        return "board_name"
+    if "date of birth" in label_haystack or "dob" in label_haystack:
+        return "date_of_birth"
+    if "issue date" in label_haystack:
+        return "issue_date"
+    if "expiry date" in label_haystack:
+        return "expiry_date"
+    if "phone" in label_haystack or "mobile" in label_haystack:
+        return "phone_number"
+    if "email" in label_haystack:
+        return "email"
+    if "address" in label_haystack:
+        return "address"
+    if "credential" in label_haystack or "degree" in label_haystack:
+        return "credential_title"
+    if "date" in label_haystack or DATE_PATTERN.match(normalized_value or ""):
+        return "date_reference"
+    if _contains_any_keyword(label_haystack, IDENTIFIER_KEYWORDS):
+        return "document_number"
+    return "unknown"
+
+
+def _display_label_for_semantic_key(semantic_key: str) -> str:
+    return {
+        "credential_title": "Credential Title",
+        "program_name": "Program Name",
+        "program_branch": "Program Branch",
+        "issuer": "Issuer",
+        "registration_number": "Registration Number",
+        "issue_date": "Issue Date",
+        "expiry_date": "Expiry Date",
+        "date_reference": "Date",
+        "exam_year": "Exam Year",
+        "marks": "Marks",
+        "grade": "Grade",
+        "result_status": "Result Status",
+        "government_identifier": "Government Identifier",
+        "tax_identifier": "Tax Identifier",
+    }.get(semantic_key, semantic_key.replace("_", " ").title())
 
 
 def _iter_generalized_entries(extraction_payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -337,10 +1063,6 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
-def _humanize_key(value: str) -> str:
-    return value.replace("_", " ").strip().title()
-
-
 def _coerce_confidence(value: Any) -> float | None:
     if value in (None, ""):
         return None
@@ -378,19 +1100,31 @@ def _resolve_document_type(extraction_payload: dict[str, Any]) -> str:
     return str(extraction_payload.get("document_type") or "unknown")
 
 
-def _first_box(value: Any) -> dict[str, Any] | None:
-    if isinstance(value, list) and value:
-        candidate = value[0]
-        return candidate if isinstance(candidate, dict) else None
-    if isinstance(value, dict):
-        return value
-    return None
+def _resolve_document_family(extraction_payload: dict[str, Any]) -> str:
+    generalized_analysis = extraction_payload.get("generalized_analysis") or {}
+    profile_payload = generalized_analysis.get("document_profile_payload") or {}
+    family_hints = list(profile_payload.get("document_family_hints") or [])
+    candidates = family_hints + [_resolve_document_type(extraction_payload)]
+    for candidate in candidates:
+        normalized = str(candidate or "").replace("_", " ").lower()
+        if any(token in normalized for token in ACADEMIC_FAMILY_HINTS):
+            return "academic"
+        if any(token in normalized for token in TAX_FAMILY_HINTS):
+            return "tax"
+        if "passport" in normalized:
+            return "passport"
+        if "license" in normalized or "licence" in normalized:
+            return "license"
+        if any(token in normalized for token in IDENTITY_FAMILY_HINTS):
+            return "identity"
+        if any(token in normalized for token in FINANCIAL_FAMILY_HINTS):
+            return "financial"
+    return "generic"
 
 
 def _normalize_bounding_box(value: Any) -> BoundingBox | None:
     if not isinstance(value, dict):
         return None
-
     return BoundingBox(
         page=_coerce_int(value.get("page")),
         x0=_coerce_float(value.get("x0")),
@@ -428,12 +1162,13 @@ def _contains_keyword(haystack: str, keyword: str) -> bool:
 
 
 def _dedupe_credentials(credentials: list[ExtractedCredential]) -> list[ExtractedCredential]:
-    grouped: dict[tuple[str, str, int | None], ExtractedCredential] = {}
+    grouped: dict[tuple[str, str, int | None, str], ExtractedCredential] = {}
     for credential in credentials:
         key = (
             credential.label.lower(),
             (credential.normalized_value or str(credential.value or "")).lower(),
             credential.page,
+            credential.planning_status,
         )
         current = grouped.get(key)
         if current is None or (credential.confidence or 0) > (current.confidence or 0):

@@ -73,6 +73,40 @@ Generalized analysis is now the default extraction contract for downstream plann
 
 The older five-field compatibility schema (`Candidate Name`, `Institution`, `Credential`, `Issue Date`, `Document ID`) may still exist inside bounded trust-only compatibility surfaces, but it is no longer an active source for generalized credential discovery, verification planning, or audit rendering.
 
+Field provenance precedence is now explicit:
+
+- value span match on the same line is the primary evidence path
+- tight label-plus-value context is preserved as supporting evidence
+- nearby-right and nearby-below binding are bounded fallbacks only when the value line matches the expected semantic category
+- local pattern matches without label support are retained, but they carry lower provenance confidence than label-bound matches
+- extracted fields preserve source type metadata so downstream consumers can distinguish native PDF text, PaddleOCR, Tesseract, and mixed interpretation paths
+
+Semantic extraction precedence is now explicit as well:
+
+- deterministic document-family-aware rules lead semantic label assignment
+- Aadhaar, PAN, report-card, marksheet, transcript, and generic identity cues narrow fields before generic labels are emitted
+- generic outputs such as `date`, `document_number`, and `government_identifier` are last-resort labels when local context cannot safely narrow them further
+- NVIDIA GLiNER may refine generic candidates, but it does not override stronger deterministic family-aware semantics
+
+## Local OCR Boundary
+
+OCR remains local and privacy-preserving by default.
+
+- native PDF text extraction runs first
+- PaddleOCR is the preferred local OCR backend for scanned or image-heavy pages when it is installed and enabled
+- Tesseract remains a bounded local fallback of last resort
+- NVIDIA models are not used for OCR and do not receive page images
+
+The extraction payload may now include `ocr_metadata` with:
+
+- backend mode
+- OCR engine used
+- whether native text and OCR were both used
+- fallback-used flag
+- average OCR confidence
+- preprocessing steps applied
+- page-level OCR metadata and warning codes
+
 ## Generalized Analysis Contracts
 
 ### `DocumentProfile`
@@ -87,6 +121,22 @@ Session-level document classification summary:
 - manual-review hints
 - notes
 
+### `FieldCandidate`
+
+Extraction-stage grounded field candidate:
+
+- stable candidate id
+- label and category
+- raw and normalized value
+- `source_text` anchored to the value span when available
+- `evidence_snippet` preferring value span first, then tight label-plus-value context
+- page, primary `bounding_box`, and optional `context_bounding_box`
+- `grounding_match_type`
+- `provenance_method`
+- `provenance_confidence`
+- `source` and `source_engine`
+- extraction method
+
 ### `ExtractedCredential`
 
 Field-level extracted data:
@@ -99,6 +149,42 @@ Field-level extracted data:
 - page and bounding box
 - PII flag
 - verification requirement and reason
+- planner-side `planning_status`
+- `verification_recommended`
+- `eligibility_reason`
+- optional `grouping_reason`
+- `source_candidate_ids`
+
+Planner rule:
+
+- not every extracted field becomes a verification credential
+- only planner-promoted `verification_eligible` items enter route planning and task creation
+- weak fields such as generic names, issuers, credential titles, weak dates, and weak identifiers are retained as context or metadata instead of first-class verification targets
+
+### `CredentialAudit`
+
+Field-level audit output is now strict about evidence scope:
+
+- task results only attach when the `task_id` and `credential_id` belong to that credential
+- extraction evidence stays local to the credential’s own value, page, and bounding box
+- provider and connector summaries are attached only when they contain field-local matched or mismatched evidence for that credential
+- route metadata may appear as minimal planning context, but it is not proof of verification
+- document-level trust outcome and session-wide connector state remain in summary-level payloads and are not repeated as per-field audit evidence by default
+
+Audit evidence precedence is now:
+
+- field-local verification task result
+- field-local extraction provenance
+- field-local provider or connector response summary
+- credential-scoped agent explanation
+- minimal route metadata
+
+### `SessionCredentialCollection`
+
+Credential planning output now separates:
+
+- `credentials`: verification-grade credentials that feed routing, tasks, audits, and execution
+- `context_fields`: demoted but still preserved context/metadata fields that remain available for later UI and audit improvements
 - extraction method
 
 ### `VerificationTask`
@@ -121,6 +207,9 @@ Deterministic or reconciled route selection:
 - route reason
 - preferred provider key and label
 - planned provider key and label
+- planned execution mode
+- planned live/mock/demo flags
+- bounded fallback reason when preferred and planned execution differ
 - fallback verifiers
 - manual review recommendation
 
@@ -133,6 +222,12 @@ The `backend/app/verifier_execution/` module is the field-level execution bounda
 - task id
 - credential id
 - verifier key and label
+- preferred provider key and label
+- planned provider key and label
+- executed provider key and label
+- explicit execution mode
+- bounded fallback reason
+- live/mock/demo result flags
 - task status
 - audit status
 - outcome color
@@ -149,6 +244,14 @@ Bounded task statuses:
 - `SUCCEEDED`
 - `PARTIAL`
 - `FAILED`
+
+Execution truth is now explicit:
+
+- Entra may remain the preferred rail even when it does not execute
+- the planned provider is the environment-real execution path selected during routing
+- the executed provider is the provider that actually returned evidence for the task
+- local rule-only fallback after a provider failure is labeled as fallback, not as successful provider execution
+- local mock, demo, supplementary, and live provider outcomes are distinct in result metadata and audit evidence
 
 ## NVIDIA Inference Boundary
 
@@ -241,7 +344,7 @@ The `backend/app/verifier_providers/` module is the outbound verifier boundary.
 - demo profile key
 - execution environment label
 - transition notes
-- demo-vs-live flags
+- mock, demo, and live result flags
 
 ### `ProviderExecutionTrace`
 
@@ -456,6 +559,8 @@ If agent and deterministic routing differ:
 - agent suggestions can only override a `manual_review` route through bounded reconciliation
 - deterministic verified evidence is never replaced by agent guesses
 - provider preference metadata records when Entra was preferred but unavailable
+- route metadata, task results, and audit evidence all distinguish preferred provider, planned provider, and executed provider
+- local mock and demo execution remain available, but they are labeled explicitly and never presented as live Entra verification
 
 ## Read Endpoints
 

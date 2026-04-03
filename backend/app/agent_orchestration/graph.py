@@ -14,18 +14,25 @@ from .state import AgentGraphState
 
 
 def build_agent_graph(provider):
+    input_node = "node_input_normalization"
+    understanding_node = "node_document_understanding"
+    grouping_node = "node_credential_grouping"
+    routing_node = "node_route_recommendation"
+    explanation_node = "node_explanation_synthesis"
+    consolidation_node = "node_output_consolidation"
+
     graph = StateGraph(AgentGraphState)
-    graph.add_node("input_normalization", build_input_normalization_node())
-    graph.add_node("document_understanding", build_document_understanding_node(provider))
-    graph.add_node("credential_grouping", build_credential_grouping_node(provider))
-    graph.add_node("route_recommendation", build_route_recommendation_node(provider))
-    graph.add_node("explanation_synthesis", build_explanation_synthesis_node(provider))
-    graph.add_node("output_consolidation", build_output_consolidation_node())
-    graph.add_edge(START, "input_normalization")
-    graph.add_edge("input_normalization", "document_understanding")
-    graph.add_edge("document_understanding", "credential_grouping")
-    graph.add_edge("credential_grouping", "route_recommendation")
-    graph.add_edge("route_recommendation", "explanation_synthesis")
-    graph.add_edge("explanation_synthesis", "output_consolidation")
-    graph.add_edge("output_consolidation", END)
+    graph.add_node(input_node, build_input_normalization_node())
+    graph.add_node(understanding_node, build_document_understanding_node(provider))
+    graph.add_node(grouping_node, build_credential_grouping_node(provider))
+    graph.add_node(routing_node, build_route_recommendation_node(provider))
+    graph.add_node(explanation_node, build_explanation_synthesis_node(provider))
+    graph.add_node(consolidation_node, build_output_consolidation_node())
+    graph.add_edge(START, input_node)
+    graph.add_edge(input_node, understanding_node)
+    graph.add_edge(understanding_node, grouping_node)
+    graph.add_edge(grouping_node, routing_node)
+    graph.add_edge(routing_node, explanation_node)
+    graph.add_edge(explanation_node, consolidation_node)
+    graph.add_edge(consolidation_node, END)
     return graph.compile()

@@ -29,9 +29,10 @@ class ManualReviewVerifier(CredentialVerifier):
             reason_codes=["MANUAL_REVIEW_REQUIRED"],
             missing_fields=[credential.label],
             raw_result_summary=summarize_result(
-                execution_mode="manual_review",
+                execution_mode="MANUAL_REVIEW",
                 task=task,
                 credential=credential,
             ),
             manual_review_recommended=True,
+            execution_mode="MANUAL_REVIEW",
         )

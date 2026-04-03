@@ -235,15 +235,14 @@ class GeneralizedVerificationPlannerTests(unittest.TestCase):
         pii_flags = {credential.label: credential.is_pii for credential in credentials}
 
         self.assertEqual(categories["Full Name"], "identity")
-        self.assertEqual(categories["Home Address"], "address")
+        self.assertEqual(categories["Address"], "address")
         self.assertEqual(categories["Passport Number"], "passport")
-        self.assertEqual(categories["Issue Date"], "unknown")
         self.assertTrue(requirements["Full Name"])
         self.assertTrue(requirements["Passport Number"])
-        self.assertFalse(requirements["Issue Date"])
-        self.assertFalse(requirements["Misc Note"])
         self.assertTrue(pii_flags["Full Name"])
-        self.assertTrue(pii_flags["Home Address"])
+        self.assertTrue(pii_flags["Address"])
+        self.assertNotIn("Issue Date", categories)
+        self.assertNotIn("Misc Note", categories)
 
     def test_build_extracted_credentials_ignores_legacy_field_details_without_generalized_candidates(self):
         credentials = build_extracted_credentials(
@@ -313,7 +312,142 @@ class GeneralizedVerificationPlannerTests(unittest.TestCase):
 
         self.assertEqual(categories["Roll Number"], "academic")
         self.assertTrue(requirements["Roll Number"])
-        self.assertEqual(categories["Student Name"], "identity")
+        self.assertEqual(categories["Student Name"], "academic")
+
+    def test_generic_name_and_issuer_are_demoted_until_grouped(self):
+        session = SessionModel(
+            id="session-planner-context",
+            user_id="user-1",
+            status=SessionState.VERIFIED_AMBER,
+            extraction_payload={
+                "document_type": "generic_document",
+                "field_candidates": [
+                    {
+                        "candidate_id": "cand-name",
+                        "label": "Name",
+                        "category": "person_name",
+                        "raw_value": "Asha Rao",
+                        "normalized_value": "Asha Rao",
+                        "source_text": "Name: Asha Rao",
+                        "confidence": 0.96,
+                        "page": 1,
+                        "bounding_box": {"page": 1, "x0": 10, "y0": 10, "x1": 80, "y1": 20},
+                    },
+                    {
+                        "candidate_id": "cand-issuer",
+                        "label": "Issuer",
+                        "category": "issuer",
+                        "raw_value": "Demo Authority",
+                        "normalized_value": "Demo Authority",
+                        "source_text": "Issuer: Demo Authority",
+                        "confidence": 0.94,
+                        "page": 1,
+                        "bounding_box": {"page": 1, "x0": 10, "y0": 22, "x1": 90, "y1": 32},
+                    },
+                    {
+                        "candidate_id": "cand-title",
+                        "label": "Credential",
+                        "category": "credential_title",
+                        "raw_value": "Identity Card",
+                        "normalized_value": "Identity Card",
+                        "source_text": "Credential: Identity Card",
+                        "confidence": 0.92,
+                        "page": 1,
+                        "bounding_box": {"page": 1, "x0": 10, "y0": 34, "x1": 90, "y1": 44},
+                    },
+                ],
+            },
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+
+        collection = adapt_session_to_credentials(session)
+
+        self.assertEqual(collection.credentials, [])
+        context_by_label = {credential.label: credential for credential in collection.context_fields}
+        self.assertEqual(context_by_label["Name"].planning_status, "context_only")
+        self.assertEqual(context_by_label["Issuer"].planning_status, "context_only")
+        self.assertEqual(context_by_label["Credential Title"].planning_status, "context_only")
+
+    def test_grouping_promotes_academic_identity_and_demotes_credential_title(self):
+        session = SessionModel(
+            id="session-planner-grouping",
+            user_id="user-1",
+            status=SessionState.VERIFIED_AMBER,
+            extraction_payload=_sample_extraction_payload(),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+
+        collection = adapt_session_to_credentials(session)
+        credentials_by_label = {credential.label: credential for credential in collection.credentials}
+        context_by_label = {credential.label: credential for credential in collection.context_fields}
+
+        self.assertEqual(sorted(credentials_by_label), ["Institution Name", "Roll Number", "Student Name"])
+        self.assertEqual(credentials_by_label["Student Name"].category, "academic")
+        self.assertEqual(credentials_by_label["Institution Name"].category, "academic")
+        self.assertEqual(credentials_by_label["Roll Number"].category, "academic")
+        self.assertEqual(context_by_label["Credential Title"].planning_status, "context_only")
+        self.assertEqual(context_by_label["Issue Date"].planning_status, "metadata_only")
+
+    def test_identity_specific_fields_are_promoted_when_strong(self):
+        extraction_payload = {
+            "document_type": "aadhaar_card",
+            "field_candidates": [
+                {
+                    "candidate_id": "cand-name",
+                    "label": "Name",
+                    "category": "person_name",
+                    "raw_value": "Asha Rao",
+                    "normalized_value": "Asha Rao",
+                    "source_text": "Name: Asha Rao",
+                    "confidence": 0.98,
+                    "page": 1,
+                    "bounding_box": {"page": 1, "x0": 10, "y0": 10, "x1": 80, "y1": 20},
+                },
+                {
+                    "candidate_id": "cand-dob",
+                    "label": "Date of Birth",
+                    "category": "date_of_birth",
+                    "raw_value": "1997-05-12",
+                    "normalized_value": "1997-05-12",
+                    "source_text": "Date of Birth: 1997-05-12",
+                    "confidence": 0.95,
+                    "page": 1,
+                    "bounding_box": {"page": 1, "x0": 10, "y0": 22, "x1": 90, "y1": 32},
+                },
+                {
+                    "candidate_id": "cand-aadhaar",
+                    "label": "Aadhaar",
+                    "category": "national_identifier",
+                    "raw_value": "9999 8888 7777",
+                    "normalized_value": "999988887777",
+                    "source_text": "Aadhaar: 9999 8888 7777",
+                    "confidence": 0.97,
+                    "page": 1,
+                    "bounding_box": {"page": 1, "x0": 10, "y0": 34, "x1": 90, "y1": 44},
+                },
+                {
+                    "candidate_id": "cand-pan",
+                    "label": "PAN",
+                    "category": "tax_identifier",
+                    "raw_value": "ABCDE1234F",
+                    "normalized_value": "ABCDE1234F",
+                    "source_text": "PAN: ABCDE1234F",
+                    "confidence": 0.97,
+                    "page": 1,
+                    "bounding_box": {"page": 1, "x0": 10, "y0": 46, "x1": 90, "y1": 56},
+                },
+            ],
+        }
+
+        credentials = build_extracted_credentials(extraction_payload)
+        credentials_by_label = {credential.label: credential for credential in credentials}
+
+        self.assertEqual(credentials_by_label["Full Name"].category, "identity")
+        self.assertEqual(credentials_by_label["Date of Birth"].category, "identity")
+        self.assertEqual(credentials_by_label["Aadhaar Number"].category, "identity")
+        self.assertEqual(credentials_by_label["PAN Number"].category, "tax")
 
 
 class GeneralizedVerificationRoutingTests(unittest.TestCase):
@@ -500,17 +634,23 @@ class GeneralizedVerificationAdapterTests(unittest.TestCase):
         summary = adapt_session_to_verification_summary(session)
 
         self.assertEqual(credentials.document_type, "academic_credential")
-        self.assertEqual(len(credentials.credentials), 5)
-        self.assertEqual(len(plan.tasks), 4)
+        self.assertEqual(len(credentials.credentials), 3)
+        self.assertEqual(len(credentials.context_fields), 2)
+        self.assertEqual(len(plan.tasks), 3)
         self.assertEqual(summary.overall_outcome, "GREEN")
-        self.assertEqual(summary.green_count, 4)
-        self.assertEqual(summary.total_credentials_found, 5)
+        self.assertEqual(summary.green_count, 3)
+        self.assertEqual(summary.total_credentials_found, 3)
 
         audits_by_label = {audit.label: audit for audit in audits.audits}
-        self.assertEqual(audits_by_label["Candidate Name"].audit_status, "VERIFIED")
-        self.assertEqual(audits_by_label["Credential"].audit_status, "VERIFIED")
-        self.assertEqual(audits_by_label["Document ID"].audit_status, "VERIFIED")
-        self.assertEqual(audits_by_label["Issue Date"].audit_status, AUDIT_STATUS_NOT_APPLICABLE)
+        self.assertEqual(audits_by_label["Student Name"].audit_status, "VERIFIED")
+        self.assertEqual(audits_by_label["Institution Name"].audit_status, "VERIFIED")
+        self.assertEqual(audits_by_label["Roll Number"].audit_status, "VERIFIED")
+        self.assertFalse(
+            any(item.evidence_type == "trust_result" for item in audits_by_label["Student Name"].evidence)
+        )
+        self.assertTrue(
+            any(item.evidence_type == "connector_claim_summary" for item in audits_by_label["Student Name"].evidence)
+        )
 
 
 class GeneralizedVerificationServiceTests(unittest.TestCase):
@@ -567,7 +707,7 @@ class GeneralizedVerificationServiceTests(unittest.TestCase):
         self.assertIsNotNone(session.verification_execution_summary_payload)
         self.assertIsNotNone(session.credential_audits_payload)
         self.assertIsNotNone(session.verification_summary_payload)
-        self.assertEqual(session.verification_summary_payload["green_count"], 4)
+        self.assertEqual(session.verification_summary_payload["green_count"], 3)
         self.assertEqual(session.document_profile_payload["document_family"], "academic_document")
         db.close()
 
@@ -690,9 +830,8 @@ class GeneralizedVerificationServiceTests(unittest.TestCase):
         unverified_by_label = {audit.label: audit for audit in unverified_audits.audits}
         partial_by_label = {audit.label: audit for audit in partial_audits.audits}
 
-        self.assertEqual(unverified_by_label["Candidate Name"].audit_status, AUDIT_STATUS_UNVERIFIED)
-        self.assertEqual(partial_by_label["Candidate Name"].audit_status, AUDIT_STATUS_PARTIAL)
-        self.assertEqual(partial_by_label["Issue Date"].audit_status, AUDIT_STATUS_NOT_APPLICABLE)
+        self.assertEqual(unverified_by_label["Student Name"].audit_status, AUDIT_STATUS_UNVERIFIED)
+        self.assertEqual(partial_by_label["Student Name"].audit_status, AUDIT_STATUS_PARTIAL)
 
     def test_analysis_status_is_inferred_for_legacy_rows_without_persisted_payloads(self):
         session = SessionModel(
@@ -903,6 +1042,7 @@ class GeneralizedVerificationApiTests(unittest.TestCase):
                 "session_id": "session-empty-generalized",
                 "document_type": "unknown",
                 "credentials": [],
+                "context_fields": [],
             },
         )
         self.assertEqual(

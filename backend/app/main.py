@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from .api.routes import router as api_router
 from .auth.routes import router as auth_router
 from .connectors.routes import router as connector_router
 from .core.limiter import SLOWAPI_AVAILABLE, limiter
-from .db.database import init_db
+from .db.database import engine, init_db
 from .sessions.routes import router as session_router
 
 try:
@@ -54,3 +55,15 @@ def startup_event() -> None:
 @app.get("/")
 def root() -> dict[str, str]:
     return {"message": "Backend is running"}
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz() -> dict[str, str]:
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+    return {"status": "ready"}

@@ -84,6 +84,7 @@ class ProviderResponse(ContractModel):
     demo_profile_key: str | None = None
     execution_environment_label: str | None = None
     transition_notes: list[str] = Field(default_factory=list)
+    is_mock_result: bool = False
     is_demo_result: bool = False
     is_live_result: bool = False
 
@@ -107,6 +108,9 @@ class ProviderExecutionTrace(ContractModel):
     demo_profile_key: str | None = None
     execution_environment_label: str | None = None
     transition_notes: list[str] = Field(default_factory=list)
+    is_mock_result: bool = False
+    is_demo_result: bool = False
+    is_live_result: bool = False
 
 
 class ProviderTransitionConfig(ContractModel):

@@ -178,12 +178,14 @@ def summarize_result(
     mismatched_fields: dict[str, Any] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    truth = task_execution_truth(task)
     summary = {
         "execution_mode": execution_mode,
         "credential_label": credential.label,
         "verification_type": task.verification_type,
         "document_confidence": credential.confidence,
         "has_grounding": has_grounding(credential),
+        **truth,
     }
     if connector:
         summary["connector_id"] = connector.get("connector_id")
@@ -195,6 +197,21 @@ def summarize_result(
     if extra:
         summary.update(extra)
     return summary
+
+
+def task_execution_truth(task: VerificationTask) -> dict[str, Any]:
+    payload = dict(task.input_payload or {}) if isinstance(task.input_payload, dict) else {}
+    return {
+        "preferred_provider_key": payload.get("preferred_provider_key"),
+        "preferred_provider_label": payload.get("preferred_provider_label"),
+        "planned_provider_key": payload.get("planned_provider_key"),
+        "planned_provider_label": payload.get("planned_provider_label"),
+        "planned_execution_mode": payload.get("planned_execution_mode"),
+        "planned_is_live_result": bool(payload.get("planned_is_live_result")),
+        "planned_is_mock_result": bool(payload.get("planned_is_mock_result")),
+        "planned_is_demo_result": bool(payload.get("planned_is_demo_result")),
+        "fallback_reason": payload.get("fallback_reason"),
+    }
 
 
 def looks_like_passport(value: str | None) -> bool:

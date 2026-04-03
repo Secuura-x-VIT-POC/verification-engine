@@ -145,6 +145,9 @@ class ProviderExecutionRuntime:
                 or self.operating_context.execution_environment_label
             ),
             transition_notes=list(response.transition_notes or self.operating_context.provider_transition_notes),
+            is_mock_result=response.is_mock_result,
+            is_demo_result=response.is_demo_result,
+            is_live_result=response.is_live_result,
         )
         self.traces.append(trace)
         return ProviderAttemptOutcome(

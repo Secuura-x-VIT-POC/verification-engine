@@ -8,6 +8,7 @@ from ...verification_domain.contracts import (
     AUDIT_STATUS_PARTIAL,
     AUDIT_STATUS_UNVERIFIED,
     AUDIT_STATUS_VERIFIED,
+    FALLBACK_REASON_PROVIDER_ATTEMPT_FAILED,
     OUTCOME_COLOR_AMBER,
     OUTCOME_COLOR_GREEN,
     OUTCOME_COLOR_RED,
@@ -24,6 +25,7 @@ from ..adapters import (
     find_connector_claim_evidence,
     has_grounding,
     summarize_result,
+    task_execution_truth,
 )
 from ..contracts import (
     TASK_STATUS_MANUAL_REVIEW,
@@ -62,12 +64,71 @@ class CredentialVerifier(ABC):
         raw_result_summary: dict | None = None,
         confidence: float | None = None,
         manual_review_recommended: bool = False,
+        executed_provider_key: str | None = None,
+        executed_provider_label: str | None = None,
+        execution_mode: str | None = None,
+        fallback_reason: str | None = None,
+        is_live_result: bool | None = None,
+        is_mock_result: bool | None = None,
+        is_demo_result: bool | None = None,
     ) -> VerificationTaskResult:
+        route_truth = task_execution_truth(task)
+        raw_summary = dict(raw_result_summary or {})
+        resolved_execution_mode = execution_mode or raw_summary.get("execution_mode")
+        resolved_fallback_reason = fallback_reason or raw_summary.get("fallback_reason") or route_truth.get("fallback_reason")
+        resolved_executed_provider_key = (
+            executed_provider_key
+            or raw_summary.get("executed_provider_key")
+            or raw_summary.get("provider_key")
+        )
+        resolved_executed_provider_label = (
+            executed_provider_label
+            or raw_summary.get("executed_provider_label")
+            or raw_summary.get("provider_label")
+        )
+        resolved_is_live_result = bool(
+            raw_summary.get("is_live_result")
+            if is_live_result is None
+            else is_live_result
+        )
+        resolved_is_mock_result = bool(
+            raw_summary.get("is_mock_result")
+            if is_mock_result is None
+            else is_mock_result
+        )
+        resolved_is_demo_result = bool(
+            raw_summary.get("is_demo_result")
+            if is_demo_result is None
+            else is_demo_result
+        )
+        raw_summary.update(
+            {
+                **route_truth,
+                "execution_mode": resolved_execution_mode,
+                "executed_provider_key": resolved_executed_provider_key,
+                "executed_provider_label": resolved_executed_provider_label,
+                "fallback_reason": resolved_fallback_reason,
+                "is_live_result": resolved_is_live_result,
+                "is_mock_result": resolved_is_mock_result,
+                "is_demo_result": resolved_is_demo_result,
+            }
+        )
         return VerificationTaskResult(
             task_id=task.task_id,
             credential_id=credential.credential_id,
             verifier_key=task.verifier_key,
             verifier_label=task.verifier_label,
+            preferred_provider_key=route_truth.get("preferred_provider_key"),
+            preferred_provider_label=route_truth.get("preferred_provider_label"),
+            planned_provider_key=route_truth.get("planned_provider_key"),
+            planned_provider_label=route_truth.get("planned_provider_label"),
+            executed_provider_key=resolved_executed_provider_key,
+            executed_provider_label=resolved_executed_provider_label,
+            execution_mode=resolved_execution_mode,
+            fallback_reason=resolved_fallback_reason,
+            is_live_result=resolved_is_live_result,
+            is_mock_result=resolved_is_mock_result,
+            is_demo_result=resolved_is_demo_result,
             task_status=task_status,
             audit_status=audit_status,
             outcome_color=outcome_color,
@@ -76,7 +137,7 @@ class CredentialVerifier(ABC):
             matched_fields=dict(matched_fields or {}),
             mismatched_fields=dict(mismatched_fields or {}),
             missing_fields=list(missing_fields or []),
-            raw_result_summary=dict(raw_result_summary or {}),
+            raw_result_summary=raw_summary,
             confidence=confidence if confidence is not None else document_confidence(credential),
             manual_review_recommended=manual_review_recommended,
         )
@@ -107,13 +168,14 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 matched_fields=matched_fields,
                 mismatched_fields=mismatched_fields,
                 raw_result_summary=summarize_result(
-                    execution_mode="connector_mismatch",
+                    execution_mode="CONNECTOR_CLAIM_MISMATCH",
                     task=task,
                     credential=credential,
                     connector=connector,
                     matched_fields=matched_fields,
                     mismatched_fields=mismatched_fields,
                 ),
+                execution_mode="CONNECTOR_CLAIM_MISMATCH",
             )
 
         if matched_fields:
@@ -128,12 +190,13 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 reason_codes=reason_codes,
                 matched_fields=matched_fields,
                 raw_result_summary=summarize_result(
-                    execution_mode="connector_match",
+                    execution_mode="CONNECTOR_CLAIM_MATCH",
                     task=task,
                     credential=credential,
                     connector=connector,
                     matched_fields=matched_fields,
                 ),
+                execution_mode="CONNECTOR_CLAIM_MATCH",
             )
 
         provider_result = self._execute_via_provider(task, credential, context)
@@ -169,11 +232,12 @@ class ConnectorAwareVerifier(CredentialVerifier):
             explanation=explanation,
             reason_codes=reason_codes,
             raw_result_summary=summarize_result(
-                execution_mode="rule_only_partial",
+                execution_mode="RULE_ONLY_PARTIAL",
                 task=task,
                 credential=credential,
                 extra=extra_summary,
             ),
+            execution_mode="RULE_ONLY_PARTIAL",
         )
 
     def build_manual_review_result(
@@ -195,12 +259,13 @@ class ConnectorAwareVerifier(CredentialVerifier):
             reason_codes=reason_codes,
             missing_fields=[credential.label],
             raw_result_summary=summarize_result(
-                execution_mode="manual_review",
+                execution_mode="MANUAL_REVIEW",
                 task=task,
                 credential=credential,
                 extra=extra_summary,
             ),
             manual_review_recommended=True,
+            execution_mode="MANUAL_REVIEW",
         )
 
     def build_unverified_result(
@@ -222,11 +287,12 @@ class ConnectorAwareVerifier(CredentialVerifier):
             reason_codes=reason_codes,
             missing_fields=[credential.label],
             raw_result_summary=summarize_result(
-                execution_mode="rule_only_unverified",
+                execution_mode="RULE_ONLY_UNVERIFIED",
                 task=task,
                 credential=credential,
                 extra=extra_summary,
             ),
+            execution_mode="RULE_ONLY_UNVERIFIED",
         )
 
     def has_strong_document_signal(self, credential: ExtractedCredential) -> bool:
@@ -303,12 +369,16 @@ class ConnectorAwareVerifier(CredentialVerifier):
         runtime.mark_fallback_used(attempt.trace.request_id)
         fallback_result.explanation = (
             f"{fallback_result.explanation} "
-            f"Provider attempt via {attempt.provider_label} failed safely and local fallback logic was used."
+            f"Provider attempt via {attempt.provider_label} failed safely, so deterministic local fallback logic was used instead."
         ).strip()
         fallback_result.reason_codes = _dedupe(
             list(fallback_result.reason_codes or [])
             + list(response.reason_codes or [])
-            + ["PROVIDER_FALLBACK_USED", f"PROVIDER_STATUS_{response.technical_status}"]
+            + [
+                "PROVIDER_FALLBACK_USED",
+                FALLBACK_REASON_PROVIDER_ATTEMPT_FAILED,
+                f"PROVIDER_STATUS_{response.technical_status}",
+            ]
         )
         raw_summary = dict(fallback_result.raw_result_summary or {})
         raw_summary.update(
@@ -323,12 +393,20 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 "provider_demo_profile_key": response.demo_profile_key,
                 "provider_execution_environment_label": response.execution_environment_label,
                 "provider_transition_notes": list(response.transition_notes or []),
+                "provider_is_mock_result": response.is_mock_result,
                 "provider_is_demo_result": response.is_demo_result,
                 "provider_is_live_result": response.is_live_result,
                 "provider_fallback_used": True,
+                "fallback_reason": FALLBACK_REASON_PROVIDER_ATTEMPT_FAILED,
+                "execution_mode": "RULE_ONLY_FALLBACK",
             }
         )
         fallback_result.raw_result_summary = raw_summary
+        fallback_result.fallback_reason = FALLBACK_REASON_PROVIDER_ATTEMPT_FAILED
+        fallback_result.execution_mode = "RULE_ONLY_FALLBACK"
+        fallback_result.is_live_result = False
+        fallback_result.is_mock_result = False
+        fallback_result.is_demo_result = False
         if response.technical_status == PROVIDER_TECHNICAL_STATUS_TIMEOUT:
             fallback_result.manual_review_recommended = True
         return fallback_result
@@ -346,7 +424,10 @@ class ConnectorAwareVerifier(CredentialVerifier):
         mismatched_fields = dict(response.mismatched_fields or {})
         missing_fields = list(response.missing_fields or [])
         raw_summary = summarize_result(
-            execution_mode="provider_response",
+            execution_mode=_resolve_provider_execution_mode(
+                provider_key=provider_key,
+                response=response,
+            ),
             task=task,
             credential=credential,
             extra={
@@ -360,9 +441,20 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 "provider_demo_profile_key": response.demo_profile_key,
                 "provider_execution_environment_label": response.execution_environment_label,
                 "provider_transition_notes": list(response.transition_notes or []),
+                "provider_is_mock_result": response.is_mock_result,
                 "provider_is_demo_result": response.is_demo_result,
                 "provider_is_live_result": response.is_live_result,
+                "executed_provider_key": provider_key,
+                "executed_provider_label": provider_label,
+                "is_mock_result": response.is_mock_result,
+                "is_demo_result": response.is_demo_result,
+                "is_live_result": response.is_live_result,
             },
+        )
+        provider_evidence_phrase = _provider_evidence_phrase(
+            provider_key=provider_key,
+            provider_label=provider_label,
+            response=response,
         )
 
         if mismatched_fields:
@@ -372,7 +464,7 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 task_status=TASK_STATUS_SUCCEEDED,
                 audit_status=AUDIT_STATUS_MISMATCH,
                 outcome_color=OUTCOME_COLOR_RED,
-                explanation=f"{task.verifier_label} received contradictory external evidence from {provider_label}.",
+                explanation=f"{task.verifier_label} received contradictory {provider_evidence_phrase}.",
                 reason_codes=_dedupe(list(response.reason_codes or []) + ["PROVIDER_MISMATCH"]),
                 matched_fields=matched_fields,
                 mismatched_fields=mismatched_fields,
@@ -380,6 +472,12 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 raw_result_summary=raw_summary,
                 confidence=response.confidence,
                 manual_review_recommended=response.manual_review_recommended,
+                executed_provider_key=provider_key,
+                executed_provider_label=provider_label,
+                execution_mode=raw_summary.get("execution_mode"),
+                is_live_result=response.is_live_result,
+                is_mock_result=response.is_mock_result,
+                is_demo_result=response.is_demo_result,
             )
 
         if matched_fields and missing_fields:
@@ -389,13 +487,19 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 task_status=TASK_STATUS_PARTIAL,
                 audit_status=AUDIT_STATUS_PARTIAL,
                 outcome_color=OUTCOME_COLOR_AMBER,
-                explanation=f"{task.verifier_label} returned partial external evidence from {provider_label}.",
+                explanation=f"{task.verifier_label} returned partial {provider_evidence_phrase}.",
                 reason_codes=_dedupe(list(response.reason_codes or []) + ["PROVIDER_PARTIAL_MATCH"]),
                 matched_fields=matched_fields,
                 missing_fields=missing_fields,
                 raw_result_summary=raw_summary,
                 confidence=response.confidence,
                 manual_review_recommended=response.manual_review_recommended,
+                executed_provider_key=provider_key,
+                executed_provider_label=provider_label,
+                execution_mode=raw_summary.get("execution_mode"),
+                is_live_result=response.is_live_result,
+                is_mock_result=response.is_mock_result,
+                is_demo_result=response.is_demo_result,
             )
 
         if matched_fields:
@@ -405,12 +509,18 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 task_status=TASK_STATUS_SUCCEEDED,
                 audit_status=AUDIT_STATUS_VERIFIED,
                 outcome_color=OUTCOME_COLOR_GREEN,
-                explanation=f"{task.verifier_label} matched external evidence via {provider_label}.",
+                explanation=f"{task.verifier_label} matched {provider_evidence_phrase}.",
                 reason_codes=_dedupe(list(response.reason_codes or []) + ["PROVIDER_VERIFIED"]),
                 matched_fields=matched_fields,
                 raw_result_summary=raw_summary,
                 confidence=response.confidence,
                 manual_review_recommended=response.manual_review_recommended,
+                executed_provider_key=provider_key,
+                executed_provider_label=provider_label,
+                execution_mode=raw_summary.get("execution_mode"),
+                is_live_result=response.is_live_result,
+                is_mock_result=response.is_mock_result,
+                is_demo_result=response.is_demo_result,
             )
 
         if response.manual_review_recommended:
@@ -420,12 +530,18 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 task_status=TASK_STATUS_MANUAL_REVIEW,
                 audit_status=AUDIT_STATUS_MANUAL_REVIEW,
                 outcome_color=OUTCOME_COLOR_AMBER,
-                explanation=f"{task.verifier_label} completed via {provider_label}, but the provider recommended manual review.",
+                explanation=f"{task.verifier_label} completed with {provider_evidence_phrase}, but the verifier recommended manual review.",
                 reason_codes=_dedupe(list(response.reason_codes or []) + ["PROVIDER_MANUAL_REVIEW"]),
                 missing_fields=missing_fields or [credential.label],
                 raw_result_summary=raw_summary,
                 confidence=response.confidence,
                 manual_review_recommended=True,
+                executed_provider_key=provider_key,
+                executed_provider_label=provider_label,
+                execution_mode=raw_summary.get("execution_mode"),
+                is_live_result=response.is_live_result,
+                is_mock_result=response.is_mock_result,
+                is_demo_result=response.is_demo_result,
             )
 
         return self.build_result(
@@ -434,14 +550,42 @@ class ConnectorAwareVerifier(CredentialVerifier):
             task_status=TASK_STATUS_PARTIAL,
             audit_status=AUDIT_STATUS_UNVERIFIED,
             outcome_color=OUTCOME_COLOR_AMBER,
-            explanation=f"{task.verifier_label} completed via {provider_label}, but no match evidence was returned.",
+            explanation=f"{task.verifier_label} completed with {provider_evidence_phrase}, but no match evidence was returned.",
             reason_codes=_dedupe(list(response.reason_codes or []) + ["PROVIDER_NO_MATCH"]),
             missing_fields=missing_fields or [credential.label],
             raw_result_summary=raw_summary,
             confidence=response.confidence,
             manual_review_recommended=response.manual_review_recommended,
+            executed_provider_key=provider_key,
+            executed_provider_label=provider_label,
+            execution_mode=raw_summary.get("execution_mode"),
+            is_live_result=response.is_live_result,
+            is_mock_result=response.is_mock_result,
+            is_demo_result=response.is_demo_result,
         )
 
 
 def _dedupe(values: list[str]) -> list[str]:
     return [value for value in dict.fromkeys(values) if value]
+
+
+def _resolve_provider_execution_mode(*, provider_key: str, response) -> str:
+    if provider_key == "local_mock":
+        return "LOCAL_MOCK"
+    if getattr(response, "is_demo_result", False):
+        return "DEMO_PROVIDER"
+    if getattr(response, "is_live_result", False):
+        return "LIVE_PROVIDER"
+    return "PROVIDER"
+
+
+def _provider_evidence_phrase(*, provider_key: str, provider_label: str, response) -> str:
+    if provider_key == "local_mock":
+        if getattr(response, "is_demo_result", False):
+            return f"bounded local mock demo evidence via {provider_label}"
+        return f"bounded local mock evidence via {provider_label}"
+    if getattr(response, "is_demo_result", False):
+        return f"seeded demo provider evidence via {provider_label}"
+    if getattr(response, "is_live_result", False):
+        return f"live provider evidence via {provider_label}"
+    return f"provider evidence via {provider_label}"

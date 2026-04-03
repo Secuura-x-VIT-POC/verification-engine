@@ -62,7 +62,7 @@ def build_document_profile(
     detected_categories = _collect_detected_categories(credential_collection)
     extraction_methods_used = _collect_extraction_methods(extraction_payload, credential_collection)
     page_count = _coerce_page_count((extraction_payload or {}).get("page_count"))
-    pii_detected = any(credential.is_pii for credential in credential_collection.credentials)
+    pii_detected = any(credential.is_pii for credential in _all_credentials(credential_collection))
     requires_manual_review = (
         has_extraction_payload
         and (
@@ -477,7 +477,7 @@ def get_analysis_status_for_session(session) -> SessionAnalysisStatus:
 def _collect_detected_categories(credentials: SessionCredentialCollection) -> list[str]:
     categories = [
         credential.category
-        for credential in credentials.credentials
+        for credential in _all_credentials(credentials)
         if credential.normalized_value and credential.category
     ]
     return sorted(dict.fromkeys(categories))
@@ -493,8 +493,12 @@ def _collect_extraction_methods(
         if credential.extraction_method and credential.extraction_method != "unknown"
     ]
     enrichment_metadata = (extraction_payload or {}).get("enrichment_metadata") or {}
+    ocr_metadata = (extraction_payload or {}).get("ocr_metadata") or {}
     if enrichment_metadata.get("pii_enrichment_used"):
         methods.append("nvidia_gliner_pii")
+    for engine in ocr_metadata.get("engines_used") or []:
+        if engine and engine != "native_text":
+            methods.append(engine)
     if methods:
         return sorted(dict.fromkeys(methods))
 
@@ -599,12 +603,21 @@ def _sanitize_credential_collection(
         for credential in collection.credentials
         if _has_usable_credential_content(credential)
     ]
-    if len(sanitized_credentials) == len(collection.credentials):
+    sanitized_context_fields = [
+        credential
+        for credential in getattr(collection, "context_fields", [])
+        if _has_usable_credential_content(credential)
+    ]
+    if (
+        len(sanitized_credentials) == len(collection.credentials)
+        and len(sanitized_context_fields) == len(getattr(collection, "context_fields", []))
+    ):
         return collection
     return SessionCredentialCollection(
         session_id=collection.session_id,
         document_type=collection.document_type,
         credentials=sanitized_credentials,
+        context_fields=sanitized_context_fields,
     )
 
 
@@ -676,6 +689,10 @@ def _has_usable_credential_content(credential) -> bool:
             getattr(credential, "source_text", None),
         )
     )
+
+
+def _all_credentials(collection: SessionCredentialCollection):
+    return list(collection.credentials) + list(getattr(collection, "context_fields", []))
 
 
 def _load_model(model_cls, payload: Any):

@@ -23,6 +23,8 @@ from backend.app.sessions.constants import SessionState
 from backend.app.sessions.models import Session as SessionModel
 from backend.app.verification_domain.contracts import (
     BoundingBox,
+    FALLBACK_REASON_ENTRA_NOT_CONFIGURED,
+    FALLBACK_REASON_PROVIDER_ATTEMPT_FAILED,
     ExtractedCredential,
     SessionCredentialCollection,
     SessionVerificationPlan,
@@ -240,7 +242,11 @@ class ProviderBackedExecutionTests(unittest.TestCase):
         self.assertEqual(trace.response_summary["trust_rail"], "Microsoft Entra Verified ID")
 
     def test_execution_uses_seeded_entra_demo_mode_when_explicitly_enabled(self):
-        credentials, plan = self._build_identity_inputs(preferred_provider_key="entra_verified_id")
+        credentials, plan = self._build_identity_inputs(
+            preferred_provider_key="entra_verified_id",
+            planned_provider_key="entra_verified_id",
+            planned_execution_mode="DEMO_PROVIDER",
+        )
 
         with patch.dict(
             os.environ,
@@ -300,6 +306,9 @@ class ProviderBackedExecutionTests(unittest.TestCase):
                     preferred_provider_label="Microsoft Entra Verified ID",
                     planned_provider_key="academic_registry_http",
                     planned_provider_label="Supplementary Academic Registry HTTP Provider",
+                    planned_execution_mode="DEMO_PROVIDER",
+                    planned_is_demo_result=True,
+                    fallback_reason="SUPPLEMENTARY_PROVIDER_USED",
                 )
             ],
             tasks=[
@@ -318,6 +327,9 @@ class ProviderBackedExecutionTests(unittest.TestCase):
                         "preferred_provider_label": "Microsoft Entra Verified ID",
                         "planned_provider_key": "academic_registry_http",
                         "planned_provider_label": "Supplementary Academic Registry HTTP Provider",
+                        "planned_execution_mode": "DEMO_PROVIDER",
+                        "planned_is_demo_result": True,
+                        "fallback_reason": "SUPPLEMENTARY_PROVIDER_USED",
                     },
                 )
             ],
@@ -356,12 +368,34 @@ class ProviderBackedExecutionTests(unittest.TestCase):
             verification_type="identity",
         )
 
-        artifacts = build_execution_artifacts(
-            "provider-local-aadhaar",
-            {"document_type": "aadhaar_card"},
-            credentials=credentials,
-            verification_plan=plan,
-        )
+        with patch(
+            "backend.app.verifier_providers.providers.local_mock._load_local_verification_store",
+            return_value={
+                "records": [
+                    {
+                        "record_id": "aadhaar-record-1",
+                        "document_types": ["aadhaar_card"],
+                        "categories": ["identity"],
+                        "verifier_keys": ["identity_db"],
+                        "fields": [
+                            {
+                                "field_key": "aadhaar_number",
+                                "label": "Aadhaar Number",
+                                "label_aliases": ["aadhaar-number-1"],
+                                "value": "9999 8888 7777",
+                                "normalized_value": "999988887777",
+                            }
+                        ],
+                    }
+                ]
+            },
+        ):
+            artifacts = build_execution_artifacts(
+                "provider-local-aadhaar",
+                {"document_type": "aadhaar_card"},
+                credentials=credentials,
+                verification_plan=plan,
+            )
 
         result = artifacts["task_results"].results[0]
         trace = artifacts["provider_execution_traces"].traces[0]
@@ -371,6 +405,36 @@ class ProviderBackedExecutionTests(unittest.TestCase):
         self.assertEqual(result.matched_fields["aadhaar_number"], "9999 8888 7777")
         self.assertEqual(trace.provider_key, "local_mock")
         self.assertEqual(trace.response_summary["match_status"], "verified")
+
+    def test_local_mock_execution_truth_is_explicit_when_entra_is_preferred(self):
+        credentials, plan = self._build_identity_inputs(
+            preferred_provider_key="entra_verified_id",
+            planned_provider_key="local_mock",
+            planned_execution_mode="LOCAL_MOCK",
+            fallback_reason=FALLBACK_REASON_ENTRA_NOT_CONFIGURED,
+        )
+
+        artifacts = build_execution_artifacts(
+            "provider-local-truth-session",
+            {"document_type": "identity_document"},
+            credentials=credentials,
+            verification_plan=plan,
+        )
+
+        result = artifacts["task_results"].results[0]
+        trace = artifacts["provider_execution_traces"].traces[0]
+
+        self.assertEqual(result.preferred_provider_key, "entra_verified_id")
+        self.assertEqual(result.planned_provider_key, "local_mock")
+        self.assertEqual(result.executed_provider_key, "local_mock")
+        self.assertEqual(result.execution_mode, "LOCAL_MOCK")
+        self.assertEqual(result.fallback_reason, FALLBACK_REASON_ENTRA_NOT_CONFIGURED)
+        self.assertTrue(result.is_mock_result)
+        self.assertFalse(result.is_live_result)
+        self.assertFalse(result.is_demo_result)
+        self.assertEqual(trace.provider_key, "local_mock")
+        self.assertTrue(trace.is_mock_result)
+        self.assertFalse(trace.is_live_result)
 
     def test_local_mock_reports_pan_mismatch_from_local_verification_store(self):
         credentials, plan = self._build_local_store_inputs(
@@ -385,12 +449,34 @@ class ProviderBackedExecutionTests(unittest.TestCase):
             verification_type="tax",
         )
 
-        artifacts = build_execution_artifacts(
-            "provider-local-pan",
-            {"document_type": "pan_card"},
-            credentials=credentials,
-            verification_plan=plan,
-        )
+        with patch(
+            "backend.app.verifier_providers.providers.local_mock._load_local_verification_store",
+            return_value={
+                "records": [
+                    {
+                        "record_id": "pan-record-1",
+                        "document_types": ["pan_card"],
+                        "categories": ["tax"],
+                        "verifier_keys": ["tax_authority"],
+                        "fields": [
+                            {
+                                "field_key": "pan_number",
+                                "label": "PAN Number",
+                                "label_aliases": ["pan-number-1"],
+                                "value": "ABCDE1234F",
+                                "normalized_value": "ABCDE1234F",
+                            }
+                        ],
+                    }
+                ]
+            },
+        ):
+            artifacts = build_execution_artifacts(
+                "provider-local-pan",
+                {"document_type": "pan_card"},
+                credentials=credentials,
+                verification_plan=plan,
+            )
 
         result = artifacts["task_results"].results[0]
         trace = artifacts["provider_execution_traces"].traces[0]
@@ -431,11 +517,18 @@ class ProviderBackedExecutionTests(unittest.TestCase):
         self.assertEqual(result.audit_status, "PARTIAL")
         self.assertTrue(result.raw_result_summary["provider_fallback_used"])
         self.assertEqual(result.raw_result_summary["provider_key"], "identity_http")
+        self.assertEqual(result.fallback_reason, FALLBACK_REASON_PROVIDER_ATTEMPT_FAILED)
+        self.assertEqual(result.execution_mode, "RULE_ONLY_FALLBACK")
         self.assertEqual(trace.technical_status, "FAILED")
         self.assertTrue(trace.fallback_used)
 
     @staticmethod
-    def _build_identity_inputs(preferred_provider_key=None, planned_provider_key=None):
+    def _build_identity_inputs(
+        preferred_provider_key=None,
+        planned_provider_key=None,
+        planned_execution_mode=None,
+        fallback_reason=None,
+    ):
         credentials = SessionCredentialCollection(
             session_id="provider-http-session",
             document_type="identity_document",
@@ -470,6 +563,11 @@ class ProviderBackedExecutionTests(unittest.TestCase):
                     ),
                     planned_provider_key=planned_provider_key,
                     planned_provider_label=None,
+                    planned_execution_mode=planned_execution_mode,
+                    planned_is_live_result=planned_execution_mode == "LIVE_PROVIDER",
+                    planned_is_mock_result=planned_provider_key == "local_mock",
+                    planned_is_demo_result=planned_execution_mode == "DEMO_PROVIDER",
+                    fallback_reason=fallback_reason,
                 )
             ],
             tasks=[
@@ -491,6 +589,18 @@ class ProviderBackedExecutionTests(unittest.TestCase):
                             else None
                         ),
                         "planned_provider_key": planned_provider_key,
+                        "planned_provider_label": (
+                            "Microsoft Entra Verified ID"
+                            if planned_provider_key == "entra_verified_id"
+                            else "Local Mock Provider"
+                            if planned_provider_key == "local_mock"
+                            else None
+                        ),
+                        "planned_execution_mode": planned_execution_mode,
+                        "planned_is_live_result": planned_execution_mode == "LIVE_PROVIDER",
+                        "planned_is_mock_result": planned_provider_key == "local_mock",
+                        "planned_is_demo_result": planned_execution_mode == "DEMO_PROVIDER",
+                        "fallback_reason": fallback_reason,
                     },
                 )
             ],
@@ -538,6 +648,8 @@ class ProviderBackedExecutionTests(unittest.TestCase):
                     route_reason="fixture-backed local verification",
                     planned_provider_key="local_mock",
                     planned_provider_label="Local Mock Provider",
+                    planned_execution_mode="LOCAL_MOCK",
+                    planned_is_mock_result=True,
                 )
             ],
             tasks=[
@@ -553,6 +665,9 @@ class ProviderBackedExecutionTests(unittest.TestCase):
                         "label": label,
                         "value": value,
                         "planned_provider_key": "local_mock",
+                        "planned_provider_label": "Local Mock Provider",
+                        "planned_execution_mode": "LOCAL_MOCK",
+                        "planned_is_mock_result": True,
                     },
                 )
             ],

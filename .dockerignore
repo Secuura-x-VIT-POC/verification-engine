@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+node_modules
+frontend/node_modules
+uploads
+tmp
+smoke_test.db
+postgres_data
+frontend/dist

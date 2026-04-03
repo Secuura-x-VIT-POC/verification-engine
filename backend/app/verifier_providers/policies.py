@@ -281,7 +281,7 @@ def build_local_mock_config(transition_config: ProviderTransitionConfig | None =
 
 
 def _build_transition_config(*, external_provider_enabled: bool) -> ProviderTransitionConfig:
-    requested_mode = os.getenv("VERIFIER_PROVIDER_OPERATING_MODE")
+    requested_mode = os.getenv("VERIFIER_PROVIDER_OPERATING_MODE") or os.getenv("PROVIDER_OPERATING_MODE")
     live_provider_enabled = _read_bool(
         "VERIFIER_LIVE_PROVIDER_ENABLED",
         default=external_provider_enabled,
@@ -294,15 +294,19 @@ def _build_transition_config(*, external_provider_enabled: bool) -> ProviderTran
         "VERIFIER_ENABLED_PROVIDER_MODES",
         default=[operating_mode],
     )
-    execution_environment_label = os.getenv(
-        "VERIFIER_EXECUTION_ENVIRONMENT_LABEL",
-        _default_environment_label(operating_mode),
+    execution_environment_label = (
+        os.getenv("VERIFIER_EXECUTION_ENVIRONMENT_LABEL")
+        or os.getenv("EXECUTION_ENVIRONMENT_LABEL")
+        or _default_environment_label(operating_mode)
     )
-    demo_profile_key = os.getenv("VERIFIER_DEMO_PROFILE_KEY") or None
+    demo_profile_key = os.getenv("VERIFIER_DEMO_PROFILE_KEY") or os.getenv("DEMO_PROFILE_KEY") or None
 
     notes = [
         _default_transition_note(operating_mode),
     ]
+    explicit_transition_note = os.getenv("VERIFIER_PROVIDER_TRANSITION_NOTES") or os.getenv("PROVIDER_TRANSITION_NOTES")
+    if explicit_transition_note:
+        notes.append(explicit_transition_note.strip())
     if operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK and demo_profile_key:
         notes.append(f"Seeded demo profile '{demo_profile_key}' will be used when the session does not persist an override.")
 

@@ -5,7 +5,14 @@ import re
 from typing import Any, Sequence
 
 from backend.app.inference import NvidiaChatClient, NvidiaInferenceError, load_nvidia_inference_config
-from extraction.grounding.spatial_locator import MIN_ACCEPTED_CONFIDENCE, ground_value_to_spatial_map
+from extraction.grounding.spatial_locator import (
+    MIN_ACCEPTED_CONFIDENCE,
+    average_token_confidence,
+    ground_value_to_spatial_map,
+    merge_bounding_boxes,
+    resolve_source_type,
+    tokens_for_line,
+)
 from extraction.schema.models import (
     BoundingBox,
     EnrichmentMetadata,
@@ -39,20 +46,20 @@ Rules:
 
 
 _ENTITY_SPECS = {
-    "person_name": ("name", "person_name", True),
+    "person_name": ("full_name", "person_name", True),
     "student_name": ("student_name", "person_name", True),
     "date_of_birth": ("date_of_birth", "date_of_birth", True),
     "phone_number": ("phone_number", "phone_number", True),
     "email": ("email", "email", True),
     "address": ("address", "address", True),
-    "aadhaar_number": ("aadhaar", "national_identifier", True),
-    "pan_number": ("pan", "tax_identifier", True),
-    "document_number": ("document_id", "document_number", True),
-    "registration_number": ("registration_number", "registration_number", False),
-    "institution_name": ("institution", "issuer", False),
+    "aadhaar_number": ("aadhaar_number", "national_identifier", True),
+    "pan_number": ("pan_number", "tax_identifier", True),
+    "document_number": ("document_number", "document_number", True),
+    "registration_number": ("roll_number", "registration_number", False),
+    "institution_name": ("institution_name", "issuer", False),
     "program_name": ("program_name", "program_name", False),
-    "score_or_grade": ("score", "score", False),
-    "year_reference": ("year", "date_reference", False),
+    "score_or_grade": ("marks", "score", False),
+    "year_reference": ("exam_year", "date_reference", False),
 }
 
 
@@ -161,12 +168,23 @@ def _build_enriched_candidates(
         line = _find_evidence_line(raw_value, evidence_lines)
         if line is None:
             continue
-        boxes, grounding_confidence, match_type = ground_value_to_spatial_map(raw_value, spatial_text_map)
+        line_tokens = tokens_for_line(line, spatial_text_map)
+        boxes, grounding_confidence, match_type = ground_value_to_spatial_map(raw_value, line_tokens or spatial_text_map)
         model_confidence = _coerce_float(item.get("confidence"), 0.65)
         if grounding_confidence < MIN_ACCEPTED_CONFIDENCE and line.bbox is None:
             continue
-        confidence = round(min(max(model_confidence, MIN_ACCEPTED_CONFIDENCE), max(grounding_confidence, model_confidence)), 4)
-        bounding_box = boxes[0] if boxes else line.bbox
+        value_box = boxes[0] if boxes else line.bbox
+        token_confidence = average_token_confidence(line_tokens, bounding_box=value_box)
+        provenance_confidence = round(
+            min(
+                0.995,
+                (max(model_confidence, MIN_ACCEPTED_CONFIDENCE) * 0.45)
+                + (max(grounding_confidence, MIN_ACCEPTED_CONFIDENCE) * 0.35)
+                + ((token_confidence or 1.0) * 0.2),
+            ),
+            4,
+        )
+        source_engine = resolve_source_type(line_tokens)
         candidates.append(
             FieldCandidate(
                 candidate_id=_candidate_id(label, raw_value, line.page),
@@ -174,17 +192,21 @@ def _build_enriched_candidates(
                 category=category,
                 raw_value=raw_value,
                 normalized_value=_normalize_value(raw_value, category),
-                source_text=line.text,
-                evidence_snippet=line.text,
+                source_text=raw_value,
+                evidence_snippet=line.text if raw_value.lower() in line.text.lower() else f"{label}: {raw_value}",
                 page=line.page,
-                bounding_box=bounding_box,
-                confidence=confidence,
+                bounding_box=value_box,
+                context_bounding_box=merge_bounding_boxes([line.bbox, value_box]),
+                confidence=provenance_confidence,
                 grounding_match_type=match_type if boxes else "line_match",
+                provenance_method="nvidia_local_context",
+                provenance_confidence=provenance_confidence,
                 is_pii=is_pii,
                 requires_verification=True,
                 verification_reason=f"NVIDIA GLiNER PII enrichment identified '{label}' as a bounded verification candidate.",
                 extraction_method="nvidia_gliner_pii",
-                source="nvidia_gliner_pii",
+                source=source_engine,
+                source_engine=source_engine,
             )
         )
     return _dedupe_candidates(candidates)
@@ -311,7 +333,17 @@ def _should_refine_label(current: str, enriched: str) -> bool:
     enriched_normalized = _normalized_text(enriched)
     if current_normalized == enriched_normalized:
         return False
-    return current_normalized in {"name", "document id", "document number", "year"} and bool(enriched_normalized)
+    return current_normalized in {
+        "name",
+        "document id",
+        "document number",
+        "government identifier",
+        "registration number",
+        "institution",
+        "score",
+        "year",
+        "date",
+    } and bool(enriched_normalized)
 
 
 def _candidate_id(label: str, value: str, page: int) -> str:

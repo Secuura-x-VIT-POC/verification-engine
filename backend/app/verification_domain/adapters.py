@@ -25,7 +25,7 @@ from .contracts import (
     VerificationTask,
     VerifierRouteDecision,
 )
-from .planner import build_extracted_credentials
+from .planner import build_planned_credentials
 from .routing import RuleBasedVerifierRouter, VerifierRouter
 
 
@@ -33,10 +33,12 @@ def build_session_credentials(
     session_id: str,
     extraction_payload: dict[str, Any] | None,
 ) -> SessionCredentialCollection:
+    credentials, context_fields = build_planned_credentials(extraction_payload)
     return SessionCredentialCollection(
         session_id=session_id,
         document_type=_resolve_document_type(extraction_payload),
-        credentials=build_extracted_credentials(extraction_payload),
+        credentials=credentials,
+        context_fields=context_fields,
     )
 
 
@@ -136,8 +138,11 @@ def _build_audit_from_bundle(
     overall_reason_codes: list[str],
 ) -> CredentialAudit:
     best_result = bundle.best_result
-    evidence = _build_base_evidence(credential, connectors, overall_outcome, overall_reason_codes)
+    evidence = []
     evidence.extend(_build_task_result_evidence(bundle))
+    evidence.extend(_build_extraction_evidence(credential))
+    evidence.extend(_build_provider_evidence_from_bundle(bundle))
+    evidence.extend(_build_route_evidence(decision, credential))
 
     return CredentialAudit(
         credential_id=credential.credential_id,
@@ -295,6 +300,8 @@ def _build_task(credential: ExtractedCredential, decision: VerifierRouteDecision
         reason_codes.append("LOCAL_PROVIDER_FALLBACK")
     elif decision.planned_provider_key and decision.planned_provider_key != decision.preferred_provider_key:
         reason_codes.append("SUPPLEMENTARY_PROVIDER_ROUTE")
+    if decision.fallback_reason:
+        reason_codes.append(decision.fallback_reason)
 
     return VerificationTask(
         task_id=f"verify-{credential.credential_id}",
@@ -317,6 +324,11 @@ def _build_task(credential: ExtractedCredential, decision: VerifierRouteDecision
             "preferred_provider_label": decision.preferred_provider_label,
             "planned_provider_key": decision.planned_provider_key,
             "planned_provider_label": decision.planned_provider_label,
+            "planned_execution_mode": decision.planned_execution_mode,
+            "planned_is_live_result": decision.planned_is_live_result,
+            "planned_is_mock_result": decision.planned_is_mock_result,
+            "planned_is_demo_result": decision.planned_is_demo_result,
+            "fallback_reason": decision.fallback_reason,
         },
     )
 
@@ -330,8 +342,12 @@ def _build_audit(
     overall_outcome: str | None,
     overall_reason_codes: list[str],
 ) -> CredentialAudit:
-    evidence = _build_base_evidence(credential, connectors, overall_outcome, overall_reason_codes)
+    evidence = []
+    evidence.extend(_build_extraction_evidence(credential))
     claim_evidence = _find_claim_evidence(connectors, credential)
+    connector = claim_evidence["connector"]
+    evidence.extend(_build_connector_claim_evidence(credential, claim_evidence))
+    evidence.extend(_build_route_evidence(decision, credential))
     missing_fields: list[str] = []
 
     if decision.selected_verifier_key == "not_required":
@@ -350,7 +366,6 @@ def _build_audit(
         )
 
     if claim_evidence["mismatched_fields"]:
-        connector = claim_evidence["connector"]
         return CredentialAudit(
             credential_id=credential.credential_id,
             label=credential.label,
@@ -368,7 +383,6 @@ def _build_audit(
         )
 
     if claim_evidence["matched_fields"]:
-        connector = claim_evidence["connector"]
         return CredentialAudit(
             credential_id=credential.credential_id,
             label=credential.label,
@@ -411,8 +425,8 @@ def _build_audit(
             verifier_label=decision.selected_verifier_label,
             audit_status=AUDIT_STATUS_PARTIAL,
             outcome_color=OUTCOME_COLOR_AMBER,
-            explanation="Connector activity exists for this session, but there is not enough field-level evidence to mark this credential as verified.",
-            reason_codes=_resolve_partial_reason_codes(connectors, overall_reason_codes),
+            explanation="Verification activity exists for this session, but there is still no field-local evidence for this credential.",
+            reason_codes=_resolve_partial_reason_codes(),
             missing_fields=missing_fields,
             evidence=evidence,
             timestamp=timestamp,
@@ -435,63 +449,47 @@ def _build_audit(
     )
 
 
-def _build_base_evidence(
-    credential: ExtractedCredential,
-    connectors: list[dict[str, Any]],
-    overall_outcome: str | None,
-    overall_reason_codes: list[str],
-) -> list[EvidenceItem]:
-    evidence = [
+def _build_extraction_evidence(credential: ExtractedCredential) -> list[EvidenceItem]:
+    return [
         EvidenceItem(
             evidence_type="document_extraction",
             source="session.extraction_payload",
             detail={
+                "credential_id": credential.credential_id,
+                "field_local_only": True,
                 "page": credential.page,
                 "bounding_box": _maybe_dump_model(credential.bounding_box),
                 "confidence": credential.confidence,
                 "source_text": credential.source_text,
+                "normalized_value": credential.normalized_value,
+                "extraction_method": credential.extraction_method,
             },
         )
     ]
 
-    for connector in connectors:
-        evidence.append(
-            EvidenceItem(
-                evidence_type="connector_response",
-                source=str(connector.get("connector_id") or "connector"),
-                detail={
-                    "status": connector.get("status"),
-                    "reason_codes": list(connector.get("reason_codes") or []),
-                    "matched_claims": dict(connector.get("matched_claims") or {}),
-                    "mismatched_claims": dict(connector.get("mismatched_claims") or {}),
-                },
-            )
-        )
-
-    if overall_outcome or overall_reason_codes:
-        evidence.append(
-            EvidenceItem(
-                evidence_type="trust_result",
-                source="session.trust_outcome",
-                detail={
-                    "outcome": overall_outcome,
-                    "reason_codes": overall_reason_codes,
-                },
-            )
-        )
-
-    return evidence
-
 
 def _build_task_result_evidence(bundle) -> list[EvidenceItem]:
     evidence = []
-    for result in list(bundle.all_results or []):
+    for result in _bundle_results(bundle):
         evidence.append(
             EvidenceItem(
                 evidence_type="verification_task_result",
                 source=result.verifier_key,
                 detail={
+                    "credential_id": result.credential_id,
+                    "field_local_only": True,
                     "task_id": result.task_id,
+                    "preferred_provider_key": result.preferred_provider_key,
+                    "preferred_provider_label": result.preferred_provider_label,
+                    "planned_provider_key": result.planned_provider_key,
+                    "planned_provider_label": result.planned_provider_label,
+                    "executed_provider_key": result.executed_provider_key,
+                    "executed_provider_label": result.executed_provider_label,
+                    "execution_mode": result.execution_mode,
+                    "fallback_reason": result.fallback_reason,
+                    "is_live_result": result.is_live_result,
+                    "is_mock_result": result.is_mock_result,
+                    "is_demo_result": result.is_demo_result,
                     "task_status": result.task_status,
                     "audit_status": result.audit_status,
                     "outcome_color": result.outcome_color,
@@ -507,6 +505,136 @@ def _build_task_result_evidence(bundle) -> list[EvidenceItem]:
             )
         )
     return evidence
+
+
+def _build_provider_evidence_from_bundle(bundle) -> list[EvidenceItem]:
+    evidence = []
+    for result in _bundle_results(bundle):
+        raw_summary = dict(result.raw_result_summary or {})
+        provider_key = result.executed_provider_key or raw_summary.get("executed_provider_key") or raw_summary.get("provider_key")
+        connector_id = raw_summary.get("connector_id")
+
+        if provider_key:
+            evidence.append(
+                EvidenceItem(
+                    evidence_type="provider_response_summary",
+                    source=str(result.executed_provider_label or raw_summary.get("provider_label") or provider_key),
+                    detail={
+                        "credential_id": result.credential_id,
+                        "task_id": result.task_id,
+                        "field_local_only": True,
+                        "provider_scope": "credential_task",
+                        "preferred_provider_key": result.preferred_provider_key,
+                        "preferred_provider_label": result.preferred_provider_label,
+                        "planned_provider_key": result.planned_provider_key,
+                        "planned_provider_label": result.planned_provider_label,
+                        "executed_provider_key": result.executed_provider_key or provider_key,
+                        "executed_provider_label": result.executed_provider_label or raw_summary.get("provider_label"),
+                        "execution_mode": result.execution_mode or raw_summary.get("execution_mode"),
+                        "fallback_reason": result.fallback_reason or raw_summary.get("fallback_reason"),
+                        "provider_key": provider_key,
+                        "provider_label": result.executed_provider_label or raw_summary.get("provider_label"),
+                        "provider_technical_status": raw_summary.get("provider_technical_status"),
+                        "provider_http_status": raw_summary.get("provider_http_status"),
+                        "provider_latency_ms": raw_summary.get("provider_latency_ms"),
+                        "provider_response_summary": dict(raw_summary.get("provider_response_summary") or {}),
+                        "provider_operating_mode": raw_summary.get("provider_operating_mode"),
+                        "provider_demo_profile_key": raw_summary.get("provider_demo_profile_key"),
+                        "provider_execution_environment_label": raw_summary.get("provider_execution_environment_label"),
+                        "provider_transition_notes": list(raw_summary.get("provider_transition_notes") or []),
+                        "provider_is_mock_result": raw_summary.get("provider_is_mock_result", result.is_mock_result),
+                        "provider_is_demo_result": raw_summary.get("provider_is_demo_result", result.is_demo_result),
+                        "provider_is_live_result": raw_summary.get("provider_is_live_result", result.is_live_result),
+                        "provider_fallback_used": raw_summary.get("provider_fallback_used"),
+                    },
+                )
+            )
+            continue
+
+        if connector_id:
+            evidence.append(
+                EvidenceItem(
+                    evidence_type="connector_claim_summary",
+                    source=str(connector_id),
+                    detail={
+                        "credential_id": result.credential_id,
+                        "task_id": result.task_id,
+                        "field_local_only": True,
+                        "provider_scope": "credential_task",
+                        "execution_mode": raw_summary.get("execution_mode"),
+                        "connector_id": connector_id,
+                        "connector_status": raw_summary.get("connector_status"),
+                        "matched_field_count": raw_summary.get("matched_field_count"),
+                        "mismatched_field_count": raw_summary.get("mismatched_field_count"),
+                    },
+                )
+            )
+    return evidence
+
+
+def _build_route_evidence(
+    decision: VerifierRouteDecision,
+    credential: ExtractedCredential,
+) -> list[EvidenceItem]:
+    return [
+        EvidenceItem(
+            evidence_type="route_metadata",
+            source="verification_plan",
+            detail={
+                "credential_id": credential.credential_id,
+                "field_local_only": True,
+                "selected_verifier_key": decision.selected_verifier_key,
+                "selected_verifier_label": decision.selected_verifier_label,
+                "preferred_provider_key": decision.preferred_provider_key,
+                "preferred_provider_label": decision.preferred_provider_label,
+                "planned_provider_key": decision.planned_provider_key,
+                "planned_provider_label": decision.planned_provider_label,
+                "planned_execution_mode": decision.planned_execution_mode,
+                "planned_is_live_result": decision.planned_is_live_result,
+                "planned_is_mock_result": decision.planned_is_mock_result,
+                "planned_is_demo_result": decision.planned_is_demo_result,
+                "fallback_reason": decision.fallback_reason,
+                "manual_review_recommended": decision.manual_review_recommended,
+                "route_reason": decision.route_reason,
+            },
+        )
+    ]
+
+
+def _build_connector_claim_evidence(
+    credential: ExtractedCredential,
+    claim_evidence: dict[str, Any],
+) -> list[EvidenceItem]:
+    connector = claim_evidence.get("connector") or {}
+    matched_fields = dict(claim_evidence.get("matched_fields") or {})
+    mismatched_fields = dict(claim_evidence.get("mismatched_fields") or {})
+    if not connector or (not matched_fields and not mismatched_fields):
+        return []
+
+    return [
+        EvidenceItem(
+            evidence_type="connector_claim_summary",
+            source=str(connector.get("connector_id") or "connector"),
+            detail={
+                "credential_id": credential.credential_id,
+                "field_local_only": True,
+                "provider_scope": "credential_claim",
+                "connector_id": connector.get("connector_id"),
+                "status": connector.get("status"),
+                "reason_codes": list(connector.get("reason_codes") or []),
+                "assurance_class": connector.get("assurance_class"),
+                "matched_fields": matched_fields,
+                "mismatched_fields": mismatched_fields,
+            },
+        )
+    ]
+
+
+def _bundle_results(bundle) -> list[Any]:
+    results = list(bundle.all_results or [])
+    if bundle.best_result is not None and all(result.task_id != bundle.best_result.task_id for result in results):
+        results.append(bundle.best_result)
+    return results
 
 
 def _find_claim_evidence(connectors: list[dict[str, Any]], credential: ExtractedCredential) -> dict[str, Any]:
@@ -542,19 +670,30 @@ def _find_claim_evidence(connectors: list[dict[str, Any]], credential: Extracted
 def _claim_key_candidates(credential: ExtractedCredential) -> set[str]:
     keys = {_canonical_claim_key(credential.label), _canonical_claim_key(credential.credential_id)}
     label = credential.label.lower()
+    category = credential.category.lower()
 
-    if "name" in label:
-        keys.update({"name", "candidate_name"})
+    if category == "identity" or "name" in label:
+        keys.update({"name", "candidate_name", "full_name"})
     if "institution" in label or "issuer" in label or "university" in label or "college" in label:
         keys.update({"institution", "issuer"})
     if "credential" in label or "degree" in label or "certificate" in label:
         keys.update({"credential", "degree", "certificate"})
-    if "id" in label or "number" in label:
+    if "address" in label or category == "address":
+        keys.update({"address", "postal_address"})
+    if "passport" in label or category == "passport":
+        keys.update({"passport_number", "passport"})
+    if "license" in label or category == "license":
+        keys.update({"license_number", "license"})
+    if (
+        category in {"financial", "tax"}
+        or "identifier" in label
+        or label == "id"
+        or label.endswith(" id")
+        or "document id" in label
+    ):
         keys.update({"id", "document_id", "identifier"})
     if "registration" in label or "roll number" in label or "roll no" in label:
         keys.update({"document_id", "registration_number", "roll_number"})
-    if "address" in label:
-        keys.update({"address", "postal_address"})
     return {key for key in keys if key}
 
 
@@ -598,19 +737,8 @@ def _normalize_connectors(raw_connectors: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def _resolve_partial_reason_codes(
-    connectors: list[dict[str, Any]],
-    overall_reason_codes: list[str],
-) -> list[str]:
-    connector_reason_codes = []
-    for connector in connectors:
-        connector_reason_codes.extend(list(connector.get("reason_codes") or []))
-
-    if overall_reason_codes:
-        connector_reason_codes.extend(overall_reason_codes)
-    if not connector_reason_codes:
-        connector_reason_codes.append("FIELD_LEVEL_EVIDENCE_INSUFFICIENT")
-    return _dedupe_reason_codes(connector_reason_codes)
+def _resolve_partial_reason_codes() -> list[str]:
+    return ["FIELD_LEVEL_EVIDENCE_INSUFFICIENT"]
 
 
 def _dedupe_reason_codes(reason_codes: list[str]) -> list[str]:

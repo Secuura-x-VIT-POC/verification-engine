@@ -16,7 +16,7 @@ from ..verification_domain.contracts import (
     SessionVerificationPlan,
     VerificationTask,
 )
-from .adapters import VerificationExecutionContext, summarize_result
+from .adapters import VerificationExecutionContext, summarize_result, task_execution_truth
 from .contracts import (
     EXECUTION_STATUS_READY,
     CredentialVerificationBundle,
@@ -105,18 +105,25 @@ class VerificationTaskExecutor:
         executed_at = datetime.utcnow()
 
         if credential is None:
+            route_truth = task_execution_truth(task)
             result = VerificationTaskResult(
                 task_id=task.task_id,
                 credential_id=task.credential_id,
                 verifier_key=task.verifier_key,
                 verifier_label=task.verifier_label,
+                preferred_provider_key=route_truth.get("preferred_provider_key"),
+                preferred_provider_label=route_truth.get("preferred_provider_label"),
+                planned_provider_key=route_truth.get("planned_provider_key"),
+                planned_provider_label=route_truth.get("planned_provider_label"),
+                execution_mode="EXECUTOR_FAILURE",
+                fallback_reason=route_truth.get("fallback_reason"),
                 task_status=TASK_STATUS_FAILED,
                 audit_status=AUDIT_STATUS_MANUAL_REVIEW,
                 outcome_color=OUTCOME_COLOR_AMBER,
                 explanation="The verification plan references a credential that is not available in the current session view.",
                 reason_codes=["MISSING_CREDENTIAL_REFERENCE"],
                 missing_fields=[task.credential_id],
-                raw_result_summary={"execution_mode": "executor_failure"},
+                raw_result_summary={**route_truth, "execution_mode": "EXECUTOR_FAILURE"},
                 manual_review_recommended=True,
             )
             return self._stamp_result(result, executed_at=executed_at, started=started)
@@ -133,11 +140,18 @@ class VerificationTaskExecutor:
         try:
             result = verifier.execute(task, credential, context)
         except Exception as exc:  # pragma: no cover - defensive
+            route_truth = task_execution_truth(task)
             result = VerificationTaskResult(
                 task_id=task.task_id,
                 credential_id=credential.credential_id,
                 verifier_key=task.verifier_key,
                 verifier_label=task.verifier_label,
+                preferred_provider_key=route_truth.get("preferred_provider_key"),
+                preferred_provider_label=route_truth.get("preferred_provider_label"),
+                planned_provider_key=route_truth.get("planned_provider_key"),
+                planned_provider_label=route_truth.get("planned_provider_label"),
+                execution_mode="EXECUTION_FAILURE",
+                fallback_reason=route_truth.get("fallback_reason"),
                 task_status=TASK_STATUS_FAILED,
                 audit_status=AUDIT_STATUS_MANUAL_REVIEW,
                 outcome_color=OUTCOME_COLOR_AMBER,
@@ -145,7 +159,7 @@ class VerificationTaskExecutor:
                 reason_codes=["VERIFIER_EXECUTION_FAILED"],
                 missing_fields=[credential.label],
                 raw_result_summary=summarize_result(
-                    execution_mode="execution_failure",
+                    execution_mode="EXECUTION_FAILURE",
                     task=task,
                     credential=credential,
                     extra={"error": str(exc)},

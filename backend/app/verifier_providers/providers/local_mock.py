@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import logging
 import re
 import uuid
@@ -21,7 +22,7 @@ from ..policies import ProviderConfig
 
 
 LOGGER = logging.getLogger(__name__)
-LOCAL_VERIFICATION_FIXTURE_PATH = (
+DEFAULT_LOCAL_VERIFICATION_FIXTURE_PATH = (
     Path(__file__).resolve().parents[1] / "fixtures" / "local_verification_records.json"
 )
 
@@ -102,7 +103,7 @@ class LocalMockProvider(VerifierProvider):
         if not fixture:
             fixture = _build_local_record_fixture(
                 request=request,
-                fixture_path=LOCAL_VERIFICATION_FIXTURE_PATH,
+                fixture_path=_resolve_local_verification_fixture_path(),
                 default_operating_mode=self.config.operating_mode,
                 default_environment_label=self.config.execution_environment_label,
             )
@@ -134,7 +135,8 @@ class LocalMockProvider(VerifierProvider):
                 "demo_profile_key": request.metadata.get("demo_profile_key"),
                 "mock_mode": operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK,
                 "live_execution": False,
-                "local_store_path": str(LOCAL_VERIFICATION_FIXTURE_PATH),
+                "local_store_path": str(_resolve_local_verification_fixture_path()),
+                "verification_authority": "local_mock",
             }
         raw_missing_fields = fixture.get("missing_fields")
         missing_fields = as_string_list(raw_missing_fields)
@@ -160,6 +162,7 @@ class LocalMockProvider(VerifierProvider):
                     or self.config.execution_environment_label
                 ),
                 "transition_notes": request.metadata.get("provider_transition_notes") or [],
+                "is_mock_result": True,
                 "is_demo_result": bool(
                     str(request.metadata.get("provider_operating_mode") or self.config.operating_mode)
                     == PROVIDER_OPERATING_MODE_DEMO_MOCK
@@ -206,6 +209,7 @@ class LocalMockProvider(VerifierProvider):
                 normalized.get("transition_notes")
                 or request.metadata.get("provider_transition_notes")
             ),
+            is_mock_result=bool(normalized.get("is_mock_result") or True),
             is_demo_result=bool(normalized.get("is_demo_result")),
             is_live_result=bool(normalized.get("is_live_result")),
         )
@@ -243,6 +247,7 @@ def _build_local_record_fixture(
         "demo_profile_key": request.metadata.get("demo_profile_key"),
         "mock_mode": operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK,
         "live_execution": False,
+        "verification_authority": "local_mock",
     }
 
     if match.get("status") == "verified":
@@ -315,6 +320,17 @@ def _load_local_verification_store(fixture_path: Path) -> dict[str, Any]:
         return payload
     LOGGER.warning("LOCAL_VERIFICATION_STORE_INVALID path=%s", fixture_path)
     return {"records": []}
+
+
+def _resolve_local_verification_fixture_path() -> Path:
+    configured = (
+        os.getenv("VERIFIER_LOCAL_VERIFICATION_STORE_PATH")
+        or os.getenv("LOCAL_VERIFICATION_STORE_PATH")
+        or ""
+    ).strip()
+    if configured:
+        return Path(configured)
+    return DEFAULT_LOCAL_VERIFICATION_FIXTURE_PATH
 
 
 def _match_local_record(store: dict[str, Any], request: ProviderRequest) -> dict[str, Any]:

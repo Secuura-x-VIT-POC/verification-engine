@@ -8,6 +8,8 @@ dist/
 .vite/
 .env
 .env.*
+!.env.example
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+backend\app\verifier_providers\fixtures\local_verification_records.json

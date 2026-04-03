@@ -106,6 +106,14 @@ All of these are additive, nullable, and must remain backward compatible with ol
 - Do not send full documents externally unless a provider policy explicitly allows document upload.
 - If provider capability is absent or execution fails, fall back honestly to `PARTIAL`, `UNVERIFIED`, or `MANUAL_REVIEW`.
 
+## OCR Rules
+
+- OCR remains local and privacy-preserving by default.
+- Prefer `native PDF text -> PaddleOCR -> Tesseract fallback`.
+- PaddleOCR is optional and must fail safely into Tesseract or native text when unavailable.
+- Do not send page images to NVIDIA or any third-party OCR service.
+- Preserve OCR geometry so grounding and overlay logic continue to work.
+
 ## Backend Conventions
 
 - Reuse `backend/app/verification_domain/contracts.py` for generalized artifacts.

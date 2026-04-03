@@ -5,7 +5,7 @@ from typing import Iterable, List, Sequence
 
 import fitz
 
-from extraction.schema.models import BoundingBox, SpatialTextToken
+from extraction.schema.models import BoundingBox, EvidenceLine, SpatialTextToken
 
 EXACT_MATCH_CONFIDENCE = 0.99
 FUZZY_MATCH_CONFIDENCE = 0.7
@@ -64,6 +64,72 @@ def ground_value_to_spatial_map(
     return [], NO_MATCH_CONFIDENCE, "none"
 
 
+def tokens_for_line(
+    line: EvidenceLine | dict,
+    spatial_text_map: Sequence[SpatialTextToken | dict],
+) -> list[SpatialTextToken]:
+    evidence_line = line if isinstance(line, EvidenceLine) else EvidenceLine.model_validate(line)
+    coerced_tokens = [_coerce_token(entry) for entry in spatial_text_map]
+    if evidence_line.token_indices:
+        return [
+            coerced_tokens[index]
+            for index in evidence_line.token_indices
+            if 0 <= index < len(coerced_tokens)
+        ]
+
+    page_tokens = [token for token in coerced_tokens if token.page == evidence_line.page]
+    if evidence_line.bbox is None:
+        return page_tokens
+    return [
+        token
+        for token in page_tokens
+        if _boxes_intersect(token.bbox, evidence_line.bbox)
+    ]
+
+
+def resolve_source_type(tokens: Sequence[SpatialTextToken | dict]) -> str:
+    sources = [str(_coerce_token(token).source or "native_text") for token in tokens]
+    unique_sources = list(dict.fromkeys(source for source in sources if source))
+    if not unique_sources:
+        return "unknown"
+    if len(unique_sources) == 1:
+        return unique_sources[0]
+    if "native_text" in unique_sources and any(source.startswith("ocr_") for source in unique_sources):
+        return "merged_native_ocr"
+    return "merged_ocr"
+
+
+def average_token_confidence(
+    tokens: Sequence[SpatialTextToken | dict],
+    *,
+    bounding_box: BoundingBox | None = None,
+) -> float:
+    scoped_tokens = [_coerce_token(token) for token in tokens]
+    if bounding_box is not None:
+        scoped_tokens = [
+            token
+            for token in scoped_tokens
+            if _boxes_intersect(token.bbox, bounding_box)
+        ]
+    if not scoped_tokens:
+        return 0.0
+    return round(sum(float(token.confidence or 0.0) for token in scoped_tokens) / len(scoped_tokens), 4)
+
+
+def merge_bounding_boxes(boxes: Sequence[BoundingBox | None]) -> BoundingBox | None:
+    valid_boxes = [box for box in boxes if box is not None]
+    if not valid_boxes:
+        return None
+    page = valid_boxes[0].page
+    return BoundingBox(
+        page=page,
+        x0=round(min(box.x0 for box in valid_boxes), 2),
+        y0=round(min(box.y0 for box in valid_boxes), 2),
+        x1=round(max(box.x1 for box in valid_boxes), 2),
+        y1=round(max(box.y1 for box in valid_boxes), 2),
+    )
+
+
 def _find_best_match_on_page(
     target_text: str,
     page_tokens: Sequence[SpatialTextToken],
@@ -113,6 +179,18 @@ def _merge_tokens_to_box(tokens: Iterable[SpatialTextToken], page_number: int) -
         y0=round(min(token.bbox[1] for token in token_list), 2),
         x1=round(max(token.bbox[2] for token in token_list), 2),
         y1=round(max(token.bbox[3] for token in token_list), 2),
+    )
+
+
+def _boxes_intersect(token_bbox: Sequence[float], line_bbox: BoundingBox) -> bool:
+    if len(token_bbox) < 4:
+        return False
+    x0, y0, x1, y1 = token_bbox[:4]
+    return not (
+        x1 < float(line_bbox.x0)
+        or x0 > float(line_bbox.x1)
+        or y1 < float(line_bbox.y0)
+        or y0 > float(line_bbox.y1)
     )
 
 

@@ -2,51 +2,125 @@ services:
   postgres:
     image: postgres:15
     container_name: secuura-postgres
-    restart: always
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d postgres || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  db-bootstrap:
+    image: postgres:15
+    container_name: secuura-db-bootstrap
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    command:
+      [
+        "sh",
+        "-ec",
+        "until pg_isready -h postgres -U \"$POSTGRES_USER\" -d postgres; do sleep 1; done; if ! psql -h postgres -U \"$POSTGRES_USER\" -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'\" | grep -q 1; then psql -h postgres -U \"$POSTGRES_USER\" -d postgres -c \"CREATE DATABASE \\\"$POSTGRES_DB\\\"\"; fi",
+      ]
 
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
     container_name: secuura-backend
+    restart: unless-stopped
     depends_on:
-      - postgres
-    working_dir: /workspace
+      postgres:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-postgres}
+      PYTHONPATH: /app
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-key}
+      HMAC_SECRET: ${HMAC_SECRET:-dev_secret}
+      OCR_BACKEND_MODE: ${OCR_BACKEND_MODE:-AUTO}
+      OCR_DPI: ${OCR_DPI:-300}
+      OCR_PREPROCESSING_ENABLED: ${OCR_PREPROCESSING_ENABLED:-1}
+      PADDLEOCR_ENABLED: ${PADDLEOCR_ENABLED:-1}
+      PADDLEOCR_LANGUAGE: ${PADDLEOCR_LANGUAGE:-en}
+      TESSERACT_ENABLED: ${TESSERACT_ENABLED:-1}
+      VERIFIER_EXTERNAL_PROVIDER_ENABLED: ${VERIFIER_EXTERNAL_PROVIDER_ENABLED:-0}
+      VERIFIER_ENABLED_PROVIDERS: ${VERIFIER_ENABLED_PROVIDERS:-local_mock,entra_verified_id,identity_http,academic_registry_http}
+      VERIFIER_PROVIDER_OPERATING_MODE: ${VERIFIER_PROVIDER_OPERATING_MODE:-LOCAL_MOCK}
+      VERIFIER_LIVE_PROVIDER_ENABLED: ${VERIFIER_LIVE_PROVIDER_ENABLED:-0}
+      VERIFIER_EXECUTION_ENVIRONMENT_LABEL: ${VERIFIER_EXECUTION_ENVIRONMENT_LABEL:-Docker Compose local demo}
+      VERIFIER_LOCAL_VERIFICATION_STORE_PATH: ${VERIFIER_LOCAL_VERIFICATION_STORE_PATH:-/app/backend/app/verifier_providers/fixtures/local_verification_records.json}
+      VERIFIER_PREFERRED_PROVIDER_RAIL: ${VERIFIER_PREFERRED_PROVIDER_RAIL:-entra_verified_id}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-deterministic}
+      AGENT_EXTERNAL_PROVIDER_ENABLED: ${AGENT_EXTERNAL_PROVIDER_ENABLED:-0}
+      AGENT_ORCHESTRATION_ENABLED: ${AGENT_ORCHESTRATION_ENABLED:-1}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_REASONING_MODEL: ${NVIDIA_REASONING_MODEL:-minimaxai/minimax-m2.5}
+      NVIDIA_PII_MODEL: ${NVIDIA_PII_MODEL:-nvidia/gliner-pii}
+      NVIDIA_REASONING_ENABLED: ${NVIDIA_REASONING_ENABLED:-0}
+      NVIDIA_GLINER_PREPROCESSING_ENABLED: ${NVIDIA_GLINER_PREPROCESSING_ENABLED:-0}
     ports:
       - "8000:8000"
-    environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
-      PYTHONPATH: /workspace
     volumes:
-      - .:/workspace
-    command: uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+      - ./backend/app/verifier_providers/fixtures/local_verification_records.json:/app/backend/app/verifier_providers/fixtures/local_verification_records.json:ro
+      - backend_uploads:/app/uploads
+      - backend_tmp:/app/tmp
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).read()",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
     container_name: secuura-frontend
+    restart: unless-stopped
     depends_on:
-      - backend
-    working_dir: /workspace/frontend
+      backend:
+        condition: service_healthy
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
     ports:
       - "5173:5173"
-    environment:
-      VITE_API_BASE_URL: http://localhost:8000
-      CHOKIDAR_USEPOLLING: "true"
-    volumes:
-      - .:/workspace
-      - frontend_node_modules:/workspace/frontend/node_modules
-    command: npm run dev -- --host 0.0.0.0 --port 5173
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5173').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
 volumes:
   postgres_data:
-  frontend_node_modules:
+  backend_uploads:
+  backend_tmp:

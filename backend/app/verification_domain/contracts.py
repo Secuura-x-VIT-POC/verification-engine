@@ -26,6 +26,14 @@ OUTCOME_COLOR_RED = "red"
 OUTCOME_COLOR_AMBER = "amber"
 OUTCOME_COLOR_NEUTRAL = "neutral"
 
+FALLBACK_REASON_ENTRA_NOT_CONFIGURED = "ENTRA_NOT_CONFIGURED"
+FALLBACK_REASON_LIVE_PROVIDER_DISABLED = "LIVE_PROVIDER_DISABLED"
+FALLBACK_REASON_LOCAL_DEMO_VERIFICATION = "LOCAL_DEMO_VERIFICATION"
+FALLBACK_REASON_SUPPLEMENTARY_PROVIDER_USED = "SUPPLEMENTARY_PROVIDER_USED"
+FALLBACK_REASON_NO_EXECUTABLE_PROVIDER = "NO_EXECUTABLE_PROVIDER"
+FALLBACK_REASON_MANUAL_REVIEW_ONLY = "MANUAL_REVIEW_ONLY"
+FALLBACK_REASON_PROVIDER_ATTEMPT_FAILED = "PROVIDER_ATTEMPT_FAILED"
+
 
 class ContractModel(BaseModel):
     class Config:
@@ -70,7 +78,12 @@ class ExtractedCredential(ContractModel):
     bounding_box: BoundingBox | None = None
     is_pii: bool = False
     requires_verification: bool = False
+    verification_recommended: bool = False
     verification_reason: str | None = None
+    planning_status: str = "verification_eligible"
+    eligibility_reason: str | None = None
+    grouping_reason: str | None = None
+    source_candidate_ids: list[str] = Field(default_factory=list)
     extraction_method: str = "unknown"
 
 
@@ -95,6 +108,11 @@ class VerifierRouteDecision(ContractModel):
     preferred_provider_label: str | None = None
     planned_provider_key: str | None = None
     planned_provider_label: str | None = None
+    planned_execution_mode: str | None = None
+    planned_is_live_result: bool = False
+    planned_is_mock_result: bool = False
+    planned_is_demo_result: bool = False
+    fallback_reason: str | None = None
     fallback_verifiers: list[str] = Field(default_factory=list)
     manual_review_recommended: bool = False
 
@@ -133,6 +151,7 @@ class SessionCredentialCollection(ContractModel):
     session_id: str
     document_type: str = "unknown"
     credentials: list[ExtractedCredential] = Field(default_factory=list)
+    context_fields: list[ExtractedCredential] = Field(default_factory=list)
 
 
 class SessionVerificationPlan(ContractModel):

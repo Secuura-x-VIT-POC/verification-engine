@@ -2,9 +2,23 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..verifier_providers import build_default_provider_registry
-from ..verification_domain.routing import preferred_provider_for_category
-from ..verification_domain.contracts import EvidenceItem
+from ..verifier_providers import (
+    PROVIDER_OPERATING_MODE_DEMO_MOCK,
+    PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED,
+    PROVIDER_OPERATING_MODE_MANUAL_ONLY,
+    build_default_provider_registry,
+    load_provider_runtime_policy,
+)
+from ..verification_domain.contracts import (
+    FALLBACK_REASON_ENTRA_NOT_CONFIGURED,
+    FALLBACK_REASON_LIVE_PROVIDER_DISABLED,
+    FALLBACK_REASON_LOCAL_DEMO_VERIFICATION,
+    FALLBACK_REASON_MANUAL_REVIEW_ONLY,
+    FALLBACK_REASON_NO_EXECUTABLE_PROVIDER,
+    FALLBACK_REASON_SUPPLEMENTARY_PROVIDER_USED,
+    EvidenceItem,
+)
+from ..verification_domain.routing import ENTRA_VERIFIED_ID_PROVIDER_KEY, preferred_provider_for_category
 
 
 VERIFIER_LABELS = {
@@ -28,6 +42,7 @@ PROVIDER_LABELS = {
 
 PII_CATEGORIES = {"identity", "address", "passport", "license", "financial", "tax"}
 PROVIDER_REGISTRY = build_default_provider_registry()
+PROVIDER_POLICY = load_provider_runtime_policy()
 
 
 def apply_agent_enrichment_to_credentials(
@@ -263,6 +278,17 @@ def _apply_route_recommendation(
         if planned_provider is not None
         else None
     )
+    decision.planned_execution_mode = _resolve_planned_execution_mode(planned_provider)
+    decision.planned_is_live_result = decision.planned_execution_mode == "LIVE_PROVIDER"
+    decision.planned_is_mock_result = decision.planned_provider_key == "local_mock"
+    decision.planned_is_demo_result = bool(
+        planned_provider is not None
+        and planned_provider.get_capabilities().operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK
+    )
+    decision.fallback_reason = _resolve_fallback_reason(
+        preferred_provider_key=preferred_provider_key,
+        planned_provider=planned_provider,
+    )
 
     if task is not None:
         task.input_payload = dict(task.input_payload or {})
@@ -271,6 +297,11 @@ def _apply_route_recommendation(
         task.input_payload["preferred_provider_label"] = decision.preferred_provider_label
         task.input_payload["planned_provider_key"] = decision.planned_provider_key
         task.input_payload["planned_provider_label"] = decision.planned_provider_label
+        task.input_payload["planned_execution_mode"] = decision.planned_execution_mode
+        task.input_payload["planned_is_live_result"] = decision.planned_is_live_result
+        task.input_payload["planned_is_mock_result"] = decision.planned_is_mock_result
+        task.input_payload["planned_is_demo_result"] = decision.planned_is_demo_result
+        task.input_payload["fallback_reason"] = decision.fallback_reason
         task.reason_codes = _dedupe(list(task.reason_codes or []) + ["AGENT_ASSISTED"])
         if len(candidate.grouped_field_ids) > 1:
             task.reason_codes = _dedupe(list(task.reason_codes or []) + ["AGENT_GROUPED_CREDENTIAL"])
@@ -291,6 +322,42 @@ def _apply_route_recommendation(
 
 def _dedupe(values: list[str]) -> list[str]:
     return [value for value in dict.fromkeys(values) if value]
+
+
+def _resolve_planned_execution_mode(planned_provider) -> str | None:
+    if planned_provider is None:
+        return "MANUAL_REVIEW"
+    if planned_provider.provider_key == "local_mock":
+        return "LOCAL_MOCK"
+    if planned_provider.get_capabilities().operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK:
+        return "DEMO_PROVIDER"
+    if planned_provider.get_capabilities().operating_mode == PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED:
+        return "LIVE_PROVIDER"
+    return "PROVIDER"
+
+
+def _resolve_fallback_reason(*, preferred_provider_key: str | None, planned_provider) -> str | None:
+    planned_provider_key = planned_provider.provider_key if planned_provider is not None else None
+    provider_operating_mode = PROVIDER_POLICY.transition_config.provider_operating_mode
+
+    if planned_provider is None:
+        if provider_operating_mode == PROVIDER_OPERATING_MODE_MANUAL_ONLY:
+            return FALLBACK_REASON_MANUAL_REVIEW_ONLY
+        if preferred_provider_key == ENTRA_VERIFIED_ID_PROVIDER_KEY:
+            return FALLBACK_REASON_ENTRA_NOT_CONFIGURED
+        if provider_operating_mode != PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED:
+            return FALLBACK_REASON_LIVE_PROVIDER_DISABLED
+        return FALLBACK_REASON_NO_EXECUTABLE_PROVIDER
+
+    if planned_provider_key == "local_mock" and provider_operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK:
+        return FALLBACK_REASON_LOCAL_DEMO_VERIFICATION
+    if preferred_provider_key == ENTRA_VERIFIED_ID_PROVIDER_KEY and planned_provider_key == "local_mock":
+        return FALLBACK_REASON_ENTRA_NOT_CONFIGURED
+    if preferred_provider_key == ENTRA_VERIFIED_ID_PROVIDER_KEY and planned_provider_key != ENTRA_VERIFIED_ID_PROVIDER_KEY:
+        return FALLBACK_REASON_SUPPLEMENTARY_PROVIDER_USED
+    if planned_provider_key == "local_mock" and provider_operating_mode != PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED:
+        return FALLBACK_REASON_LIVE_PROVIDER_DISABLED
+    return None
 
 
 def _copy_model(model, *, updates: dict[str, Any] | None = None):

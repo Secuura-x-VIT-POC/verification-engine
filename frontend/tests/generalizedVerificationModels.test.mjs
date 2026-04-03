@@ -790,4 +790,84 @@ export const checks = [
       assert.equal(viewModel.providerExecutionSummary.primaryTrustRailEnabled, false);
     },
   },
+  {
+    name: "audit detail execution model keeps preferred planned and executed providers distinct",
+    run() {
+      const credentials = normalizeCredentialCollection(
+        {
+          session_id: "session-1",
+          credentials: [
+            {
+              credential_id: "name-1",
+              label: "Candidate Name",
+              category: "identity",
+              value: "Kanak Sharma",
+              requires_verification: true,
+            },
+          ],
+        },
+        "session-1"
+      );
+      const bundles = normalizeCredentialBundles(
+        {
+          session_id: "session-1",
+          bundles: [
+            {
+              credential_id: "name-1",
+              label: "Candidate Name",
+              category: "identity",
+              selected_task_ids: ["task-1"],
+              result_count: 1,
+              final_audit_status: "VERIFIED",
+              final_outcome_color: "green",
+              explanation: "Matched bounded local mock evidence.",
+              reason_codes: ["PROVIDER_VERIFIED", "ENTRA_NOT_CONFIGURED"],
+              best_result: {
+                task_id: "task-1",
+                credential_id: "name-1",
+                verifier_key: "identity_db",
+                verifier_label: "Identity Database",
+                preferred_provider_key: "entra_verified_id",
+                preferred_provider_label: "Microsoft Entra Verified ID",
+                planned_provider_key: "local_mock",
+                planned_provider_label: "Local Mock Provider",
+                executed_provider_key: "local_mock",
+                executed_provider_label: "Local Mock Provider",
+                execution_mode: "LOCAL_MOCK",
+                fallback_reason: "ENTRA_NOT_CONFIGURED",
+                is_mock_result: true,
+                is_demo_result: false,
+                is_live_result: false,
+                task_status: "SUCCEEDED",
+                audit_status: "VERIFIED",
+                outcome_color: "green",
+                explanation: "Matched bounded local mock evidence.",
+                reason_codes: ["PROVIDER_VERIFIED", "ENTRA_NOT_CONFIGURED"],
+                raw_result_summary: {
+                  provider_key: "local_mock",
+                  provider_label: "Local Mock Provider",
+                },
+              },
+              all_results: [],
+            },
+          ],
+        },
+        "session-1"
+      );
+
+      const details = buildAuditDetailViewModels(
+        credentials,
+        createEmptyCredentialAuditCollection("session-1"),
+        createEmptyVerificationPlan("session-1"),
+        bundles
+      );
+
+      assert.equal(details[0].execution.preferredProviderLabel, "Microsoft Entra Verified ID");
+      assert.equal(details[0].execution.plannedProviderLabel, "Local Mock Provider");
+      assert.equal(details[0].execution.executedProviderLabel, "Local Mock Provider");
+      assert.equal(details[0].execution.executionMode, "LOCAL_MOCK");
+      assert.equal(details[0].execution.fallbackReason, "ENTRA_NOT_CONFIGURED");
+      assert.equal(details[0].execution.providerIsMockResult, true);
+    },
+  },
 ];

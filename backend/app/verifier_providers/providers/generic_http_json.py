@@ -195,6 +195,7 @@ class GenericHttpJsonProvider(VerifierProvider):
                 normalized.get("transition_notes")
                 or request.metadata.get("provider_transition_notes")
             ),
+            is_mock_result=bool(normalized.get("is_mock_result")),
             is_demo_result=bool(
                 normalized.get("is_demo_result")
                 or str(request.metadata.get("provider_operating_mode") or self.config.operating_mode)
@@ -232,6 +233,7 @@ class GenericHttpJsonProvider(VerifierProvider):
                 or self.config.execution_environment_label
             ),
             "transition_notes": request.metadata.get("provider_transition_notes") or [],
+            "is_mock_result": False,
             "is_demo_result": True,
             "is_live_result": False,
         }

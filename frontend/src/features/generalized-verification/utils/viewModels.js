@@ -125,17 +125,41 @@ function buildExecutionInfo(bundle) {
     return null;
   }
 
-  const taskStatus = bundle.best_result?.task_status || "NOT_STARTED";
-  const rawSummary = bundle.best_result?.raw_result_summary || {};
+  const bestResult = bundle.best_result || {};
+  const taskStatus = bestResult.task_status || "NOT_STARTED";
+  const rawSummary = bestResult.raw_result_summary || {};
   return {
     status: taskStatus,
     label: TASK_STATUS_META[taskStatus] || taskStatus,
     resultCount: bundle.result_count,
-    confidence: bundle.best_result?.confidence ?? null,
-    verifierKey: bundle.best_result?.verifier_key || null,
+    confidence: bestResult.confidence ?? null,
+    verifierKey: bestResult.verifier_key || null,
     selectedTaskIds: bundle.selected_task_ids,
-    providerKey: rawSummary.provider_key || null,
-    providerLabel: rawSummary.provider_label || labelFromKey(rawSummary.provider_key),
+    preferredProviderKey: bestResult.preferred_provider_key || rawSummary.preferred_provider_key || null,
+    preferredProviderLabel:
+      bestResult.preferred_provider_label ||
+      rawSummary.preferred_provider_label ||
+      labelFromKey(bestResult.preferred_provider_key || rawSummary.preferred_provider_key),
+    plannedProviderKey: bestResult.planned_provider_key || rawSummary.planned_provider_key || null,
+    plannedProviderLabel:
+      bestResult.planned_provider_label ||
+      rawSummary.planned_provider_label ||
+      labelFromKey(bestResult.planned_provider_key || rawSummary.planned_provider_key),
+    executedProviderKey:
+      bestResult.executed_provider_key || rawSummary.executed_provider_key || rawSummary.provider_key || null,
+    executedProviderLabel:
+      bestResult.executed_provider_label ||
+      rawSummary.executed_provider_label ||
+      rawSummary.provider_label ||
+      labelFromKey(bestResult.executed_provider_key || rawSummary.executed_provider_key || rawSummary.provider_key),
+    executionMode: bestResult.execution_mode || rawSummary.execution_mode || null,
+    fallbackReason: bestResult.fallback_reason || rawSummary.fallback_reason || null,
+    providerKey: bestResult.executed_provider_key || rawSummary.executed_provider_key || rawSummary.provider_key || null,
+    providerLabel:
+      bestResult.executed_provider_label ||
+      rawSummary.executed_provider_label ||
+      rawSummary.provider_label ||
+      labelFromKey(bestResult.executed_provider_key || rawSummary.executed_provider_key || rawSummary.provider_key),
     providerTechnicalStatus: rawSummary.provider_technical_status || null,
     providerLatencyMs: rawSummary.provider_latency_ms ?? null,
     providerFallbackUsed: Boolean(rawSummary.provider_fallback_used),
@@ -148,8 +172,9 @@ function buildExecutionInfo(bundle) {
     providerTransitionNotes: Array.isArray(rawSummary.provider_transition_notes)
       ? rawSummary.provider_transition_notes
       : [],
-    providerIsDemoResult: Boolean(rawSummary.provider_is_demo_result),
-    providerIsLiveResult: Boolean(rawSummary.provider_is_live_result),
+    providerIsMockResult: Boolean(rawSummary.provider_is_mock_result ?? bestResult.is_mock_result),
+    providerIsDemoResult: Boolean(rawSummary.provider_is_demo_result ?? bestResult.is_demo_result),
+    providerIsLiveResult: Boolean(rawSummary.provider_is_live_result ?? bestResult.is_live_result),
   };
 }
 
@@ -202,6 +227,8 @@ function buildRouteProviderInfo(routeDecision, task) {
   const plannedProviderKey = routeDecision?.planned_provider_key || inputPayload.planned_provider_key || null;
   const plannedProviderLabel =
     routeDecision?.planned_provider_label || inputPayload.planned_provider_label || labelFromKey(plannedProviderKey);
+  const plannedExecutionMode = routeDecision?.planned_execution_mode || inputPayload.planned_execution_mode || null;
+  const fallbackReason = routeDecision?.fallback_reason || inputPayload.fallback_reason || null;
 
   let routeDispositionLabel = null;
   let routeDispositionMessage = null;
@@ -231,6 +258,8 @@ function buildRouteProviderInfo(routeDecision, task) {
     preferredProviderLabel,
     plannedProviderKey,
     plannedProviderLabel,
+    plannedExecutionMode,
+    fallbackReason,
     routeDispositionLabel,
     routeDispositionMessage,
   };
@@ -414,8 +443,11 @@ export function buildAnalysisRows(
       providerLabel: detail?.execution?.providerLabel || null,
       providerTechnicalStatus: detail?.execution?.providerTechnicalStatus || null,
       providerFallbackUsed: detail?.execution?.providerFallbackUsed || false,
+      providerFallbackReason: detail?.execution?.fallbackReason || detail?.fallbackReason || null,
+      executedProviderLabel: detail?.execution?.executedProviderLabel || null,
       providerOperatingMode: detail?.execution?.providerOperatingMode || null,
       providerOperatingModeLabel: detail?.execution?.providerOperatingModeLabel || null,
+      providerIsMockResult: detail?.execution?.providerIsMockResult || false,
       providerDemoProfileKey: detail?.execution?.providerDemoProfileKey || null,
       providerExecutionEnvironmentLabel: detail?.execution?.providerExecutionEnvironmentLabel || null,
       providerIsDemoResult: detail?.execution?.providerIsDemoResult || false,

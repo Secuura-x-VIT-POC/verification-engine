@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,9 +19,12 @@ from backend.app.db.database import Base, get_db
 from backend.app.sessions.constants import SessionState
 from backend.app.sessions.models import Session as SessionModel
 from backend.app.verification_domain.adapters import build_session_credential_audits
+from backend.app.verification_domain.adapters import build_session_verification_plan
 from backend.app.verification_domain.contracts import (
     BoundingBox,
     CredentialAuditCollection,
+    FALLBACK_REASON_ENTRA_NOT_CONFIGURED,
+    FALLBACK_REASON_MANUAL_REVIEW_ONLY,
     ExtractedCredential,
     SessionCredentialCollection,
     SessionVerificationPlan,
@@ -252,6 +256,41 @@ class PlaceholderVerifierTests(unittest.TestCase):
 
 
 class VerificationExecutorTests(unittest.TestCase):
+    def test_route_plan_marks_entra_preferred_but_local_mock_planned_honestly(self):
+        credentials = SessionCredentialCollection(
+            session_id="session-route-truth",
+            document_type="identity_document",
+            credentials=[
+                ExtractedCredential(
+                    credential_id="name-1",
+                    label="Candidate Name",
+                    category="identity",
+                    value="Kanak Sharma",
+                    normalized_value="Kanak Sharma",
+                    confidence=0.98,
+                    requires_verification=True,
+                )
+            ],
+        )
+
+        plan = build_session_verification_plan(
+            "session-route-truth",
+            {"document_type": "identity_document"},
+            credentials=credentials,
+        )
+
+        decision = plan.route_decisions[0]
+        task = plan.tasks[0]
+
+        self.assertEqual(decision.preferred_provider_key, "entra_verified_id")
+        self.assertEqual(decision.planned_provider_key, "local_mock")
+        self.assertEqual(decision.planned_execution_mode, "LOCAL_MOCK")
+        self.assertEqual(decision.fallback_reason, FALLBACK_REASON_ENTRA_NOT_CONFIGURED)
+        self.assertTrue(decision.planned_is_mock_result)
+        self.assertEqual(task.input_payload["planned_provider_key"], "local_mock")
+        self.assertEqual(task.input_payload["planned_execution_mode"], "LOCAL_MOCK")
+        self.assertEqual(task.input_payload["fallback_reason"], FALLBACK_REASON_ENTRA_NOT_CONFIGURED)
+
     def test_executor_handles_mixed_success_partial_and_manual_review(self):
         credentials = SessionCredentialCollection(
             session_id="session-exec",
@@ -438,8 +477,43 @@ class VerificationExecutionServiceTests(unittest.TestCase):
         self.assertIsNotNone(session.verification_execution_summary_payload)
         self.assertIsNotNone(session.provider_execution_traces_payload)
         self.assertEqual(session.provider_execution_status, "NOT_STARTED")
-        self.assertEqual(artifacts["execution_summary"].succeeded_tasks, 4)
+        self.assertEqual(artifacts["execution_summary"].succeeded_tasks, 3)
         db.close()
+
+    def test_manual_only_mode_keeps_route_truth_honest(self):
+        credentials = SessionCredentialCollection(
+            session_id="session-manual-mode",
+            document_type="identity_document",
+            credentials=[
+                ExtractedCredential(
+                    credential_id="name-1",
+                    label="Candidate Name",
+                    category="identity",
+                    value="Kanak Sharma",
+                    normalized_value="Kanak Sharma",
+                    confidence=0.98,
+                    requires_verification=True,
+                )
+            ],
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "VERIFIER_PROVIDER_OPERATING_MODE": "MANUAL_ONLY",
+            },
+            clear=False,
+        ):
+            plan = build_session_verification_plan(
+                "session-manual-mode",
+                {"document_type": "identity_document"},
+                credentials=credentials,
+            )
+
+        decision = plan.route_decisions[0]
+        self.assertEqual(decision.selected_verifier_key, "manual_review")
+        self.assertEqual(decision.fallback_reason, FALLBACK_REASON_MANUAL_REVIEW_ONLY)
+        self.assertEqual(decision.planned_execution_mode, "MANUAL_REVIEW")
 
     def test_audit_assembly_prefers_task_results_over_legacy_connector_fallback(self):
         credential = ExtractedCredential(
@@ -448,6 +522,9 @@ class VerificationExecutionServiceTests(unittest.TestCase):
             category="identity",
             value="Kanak Sharma",
             normalized_value="Kanak Sharma",
+            source_text="Candidate Name: Kanak Sharma",
+            page=1,
+            bounding_box=BoundingBox(page=1, x0=10, y0=10, x1=80, y1=20),
             confidence=0.98,
             requires_verification=True,
         )
@@ -509,6 +586,189 @@ class VerificationExecutionServiceTests(unittest.TestCase):
         self.assertEqual(audits.audits[0].audit_status, "PARTIAL")
         self.assertEqual(audits.audits[0].reason_codes, ["TASK_DRIVEN_PARTIAL"])
         self.assertEqual(audits.audits[0].explanation, "Task-driven audit says partial evidence only.")
+        self.assertEqual(
+            [item.evidence_type for item in audits.audits[0].evidence],
+            ["verification_task_result", "document_extraction", "route_metadata"],
+        )
+        self.assertFalse(any(item.evidence_type == "trust_result" for item in audits.audits[0].evidence))
+        self.assertFalse(any(item.evidence_type == "connector_response" for item in audits.audits[0].evidence))
+
+    def test_unrelated_connector_and_trust_data_do_not_contaminate_other_audit_cards(self):
+        name_credential = ExtractedCredential(
+            credential_id="name-1",
+            label="Candidate Name",
+            category="identity",
+            value="Kanak Sharma",
+            normalized_value="Kanak Sharma",
+            source_text="Candidate Name: Kanak Sharma",
+            page=1,
+            bounding_box=BoundingBox(page=1, x0=10, y0=10, x1=80, y1=20),
+            confidence=0.98,
+            requires_verification=True,
+        )
+        address_credential = ExtractedCredential(
+            credential_id="address-1",
+            label="Home Address",
+            category="address",
+            value="42 Registry Road",
+            normalized_value="42 Registry Road",
+            source_text="Home Address: 42 Registry Road",
+            page=1,
+            bounding_box=BoundingBox(page=1, x0=10, y0=40, x1=135, y1=50),
+            confidence=0.92,
+            requires_verification=True,
+        )
+
+        audits = build_session_credential_audits(
+            "session-audits",
+            _sample_extraction_payload(),
+            connector_payload=_sample_connector_payload(),
+            trust_outcome="GREEN",
+            reason_codes=["CONNECTOR_VERIFIED"],
+            credentials=SessionCredentialCollection(
+                session_id="session-audits",
+                document_type="academic_credential",
+                credentials=[name_credential, address_credential],
+            ),
+            verification_plan=SessionVerificationPlan(
+                session_id="session-audits",
+                document_type="academic_credential",
+                route_decisions=[
+                    VerifierRouteDecision(
+                        credential_id="name-1",
+                        selected_verifier_key="identity_db",
+                        selected_verifier_label="Identity Database",
+                        route_reason="identity",
+                    ),
+                    VerifierRouteDecision(
+                        credential_id="address-1",
+                        selected_verifier_key="address_check",
+                        selected_verifier_label="Address Check",
+                        route_reason="address",
+                    ),
+                ],
+                tasks=[],
+            ),
+        )
+
+        audits_by_id = {audit.credential_id: audit for audit in audits.audits}
+        name_audit = audits_by_id["name-1"]
+        address_audit = audits_by_id["address-1"]
+
+        self.assertEqual(name_audit.audit_status, "VERIFIED")
+        self.assertEqual(address_audit.audit_status, "PARTIAL")
+        self.assertEqual(name_audit.matched_fields, {"name": "Kanak Sharma"})
+        self.assertEqual(address_audit.matched_fields, {})
+        self.assertTrue(any(item.evidence_type == "connector_claim_summary" for item in name_audit.evidence))
+        self.assertFalse(any(item.evidence_type == "connector_claim_summary" for item in address_audit.evidence))
+        self.assertFalse(any(item.evidence_type == "trust_result" for item in address_audit.evidence))
+        self.assertEqual(
+            [item.evidence_type for item in address_audit.evidence],
+            ["document_extraction", "route_metadata"],
+        )
+
+        extraction_item = next(item for item in address_audit.evidence if item.evidence_type == "document_extraction")
+        self.assertEqual(extraction_item.detail["source_text"], "Home Address: 42 Registry Road")
+        self.assertEqual(extraction_item.detail["bounding_box"]["x0"], 10)
+
+    def test_audit_provider_evidence_distinguishes_preference_plan_and_execution(self):
+        credential = ExtractedCredential(
+            credential_id="name-1",
+            label="Candidate Name",
+            category="identity",
+            value="Kanak Sharma",
+            normalized_value="Kanak Sharma",
+            source_text="Candidate Name: Kanak Sharma",
+            page=1,
+            bounding_box=BoundingBox(page=1, x0=10, y0=10, x1=80, y1=20),
+            confidence=0.98,
+            requires_verification=True,
+        )
+        bundle = CredentialVerificationBundle(
+            credential_id="name-1",
+            label="Candidate Name",
+            category="identity",
+            selected_task_ids=["task-name"],
+            result_count=1,
+            final_audit_status="VERIFIED",
+            final_outcome_color="green",
+            explanation="Identity Database matched bounded local mock evidence via Local Mock Provider.",
+            reason_codes=["PROVIDER_VERIFIED", FALLBACK_REASON_ENTRA_NOT_CONFIGURED],
+            best_result=VerificationTaskResult(
+                task_id="task-name",
+                credential_id="name-1",
+                verifier_key="identity_db",
+                verifier_label="Identity Database",
+                preferred_provider_key="entra_verified_id",
+                preferred_provider_label="Microsoft Entra Verified ID",
+                planned_provider_key="local_mock",
+                planned_provider_label="Local Mock Provider",
+                executed_provider_key="local_mock",
+                executed_provider_label="Local Mock Provider",
+                execution_mode="LOCAL_MOCK",
+                fallback_reason=FALLBACK_REASON_ENTRA_NOT_CONFIGURED,
+                is_mock_result=True,
+                task_status="SUCCEEDED",
+                audit_status="VERIFIED",
+                outcome_color="green",
+                explanation="Identity Database matched bounded local mock evidence via Local Mock Provider.",
+                reason_codes=["PROVIDER_VERIFIED", FALLBACK_REASON_ENTRA_NOT_CONFIGURED],
+                raw_result_summary={
+                    "provider_key": "local_mock",
+                    "provider_label": "Local Mock Provider",
+                    "provider_response_summary": {"mode": "local_verification_store"},
+                    "provider_is_mock_result": True,
+                    "provider_is_demo_result": False,
+                    "provider_is_live_result": False,
+                },
+            ),
+            all_results=[],
+        )
+
+        audits = build_session_credential_audits(
+            "session-audits",
+            {"document_type": "identity_document"},
+            credentials=SessionCredentialCollection(
+                session_id="session-audits",
+                document_type="identity_document",
+                credentials=[credential],
+            ),
+            verification_plan=SessionVerificationPlan(
+                session_id="session-audits",
+                document_type="identity_document",
+                route_decisions=[
+                    VerifierRouteDecision(
+                        credential_id="name-1",
+                        selected_verifier_key="identity_db",
+                        selected_verifier_label="Identity Database",
+                        route_reason="Identity credential. Microsoft Entra Verified ID is preferred, but local mock is planned in this environment.",
+                        preferred_provider_key="entra_verified_id",
+                        preferred_provider_label="Microsoft Entra Verified ID",
+                        planned_provider_key="local_mock",
+                        planned_provider_label="Local Mock Provider",
+                        planned_execution_mode="LOCAL_MOCK",
+                        planned_is_mock_result=True,
+                        fallback_reason=FALLBACK_REASON_ENTRA_NOT_CONFIGURED,
+                    )
+                ],
+                tasks=[],
+            ),
+            credential_bundles=CredentialVerificationBundleCollection(
+                session_id="session-audits",
+                document_type="identity_document",
+                bundles=[bundle],
+            ),
+        )
+
+        provider_item = next(
+            item for item in audits.audits[0].evidence if item.evidence_type == "provider_response_summary"
+        )
+
+        self.assertEqual(provider_item.detail["preferred_provider_key"], "entra_verified_id")
+        self.assertEqual(provider_item.detail["planned_provider_key"], "local_mock")
+        self.assertEqual(provider_item.detail["executed_provider_key"], "local_mock")
+        self.assertEqual(provider_item.detail["fallback_reason"], FALLBACK_REASON_ENTRA_NOT_CONFIGURED)
+        self.assertTrue(provider_item.detail["provider_is_mock_result"])
 
 
 class VerificationExecutionApiTests(unittest.TestCase):
@@ -575,8 +835,8 @@ class VerificationExecutionApiTests(unittest.TestCase):
         self.assertEqual(results_response.status_code, 200)
         self.assertEqual(bundles_response.status_code, 200)
         self.assertEqual(status_response.status_code, 200)
-        self.assertEqual(len(results_response.json()["results"]), 4)
-        self.assertEqual(len(bundles_response.json()["bundles"]), 4)
+        self.assertEqual(len(results_response.json()["results"]), 3)
+        self.assertEqual(len(bundles_response.json()["bundles"]), 3)
         self.assertEqual(status_response.json()["verification_execution_status"], "READY")
         self.assertTrue(status_response.json()["task_results_available"])
 

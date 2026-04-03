@@ -4,6 +4,7 @@ import {
   AUDIT_STATUS_META,
   DOCUMENT_COORDINATE_BASE,
   EXECUTION_STATUS_META,
+  PROVIDER_OPERATING_MODE_META,
   PROVIDER_EXECUTION_STATUS_META,
   TASK_STATUS_META,
 } from "../types/contracts.js";
@@ -111,6 +112,10 @@ export function buildProviderExecutionStatusLabel(status) {
   return PROVIDER_EXECUTION_STATUS_META[status] || status || "Unknown";
 }
 
+export function buildProviderOperatingModeLabel(mode) {
+  return PROVIDER_OPERATING_MODE_META[mode] || mode || "Unknown";
+}
+
 export function buildAgentStatusLabel(status) {
   return AGENT_RUN_STATUS_META[status] || status || "Unknown";
 }
@@ -134,6 +139,17 @@ function buildExecutionInfo(bundle) {
     providerTechnicalStatus: rawSummary.provider_technical_status || null,
     providerLatencyMs: rawSummary.provider_latency_ms ?? null,
     providerFallbackUsed: Boolean(rawSummary.provider_fallback_used),
+    providerOperatingMode: rawSummary.provider_operating_mode || null,
+    providerOperatingModeLabel: rawSummary.provider_operating_mode
+      ? buildProviderOperatingModeLabel(rawSummary.provider_operating_mode)
+      : null,
+    providerDemoProfileKey: rawSummary.provider_demo_profile_key || null,
+    providerExecutionEnvironmentLabel: rawSummary.provider_execution_environment_label || null,
+    providerTransitionNotes: Array.isArray(rawSummary.provider_transition_notes)
+      ? rawSummary.provider_transition_notes
+      : [],
+    providerIsDemoResult: Boolean(rawSummary.provider_is_demo_result),
+    providerIsLiveResult: Boolean(rawSummary.provider_is_live_result),
   };
 }
 
@@ -398,6 +414,12 @@ export function buildAnalysisRows(
       providerLabel: detail?.execution?.providerLabel || null,
       providerTechnicalStatus: detail?.execution?.providerTechnicalStatus || null,
       providerFallbackUsed: detail?.execution?.providerFallbackUsed || false,
+      providerOperatingMode: detail?.execution?.providerOperatingMode || null,
+      providerOperatingModeLabel: detail?.execution?.providerOperatingModeLabel || null,
+      providerDemoProfileKey: detail?.execution?.providerDemoProfileKey || null,
+      providerExecutionEnvironmentLabel: detail?.execution?.providerExecutionEnvironmentLabel || null,
+      providerIsDemoResult: detail?.execution?.providerIsDemoResult || false,
+      providerIsLiveResult: detail?.execution?.providerIsLiveResult || false,
       agentAssisted: detail?.agentAssisted || false,
       agentRecommendedVerifierLabel: detail?.agentInfo?.recommendedVerifierLabel || null,
       agentRouteReason: detail?.agentInfo?.routeReason || null,
@@ -533,9 +555,12 @@ export function buildProviderExecutionSummary(providerExecutionTraces, providerE
   const capabilities = Array.isArray(providerCapabilities?.capabilities) ? providerCapabilities.capabilities : [];
   const entraCapability = capabilities.find((capability) => capability.provider_key === "entra_verified_id") || null;
   const enabledCapabilities = capabilities.filter((capability) => capability.enabled);
+  const operatingMode = providerExecutionStatus?.provider_operating_mode || "LIVE_DISABLED";
   return {
     overallStatus: providerExecutionStatus?.provider_execution_status || "NOT_STARTED",
     overallLabel: buildProviderExecutionStatusLabel(providerExecutionStatus?.provider_execution_status),
+    operatingMode,
+    operatingModeLabel: buildProviderOperatingModeLabel(operatingMode),
     traceCount: traces.length,
     providerKeysUsed: providerExecutionStatus?.provider_keys_used || [],
     outboundAttempted: Boolean(providerExecutionStatus?.outbound_attempted),
@@ -546,6 +571,13 @@ export function buildProviderExecutionSummary(providerExecutionTraces, providerE
       .map((capability) => capability.provider_label),
     primaryTrustRailLabel: entraCapability?.provider_label || "Microsoft Entra Verified ID",
     primaryTrustRailEnabled: Boolean(entraCapability?.enabled),
+    executionEnvironmentLabel: providerExecutionStatus?.execution_environment_label || null,
+    demoProfileKey: providerExecutionStatus?.demo_profile_key || null,
+    providerTransitionNotes: providerExecutionStatus?.provider_transition_notes || [],
+    liveProviderEnabled: Boolean(providerExecutionStatus?.live_provider_enabled),
+    preferredProviderRail: providerExecutionStatus?.preferred_provider_rail || "entra_verified_id",
+    fallbackPolicy: providerExecutionStatus?.fallback_policy || "SUPPLEMENTARY_THEN_LOCAL_MOCK",
+    manualReviewPolicy: providerExecutionStatus?.manual_review_policy || "RECOMMEND_ON_UNCERTAINTY",
   };
 }
 
@@ -585,8 +617,16 @@ export function buildWorkspaceViewModel({
   executionStatus,
   providerExecutionTraces,
   providerExecutionStatus,
+  providerOperatingMode,
   providerCapabilities,
+  demoProfile,
 }) {
+  const resolvedProviderOperatingMode = providerOperatingMode || { provider_operating_mode: "LIVE_DISABLED" };
+  const resolvedDemoProfile = demoProfile || {
+    profile_label: "",
+    description: "",
+    seeded: false,
+  };
   const auditDetails = buildAuditDetailViewModels(
     credentials,
     credentialAudits,
@@ -621,8 +661,32 @@ export function buildWorkspaceViewModel({
   );
   const entraPreferredInPlan = analysisRows.some((row) => row.preferredProviderKey === "entra_verified_id");
   const agentUnderstandingSummary = buildAgentUnderstandingSummary(agentDocumentUnderstanding, agentRunStatus);
+  const currentProviderOperatingMode =
+    resolvedProviderOperatingMode.provider_operating_mode ||
+    providerExecutionStatus.provider_operating_mode ||
+    "LIVE_DISABLED";
   const selectedCredentialId =
     highlightItems[0]?.credentialId || auditDetails[0]?.credentialId || credentials.credentials[0]?.credential_id || null;
+  let providerMessage = null;
+  if (providerExecutionStatus.provider_execution_error) {
+    providerMessage = providerExecutionStatus.provider_execution_error;
+  } else if (providerExecutionStatus.provider_execution_status === "FAILED") {
+    providerMessage = "Provider-backed execution failed safely. Bounded fallback results are shown where available.";
+  } else if (currentProviderOperatingMode === "DEMO_MOCK") {
+    providerMessage = `${providerExecutionSummary.primaryTrustRailLabel} route selected in demo-mock mode. Seeded scenario${
+      resolvedDemoProfile.profile_label ? `: ${resolvedDemoProfile.profile_label}` : ""
+    }.`;
+  } else if (currentProviderOperatingMode === "EXTERNAL_CONFIGURED") {
+    providerMessage = `${providerExecutionSummary.primaryTrustRailLabel} is running in live-configured mode behind the bounded provider policy layer.`;
+  } else if (entraPreferredInPlan && !providerExecutionSummary.primaryTrustRailEnabled) {
+    providerMessage =
+      "Microsoft Entra Verified ID is the preferred VC trust rail for some credentials, but it is not enabled in this environment. Supplementary providers or manual review are shown where applicable.";
+  } else if (currentProviderOperatingMode === "MANUAL_ONLY") {
+    providerMessage = "Manual-review-only mode is active. No executable provider path is available for this session.";
+  }
+  const providerModeMessage =
+    providerExecutionSummary.providerTransitionNotes[0] ||
+    (resolvedDemoProfile.seeded ? resolvedDemoProfile.description : null);
 
   return {
     credentialItems: auditDetails.map((detail) => ({
@@ -641,6 +705,7 @@ export function buildWorkspaceViewModel({
     analysisStatusLabel: buildAnalysisStatusLabel(analysisStatus.generalized_analysis_status),
     executionStatusLabel: buildExecutionStatusLabel(executionStatus.verification_execution_status),
     providerExecutionStatusLabel: buildProviderExecutionStatusLabel(providerExecutionStatus.provider_execution_status),
+    providerOperatingModeLabel: buildProviderOperatingModeLabel(currentProviderOperatingMode),
     agentStatusLabel: buildAgentStatusLabel(agentRunStatus.agent_run_status),
     agentUnderstandingSummary,
     taskExecutionSummary,
@@ -665,13 +730,8 @@ export function buildWorkspaceViewModel({
         (agentRunStatus.agent_run_status !== "READY" && agentRunStatus.agent_run_status !== "NOT_STARTED"
           ? "Agent-assisted enrichment is not fully ready yet. Deterministic planning remains active."
           : null),
-      provider:
-        providerExecutionStatus.provider_execution_error ||
-        (providerExecutionStatus.provider_execution_status === "FAILED"
-          ? "Provider-backed execution failed safely. Bounded fallback results are shown where available."
-          : entraPreferredInPlan && !providerExecutionSummary.primaryTrustRailEnabled
-            ? "Microsoft Entra Verified ID is the preferred VC trust rail for some credentials, but it is not enabled in this environment. Supplementary providers or manual review are shown where applicable."
-          : null),
+      provider: providerMessage,
+      providerMode: providerModeMessage,
       document: !session.document_available
         ? "No PDF is currently stored for this session."
         : highlightItems.length

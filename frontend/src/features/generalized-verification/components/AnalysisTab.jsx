@@ -65,6 +65,10 @@ export default function AnalysisTab({ rows, emptyMessage }) {
                   <p>{row.providerLabel || "No provider used"}</p>
                 </div>
                 <div>
+                  <span className="gv-detail-key">Provider mode</span>
+                  <p>{row.providerOperatingModeLabel || "Not available"}</p>
+                </div>
+                <div>
                   <span className="gv-detail-key">Agent-assisted route</span>
                   <p>{row.agentRecommendedVerifierLabel || "No agent recommendation"}</p>
                 </div>
@@ -76,6 +80,10 @@ export default function AnalysisTab({ rows, emptyMessage }) {
                   {row.routeReason ? <p><strong>Route reason:</strong> {row.routeReason}</p> : null}
                   {row.routeDispositionMessage ? <p><strong>Provider path:</strong> {row.routeDispositionMessage}</p> : null}
                   {row.providerTechnicalStatus ? <p><strong>Provider status:</strong> {row.providerTechnicalStatus}</p> : null}
+                  {row.providerExecutionEnvironmentLabel ? <p><strong>Environment:</strong> {row.providerExecutionEnvironmentLabel}</p> : null}
+                  {row.providerDemoProfileKey ? <p><strong>Demo profile:</strong> {row.providerDemoProfileKey}</p> : null}
+                  {row.providerIsDemoResult ? <p><strong>Execution mode:</strong> Seeded demo-mock response.</p> : null}
+                  {row.providerIsLiveResult ? <p><strong>Execution mode:</strong> Live-configured provider response.</p> : null}
                   {row.providerFallbackUsed ? <p><strong>Provider fallback:</strong> Local deterministic fallback was used.</p> : null}
                   {row.agentRouteReason ? <p><strong>Agent-assisted:</strong> {row.agentRouteReason}</p> : null}
                   {row.agentManualReviewRecommended ? <p><strong>Agent review flag:</strong> Manual review suggested.</p> : null}

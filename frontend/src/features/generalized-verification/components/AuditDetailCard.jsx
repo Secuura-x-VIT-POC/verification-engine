@@ -52,6 +52,11 @@ export default function AuditDetailCard({ detail, compact = false }) {
             <strong>Executed provider:</strong> {detail.execution.providerLabel}
           </span>
         ) : null}
+        {detail.execution?.providerOperatingModeLabel ? (
+          <span>
+            <strong>Provider mode:</strong> {detail.execution.providerOperatingModeLabel}
+          </span>
+        ) : null}
         {detail.preferredProviderLabel ? (
           <span>
             <strong>Preferred provider:</strong> {detail.preferredProviderLabel}
@@ -127,6 +132,11 @@ export default function AuditDetailCard({ detail, compact = false }) {
                     <strong>Provider status:</strong> {detail.execution.providerTechnicalStatus}
                   </span>
                 ) : null}
+                {detail.execution.providerExecutionEnvironmentLabel ? (
+                  <span>
+                    <strong>Environment:</strong> {detail.execution.providerExecutionEnvironmentLabel}
+                  </span>
+                ) : null}
                 {detail.execution.confidence !== null ? (
                   <span>
                     <strong>Confidence:</strong> {detail.execution.confidence}
@@ -134,8 +144,26 @@ export default function AuditDetailCard({ detail, compact = false }) {
                 ) : null}
               </div>
               {detail.routeDispositionMessage ? <p className="muted">{detail.routeDispositionMessage}</p> : null}
+              {detail.execution.providerDemoProfileKey ? (
+                <p className="muted">Seeded demo profile: {detail.execution.providerDemoProfileKey}</p>
+              ) : null}
+              {detail.execution.providerIsDemoResult ? (
+                <p className="muted">This provider result is a deterministic demo-mock response, not a live external call.</p>
+              ) : null}
+              {detail.execution.providerIsLiveResult ? (
+                <p className="muted">This provider result came from a live-configured provider path.</p>
+              ) : null}
               {detail.execution.providerFallbackUsed ? (
                 <p className="muted">Provider-backed execution fell back to the bounded local verifier path.</p>
+              ) : null}
+              {detail.execution.providerTransitionNotes?.length ? (
+                <div className="gv-warning-list">
+                  {detail.execution.providerTransitionNotes.map((note) => (
+                    <p key={note} className="muted">
+                      {note}
+                    </p>
+                  ))}
+                </div>
               ) : null}
             </section>
           ) : null}

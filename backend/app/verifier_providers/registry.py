@@ -57,16 +57,17 @@ def build_default_provider_registry() -> ProviderRegistry:
     registry = ProviderRegistry()
 
     entra_config = policy.config_for("entra_verified_id")
-    if entra_config is not None and policy.is_provider_enabled("entra_verified_id"):
+    if entra_config is not None and policy.should_register_provider("entra_verified_id"):
         registry.register(EntraVerifiedIdProvider(config=entra_config, client=client))
 
     identity_config = policy.config_for("identity_http")
-    if identity_config is not None and policy.is_provider_enabled("identity_http"):
+    if identity_config is not None and policy.should_register_provider("identity_http"):
         registry.register(IdentityHttpProvider(config=identity_config, client=client))
 
     academic_config = policy.config_for("academic_registry_http")
-    if academic_config is not None and policy.is_provider_enabled("academic_registry_http"):
+    if academic_config is not None and policy.should_register_provider("academic_registry_http"):
         registry.register(AcademicRegistryHttpProvider(config=academic_config, client=client))
 
-    registry.register(LocalMockProvider(build_local_mock_config()))
+    if policy.should_register_provider("local_mock"):
+        registry.register(LocalMockProvider(build_local_mock_config(policy.transition_config)))
     return registry

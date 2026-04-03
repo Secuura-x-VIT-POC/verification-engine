@@ -22,11 +22,15 @@ from ..agent_orchestration import (
 from ..verifier_providers import (
     ProviderCapabilityCollection,
     ProviderExecutionTraceCollection,
+    SessionProviderOperatingMode,
     SessionProviderExecutionStatus,
+    get_demo_profile_for_session,
     get_provider_capabilities_for_session,
+    get_provider_operating_mode_for_session,
     get_provider_execution_status_for_session,
     get_provider_execution_traces_for_session,
 )
+from ..demo_profiles import DemoProfileSummary
 from ..verifier_execution import (
     CredentialVerificationBundleCollection,
     SessionVerificationExecutionStatus,
@@ -190,6 +194,34 @@ def get_session_provider_execution_status_route(
     session = _get_owned_session(db, session_id, user)
     payload = get_provider_execution_status_for_session(session)
     LOGGER.info("PROVIDER_EXECUTION_STATUS_FETCHED session_id=%s status=%s", session.id, payload.provider_execution_status)
+    return payload
+
+
+@router.get("/session/{session_id}/provider-operating-mode", response_model=SessionProviderOperatingMode)
+def get_session_provider_operating_mode_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> SessionProviderOperatingMode:
+    session = _get_owned_session(db, session_id, user)
+    payload = get_provider_operating_mode_for_session(session)
+    LOGGER.info(
+        "PROVIDER_OPERATING_MODE_FETCHED session_id=%s mode=%s",
+        session.id,
+        payload.provider_operating_mode,
+    )
+    return payload
+
+
+@router.get("/session/{session_id}/demo-profile", response_model=DemoProfileSummary)
+def get_session_demo_profile_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> DemoProfileSummary:
+    session = _get_owned_session(db, session_id, user)
+    payload = get_demo_profile_for_session(session)
+    LOGGER.info("DEMO_PROFILE_FETCHED session_id=%s key=%s", session.id, payload.profile_key)
     return payload
 
 

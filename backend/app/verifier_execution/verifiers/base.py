@@ -319,6 +319,12 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 "provider_http_status": response.http_status,
                 "provider_latency_ms": response.latency_ms,
                 "provider_response_summary": dict(response.response_summary or {}),
+                "provider_operating_mode": response.operating_mode,
+                "provider_demo_profile_key": response.demo_profile_key,
+                "provider_execution_environment_label": response.execution_environment_label,
+                "provider_transition_notes": list(response.transition_notes or []),
+                "provider_is_demo_result": response.is_demo_result,
+                "provider_is_live_result": response.is_live_result,
                 "provider_fallback_used": True,
             }
         )
@@ -350,6 +356,12 @@ class ConnectorAwareVerifier(CredentialVerifier):
                 "provider_http_status": response.http_status,
                 "provider_latency_ms": response.latency_ms,
                 "provider_response_summary": dict(response.response_summary or {}),
+                "provider_operating_mode": response.operating_mode,
+                "provider_demo_profile_key": response.demo_profile_key,
+                "provider_execution_environment_label": response.execution_environment_label,
+                "provider_transition_notes": list(response.transition_notes or []),
+                "provider_is_demo_result": response.is_demo_result,
+                "provider_is_live_result": response.is_live_result,
             },
         )
 

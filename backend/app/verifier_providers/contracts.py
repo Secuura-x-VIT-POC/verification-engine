@@ -29,6 +29,12 @@ OUTBOUND_MODE_LOCAL_ONLY = "LOCAL_ONLY"
 OUTBOUND_MODE_HTTP_JSON = "HTTP_JSON"
 OUTBOUND_MODE_DISABLED = "DISABLED"
 
+PROVIDER_OPERATING_MODE_DEMO_MOCK = "DEMO_MOCK"
+PROVIDER_OPERATING_MODE_LOCAL_MOCK = "LOCAL_MOCK"
+PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED = "EXTERNAL_CONFIGURED"
+PROVIDER_OPERATING_MODE_LIVE_DISABLED = "LIVE_DISABLED"
+PROVIDER_OPERATING_MODE_MANUAL_ONLY = "MANUAL_ONLY"
+
 
 class ProviderCapability(ContractModel):
     provider_key: str
@@ -42,6 +48,9 @@ class ProviderCapability(ContractModel):
     requires_credentials: bool = False
     default_timeout_ms: int = 3000
     enabled: bool = False
+    operating_mode: str = PROVIDER_OPERATING_MODE_LIVE_DISABLED
+    execution_environment_label: str | None = None
+    demo_supported: bool = False
 
 
 class ProviderRequest(ContractModel):
@@ -71,11 +80,18 @@ class ProviderResponse(ContractModel):
     reason_codes: list[str] = Field(default_factory=list)
     latency_ms: int | None = None
     manual_review_recommended: bool = False
+    operating_mode: str = PROVIDER_OPERATING_MODE_LIVE_DISABLED
+    demo_profile_key: str | None = None
+    execution_environment_label: str | None = None
+    transition_notes: list[str] = Field(default_factory=list)
+    is_demo_result: bool = False
+    is_live_result: bool = False
 
 
 class ProviderExecutionTrace(ContractModel):
     request_id: str
     provider_key: str
+    provider_label: str | None = None
     verifier_key: str
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -87,6 +103,22 @@ class ProviderExecutionTrace(ContractModel):
     http_status: int | None = None
     response_summary: dict[str, Any] = Field(default_factory=dict)
     fallback_used: bool = False
+    provider_operating_mode: str = PROVIDER_OPERATING_MODE_LIVE_DISABLED
+    demo_profile_key: str | None = None
+    execution_environment_label: str | None = None
+    transition_notes: list[str] = Field(default_factory=list)
+
+
+class ProviderTransitionConfig(ContractModel):
+    preferred_provider_rail: str = "entra_verified_id"
+    provider_operating_mode: str = PROVIDER_OPERATING_MODE_LIVE_DISABLED
+    enabled_provider_modes: list[str] = Field(default_factory=list)
+    demo_profile_key: str | None = None
+    live_provider_enabled: bool = False
+    fallback_policy: str = "SUPPLEMENTARY_THEN_LOCAL_MOCK"
+    manual_review_policy: str = "RECOMMEND_ON_UNCERTAINTY"
+    execution_environment_label: str = "Local environment"
+    provider_transition_notes: list[str] = Field(default_factory=list)
 
 
 class ProviderCapabilityCollection(ContractModel):
@@ -110,3 +142,25 @@ class SessionProviderExecutionStatus(ContractModel):
     provider_keys_used: list[str] = Field(default_factory=list)
     outbound_attempted: bool = False
     fallback_used: bool = False
+    provider_operating_mode: str = PROVIDER_OPERATING_MODE_LIVE_DISABLED
+    execution_environment_label: str | None = None
+    demo_profile_key: str | None = None
+    provider_transition_notes: list[str] = Field(default_factory=list)
+    live_provider_enabled: bool = False
+    preferred_provider_rail: str = "entra_verified_id"
+    fallback_policy: str = "SUPPLEMENTARY_THEN_LOCAL_MOCK"
+    manual_review_policy: str = "RECOMMEND_ON_UNCERTAINTY"
+
+
+class SessionProviderOperatingMode(ContractModel):
+    session_id: str
+    workflow_state: str
+    provider_operating_mode: str = PROVIDER_OPERATING_MODE_LIVE_DISABLED
+    execution_environment_label: str = "Local environment"
+    demo_profile_key: str | None = None
+    preferred_provider_rail: str = "entra_verified_id"
+    enabled_provider_modes: list[str] = Field(default_factory=list)
+    live_provider_enabled: bool = False
+    fallback_policy: str = "SUPPLEMENTARY_THEN_LOCAL_MOCK"
+    manual_review_policy: str = "RECOMMEND_ON_UNCERTAINTY"
+    provider_transition_notes: list[str] = Field(default_factory=list)

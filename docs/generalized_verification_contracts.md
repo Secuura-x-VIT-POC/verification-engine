@@ -39,6 +39,10 @@ The LangGraph layer exists to improve document understanding, credential groupin
 - `provider_execution_traces_payload`
 - `provider_execution_status`
 - `provider_execution_error`
+- `provider_operating_mode`
+- `demo_profile_key`
+- `execution_environment_label`
+- `provider_transition_notes`
 
 ### Agent orchestration artifacts
 
@@ -168,6 +172,9 @@ The `backend/app/verifier_providers/` module is the outbound verifier boundary.
 - credential requirement flag
 - default timeout
 - enabled flag
+- current operating mode
+- execution environment label
+- demo-support flag
 
 ### `ProviderRequest`
 
@@ -194,6 +201,11 @@ The `backend/app/verifier_providers/` module is the outbound verifier boundary.
 - reason codes
 - latency
 - manual-review flag
+- provider operating mode
+- demo profile key
+- execution environment label
+- transition notes
+- demo-vs-live flags
 
 ### `ProviderExecutionTrace`
 
@@ -208,6 +220,36 @@ The `backend/app/verifier_providers/` module is the outbound verifier boundary.
 - HTTP status
 - redacted response summary
 - fallback-used flag
+- provider operating mode
+- demo profile key
+- execution environment label
+- transition notes
+
+### `ProviderTransitionConfig`
+
+- preferred provider rail
+- active provider operating mode
+- enabled provider modes
+- optional demo profile key
+- live-provider-enabled flag
+- fallback policy
+- manual-review policy
+- execution environment label
+- provider transition notes
+
+### `SessionProviderOperatingMode`
+
+- session id
+- workflow state
+- provider operating mode
+- execution environment label
+- active demo profile key
+- preferred provider rail
+- enabled provider modes
+- live-provider-enabled flag
+- fallback policy
+- manual-review policy
+- provider transition notes
 
 Provider technical statuses remain bounded:
 
@@ -218,6 +260,14 @@ Provider technical statuses remain bounded:
 - `BLOCKED`
 - `UNCONFIGURED`
 - `SKIPPED`
+
+Provider operating modes remain bounded:
+
+- `DEMO_MOCK`
+- `LOCAL_MOCK`
+- `EXTERNAL_CONFIGURED`
+- `LIVE_DISABLED`
+- `MANUAL_ONLY`
 
 ## Agent Orchestration Contracts
 
@@ -326,6 +376,8 @@ Current verifier-provider implementations:
 - `IdentityHttpProvider`: optional supplementary HTTP JSON adapter for `identity_db`
 - `AcademicRegistryHttpProvider`: optional supplementary HTTP JSON adapter for `academic_registry`
 
+Stage 8 adds a demo-profile layer behind the same provider contracts so Entra-aligned and supplementary provider paths can return deterministic seeded outputs without pretending that live tenant execution happened.
+
 The verifier registry owns task semantics. Provider adapters only handle capability, outbound transport, and normalization.
 
 ## Runtime Integration
@@ -391,6 +443,8 @@ Provider execution:
 - `GET /session/{session_id}/provider-execution-traces`
 - `GET /session/{session_id}/provider-execution-status`
 - `GET /session/{session_id}/provider-capabilities`
+- `GET /session/{session_id}/provider-operating-mode`
+- `GET /session/{session_id}/demo-profile`
 
 Agent orchestration:
 
@@ -435,16 +489,24 @@ Stage 6 adds provider-backed verifier plumbing, but it still does not:
 - upload full documents by default
 - make outbound provider access mandatory
 
+Stage 8 adds a demo-hardened mock-to-live transition layer, but it still does not:
+
+- require live Entra credentials for normal repo use
+- label demo-mode provider responses as live
+- add a broad admin control surface
+- remove supplementary connectors
+- replace the deterministic trust engine
+
 ## Entra Alignment Notes
 
 - Microsoft Entra Verified ID is the explicit primary trust rail for VC-presentable identity, academic, and certificate-style credentials.
 - Supplementary providers remain available for categories or environments where Entra is not executable.
 - JWT-based login remains acceptable for the current POC, but Microsoft Entra is the target identity and access model.
 
-## Deferred To Stage 8
+## Deferred To Stage 9
 
 - real tenant-specific Microsoft Entra Verified ID configuration and presentation templates
-- richer supplementary provider adapters beyond the current examples
+- broader supplementary provider adapters beyond the current examples
 - explicit reviewer override flows around provider failures or manual review
 - broader grouped-claim execution beyond the current per-credential backbone
 - deeper multi-provider reconciliation and retry policy

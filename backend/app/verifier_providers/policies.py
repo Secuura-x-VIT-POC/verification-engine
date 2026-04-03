@@ -5,7 +5,16 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from .contracts import OUTBOUND_MODE_HTTP_JSON, OUTBOUND_MODE_LOCAL_ONLY
+from .contracts import (
+    OUTBOUND_MODE_HTTP_JSON,
+    OUTBOUND_MODE_LOCAL_ONLY,
+    PROVIDER_OPERATING_MODE_DEMO_MOCK,
+    PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED,
+    PROVIDER_OPERATING_MODE_LIVE_DISABLED,
+    PROVIDER_OPERATING_MODE_LOCAL_MOCK,
+    PROVIDER_OPERATING_MODE_MANUAL_ONLY,
+    ProviderTransitionConfig,
+)
 
 
 SENSITIVE_KEYS = {
@@ -42,6 +51,9 @@ class ProviderConfig:
     require_minimization: bool
     domain_allowlist: tuple[str, ...] = ()
     api_key: str | None = None
+    demo_enabled: bool = True
+    operating_mode: str = PROVIDER_OPERATING_MODE_LIVE_DISABLED
+    execution_environment_label: str = "Local environment"
 
 
 @dataclass(frozen=True)
@@ -54,14 +66,31 @@ class ProviderRuntimePolicy:
     response_size_limit_bytes: int
     global_domain_allowlist: tuple[str, ...] = ()
     provider_configs: dict[str, ProviderConfig] = field(default_factory=dict)
+    transition_config: ProviderTransitionConfig = field(default_factory=ProviderTransitionConfig)
 
     def is_provider_enabled(self, provider_key: str) -> bool:
         config = self.provider_configs.get(provider_key)
-        if config is None:
-            return provider_key == "local_mock"
         if provider_key == "local_mock":
-            return True
-        return self.external_provider_enabled and config.enabled and provider_key in self.enabled_provider_keys
+            return self.transition_config.provider_operating_mode != PROVIDER_OPERATING_MODE_MANUAL_ONLY
+        if config is None:
+            return False
+        if self.transition_config.provider_operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK:
+            return config.demo_enabled and (
+                not self.enabled_provider_keys or provider_key in self.enabled_provider_keys
+            )
+        if self.transition_config.provider_operating_mode != PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED:
+            return False
+        return (
+            self.external_provider_enabled
+            and config.enabled
+            and bool(config.base_url)
+            and provider_key in self.enabled_provider_keys
+        )
+
+    def should_register_provider(self, provider_key: str) -> bool:
+        if provider_key == "local_mock":
+            return self.transition_config.provider_operating_mode != PROVIDER_OPERATING_MODE_MANUAL_ONLY
+        return self.is_provider_enabled(provider_key)
 
     def config_for(self, provider_key: str) -> ProviderConfig | None:
         return self.provider_configs.get(provider_key)
@@ -69,16 +98,20 @@ class ProviderRuntimePolicy:
 
 def load_provider_runtime_policy() -> ProviderRuntimePolicy:
     external_provider_enabled = _read_bool("VERIFIER_EXTERNAL_PROVIDER_ENABLED", default=False)
-    enabled_provider_keys = tuple(
-        value
-        for value in _read_csv("VERIFIER_ENABLED_PROVIDERS", default=["local_mock"])
-        if value
-    )
     default_timeout_ms = _read_int("VERIFIER_PROVIDER_DEFAULT_TIMEOUT_MS", 3000)
     default_retry_budget = _read_int("VERIFIER_PROVIDER_DEFAULT_RETRY_BUDGET", 0)
     request_size_limit_bytes = _read_int("VERIFIER_PROVIDER_REQUEST_SIZE_LIMIT_BYTES", 32_768)
     response_size_limit_bytes = _read_int("VERIFIER_PROVIDER_RESPONSE_SIZE_LIMIT_BYTES", 65_536)
     global_domain_allowlist = tuple(_read_csv("VERIFIER_PROVIDER_DOMAIN_ALLOWLIST"))
+    transition_config = _build_transition_config(external_provider_enabled=external_provider_enabled)
+    enabled_provider_keys = tuple(
+        value
+        for value in _read_csv(
+            "VERIFIER_ENABLED_PROVIDERS",
+            default=_default_enabled_provider_keys(transition_config.provider_operating_mode),
+        )
+        if value
+    )
 
     provider_configs = {
         "entra_verified_id": _build_provider_config(
@@ -87,6 +120,7 @@ def load_provider_runtime_policy() -> ProviderRuntimePolicy:
             default_timeout_ms=default_timeout_ms,
             default_retry_budget=default_retry_budget,
             global_domain_allowlist=global_domain_allowlist,
+            transition_config=transition_config,
         ),
         "identity_http": _build_provider_config(
             provider_key="identity_http",
@@ -94,6 +128,7 @@ def load_provider_runtime_policy() -> ProviderRuntimePolicy:
             default_timeout_ms=default_timeout_ms,
             default_retry_budget=default_retry_budget,
             global_domain_allowlist=global_domain_allowlist,
+            transition_config=transition_config,
         ),
         "academic_registry_http": _build_provider_config(
             provider_key="academic_registry_http",
@@ -101,18 +136,22 @@ def load_provider_runtime_policy() -> ProviderRuntimePolicy:
             default_timeout_ms=default_timeout_ms,
             default_retry_budget=default_retry_budget,
             global_domain_allowlist=global_domain_allowlist,
+            transition_config=transition_config,
         ),
     }
 
     return ProviderRuntimePolicy(
         external_provider_enabled=external_provider_enabled,
-        enabled_provider_keys=enabled_provider_keys or ("local_mock",),
+        enabled_provider_keys=enabled_provider_keys or tuple(
+            _default_enabled_provider_keys(transition_config.provider_operating_mode)
+        ),
         default_timeout_ms=default_timeout_ms,
         default_retry_budget=default_retry_budget,
         request_size_limit_bytes=request_size_limit_bytes,
         response_size_limit_bytes=response_size_limit_bytes,
         global_domain_allowlist=global_domain_allowlist,
         provider_configs=provider_configs,
+        transition_config=transition_config,
     )
 
 
@@ -183,6 +222,7 @@ def _build_provider_config(
     default_timeout_ms: int,
     default_retry_budget: int,
     global_domain_allowlist: tuple[str, ...],
+    transition_config: ProviderTransitionConfig,
 ) -> ProviderConfig:
     env_prefix = f"VERIFIER_PROVIDER_{provider_key.upper()}"
     base_url = os.getenv(f"{env_prefix}_BASE_URL")
@@ -209,10 +249,18 @@ def _build_provider_config(
         require_minimization=_read_bool(f"{env_prefix}_REQUIRE_MINIMIZATION", default=True),
         domain_allowlist=domain_allowlist,
         api_key=os.getenv(f"{env_prefix}_API_KEY"),
+        demo_enabled=_read_bool(f"{env_prefix}_DEMO_ENABLED", default=True),
+        operating_mode=transition_config.provider_operating_mode,
+        execution_environment_label=transition_config.execution_environment_label,
     )
 
 
-def build_local_mock_config() -> ProviderConfig:
+def build_local_mock_config(transition_config: ProviderTransitionConfig | None = None) -> ProviderConfig:
+    resolved_transition = transition_config or ProviderTransitionConfig(
+        provider_operating_mode=PROVIDER_OPERATING_MODE_LOCAL_MOCK,
+        enabled_provider_modes=[PROVIDER_OPERATING_MODE_LOCAL_MOCK],
+        execution_environment_label="Local mock environment",
+    )
     return ProviderConfig(
         provider_key="local_mock",
         provider_label="Local Mock Provider",
@@ -226,7 +274,99 @@ def build_local_mock_config() -> ProviderConfig:
         require_minimization=True,
         domain_allowlist=(),
         api_key=None,
+        demo_enabled=True,
+        operating_mode=resolved_transition.provider_operating_mode,
+        execution_environment_label=resolved_transition.execution_environment_label,
     )
+
+
+def _build_transition_config(*, external_provider_enabled: bool) -> ProviderTransitionConfig:
+    requested_mode = os.getenv("VERIFIER_PROVIDER_OPERATING_MODE")
+    live_provider_enabled = _read_bool(
+        "VERIFIER_LIVE_PROVIDER_ENABLED",
+        default=external_provider_enabled,
+    )
+    operating_mode = _resolve_provider_operating_mode(
+        requested_mode=requested_mode,
+        live_provider_enabled=live_provider_enabled,
+    )
+    enabled_provider_modes = _read_csv(
+        "VERIFIER_ENABLED_PROVIDER_MODES",
+        default=[operating_mode],
+    )
+    execution_environment_label = os.getenv(
+        "VERIFIER_EXECUTION_ENVIRONMENT_LABEL",
+        _default_environment_label(operating_mode),
+    )
+    demo_profile_key = os.getenv("VERIFIER_DEMO_PROFILE_KEY") or None
+
+    notes = [
+        _default_transition_note(operating_mode),
+    ]
+    if operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK and demo_profile_key:
+        notes.append(f"Seeded demo profile '{demo_profile_key}' will be used when the session does not persist an override.")
+
+    return ProviderTransitionConfig(
+        preferred_provider_rail=os.getenv("VERIFIER_PREFERRED_PROVIDER_RAIL", "entra_verified_id").strip() or "entra_verified_id",
+        provider_operating_mode=operating_mode,
+        enabled_provider_modes=[mode for mode in enabled_provider_modes if mode],
+        demo_profile_key=demo_profile_key,
+        live_provider_enabled=live_provider_enabled and operating_mode == PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED,
+        fallback_policy=os.getenv("VERIFIER_FALLBACK_POLICY", "SUPPLEMENTARY_THEN_LOCAL_MOCK"),
+        manual_review_policy=os.getenv("VERIFIER_MANUAL_REVIEW_POLICY", "RECOMMEND_ON_UNCERTAINTY"),
+        execution_environment_label=execution_environment_label,
+        provider_transition_notes=[note for note in notes if note],
+    )
+
+
+def _resolve_provider_operating_mode(*, requested_mode: str | None, live_provider_enabled: bool) -> str:
+    allowed = {
+        PROVIDER_OPERATING_MODE_DEMO_MOCK,
+        PROVIDER_OPERATING_MODE_LOCAL_MOCK,
+        PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED,
+        PROVIDER_OPERATING_MODE_LIVE_DISABLED,
+        PROVIDER_OPERATING_MODE_MANUAL_ONLY,
+    }
+    normalized_requested_mode = str(requested_mode or "").strip().upper()
+    if normalized_requested_mode in allowed:
+        return normalized_requested_mode
+    if live_provider_enabled:
+        return PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED
+    return PROVIDER_OPERATING_MODE_LIVE_DISABLED
+
+
+def _default_enabled_provider_keys(operating_mode: str) -> list[str]:
+    if operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK:
+        return ["entra_verified_id", "identity_http", "academic_registry_http", "local_mock"]
+    if operating_mode == PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED:
+        return ["entra_verified_id", "identity_http", "academic_registry_http", "local_mock"]
+    if operating_mode == PROVIDER_OPERATING_MODE_MANUAL_ONLY:
+        return []
+    return ["local_mock"]
+
+
+def _default_environment_label(operating_mode: str) -> str:
+    if operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK:
+        return "POC demo environment"
+    if operating_mode == PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED:
+        return "External provider environment"
+    if operating_mode == PROVIDER_OPERATING_MODE_MANUAL_ONLY:
+        return "Manual review environment"
+    if operating_mode == PROVIDER_OPERATING_MODE_LOCAL_MOCK:
+        return "Local mock environment"
+    return "Live-disabled environment"
+
+
+def _default_transition_note(operating_mode: str) -> str:
+    if operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK:
+        return "Demo-mock mode is active. Provider results are seeded and normalized locally for presentation."
+    if operating_mode == PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED:
+        return "External provider execution is configured. Live outbound calls remain bounded by the provider policy layer."
+    if operating_mode == PROVIDER_OPERATING_MODE_LOCAL_MOCK:
+        return "Local mock mode is active. No external provider calls will be attempted."
+    if operating_mode == PROVIDER_OPERATING_MODE_MANUAL_ONLY:
+        return "Manual-only mode is active. Credentials without existing evidence should route to manual review."
+    return "Live provider execution is disabled. Supplementary mock or manual fallback paths remain available."
 
 
 def _read_bool(name: str, *, default: bool) -> bool:

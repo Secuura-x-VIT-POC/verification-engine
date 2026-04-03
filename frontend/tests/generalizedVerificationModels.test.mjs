@@ -7,8 +7,10 @@ import {
   normalizeCredentialBundles,
   normalizeCredentialCollection,
   normalizeDocumentProfile,
+  normalizeDemoProfile,
   normalizeProviderCapabilities,
   normalizeProviderExecutionStatus,
+  normalizeProviderOperatingMode,
   normalizeProviderExecutionTraces,
   normalizeVerificationPlan,
   normalizeVerificationTaskResults,
@@ -31,8 +33,10 @@ import {
   createEmptyCredentialAuditCollection,
   createEmptyCredentialCollection,
   createEmptyDocumentProfile,
+  createEmptyDemoProfile,
   createEmptyProviderCapabilityCollection,
   createEmptyProviderExecutionStatus,
+  createEmptyProviderOperatingMode,
   createEmptyProviderExecutionTraceCollection,
   createEmptyVerificationExecutionStatus,
   createEmptySessionOverview,
@@ -42,6 +46,42 @@ import {
 } from "../src/features/generalized-verification/types/contracts.js";
 
 export const checks = [
+  {
+    name: "provider operating mode and demo profile normalization stay stable",
+    run() {
+      const mode = normalizeProviderOperatingMode(
+        {
+          session_id: "session-1",
+          provider_operating_mode: "DEMO_MOCK",
+          execution_environment_label: "POC demo environment",
+          demo_profile_key: "academic_transcript_demo",
+          preferred_provider_rail: "entra_verified_id",
+          enabled_provider_modes: ["DEMO_MOCK"],
+          live_provider_enabled: false,
+          provider_transition_notes: ["Seeded demo profile is active."],
+        },
+        "session-1"
+      );
+      const profile = normalizeDemoProfile(
+        {
+          session_id: "session-1",
+          profile_key: "academic_transcript_demo",
+          profile_label: "Academic transcript demo",
+          description: "Seeded academic scenario.",
+          scenario_family: "academic_document",
+          provider_operating_mode: "DEMO_MOCK",
+          seeded: true,
+          notes: ["Entra demo route."],
+        },
+        "session-1"
+      );
+
+      assert.equal(mode.provider_operating_mode, "DEMO_MOCK");
+      assert.equal(mode.demo_profile_key, "academic_transcript_demo");
+      assert.equal(profile.seeded, true);
+      assert.equal(profile.profile_label, "Academic transcript demo");
+    },
+  },
   {
     name: "normalizeDocumentProfile returns safe defaults for null payloads",
     run() {
@@ -451,12 +491,15 @@ export const checks = [
             {
               request_id: "trace-1",
               provider_key: "identity_http",
+              provider_label: "Supplementary Identity HTTP Provider",
               verifier_key: "identity_db",
               technical_status: "SUCCESS",
               outbound_mode: "HTTP_JSON",
               retry_count: 1,
               response_summary: { source: "fixture" },
               fallback_used: false,
+              provider_operating_mode: "EXTERNAL_CONFIGURED",
+              execution_environment_label: "External provider environment",
             },
           ],
         },
@@ -470,6 +513,9 @@ export const checks = [
           provider_keys_used: ["identity_http"],
           outbound_attempted: true,
           fallback_used: false,
+          provider_operating_mode: "EXTERNAL_CONFIGURED",
+          execution_environment_label: "External provider environment",
+          live_provider_enabled: true,
         },
         "session-1"
       );
@@ -495,6 +541,118 @@ export const checks = [
       assert.equal(summary.overallLabel, "Ready");
       assert.equal(summary.providerKeysUsed[0], "identity_http");
       assert.equal(summary.enabledProviders[0], "Supplementary Identity HTTP Provider");
+      assert.equal(summary.operatingModeLabel, "Live configured");
+    },
+  },
+  {
+    name: "workspace view model surfaces demo-mock messaging honestly",
+    run() {
+      const viewModel = buildWorkspaceViewModel({
+        session: createEmptySessionOverview("session-1"),
+        agentDocumentUnderstanding: createEmptyAgentDocumentUnderstanding("session-1"),
+        agentCredentialCandidates: createEmptyAgentCredentialCandidateCollection("session-1"),
+        agentRouteRecommendations: createEmptyAgentRouteRecommendationCollection("session-1"),
+        agentRunStatus: createEmptyAgentRunStatus("session-1"),
+        documentProfile: createEmptyDocumentProfile("session-1"),
+        credentials: normalizeCredentialCollection(
+          {
+            session_id: "session-1",
+            credentials: [
+              {
+                credential_id: "name-1",
+                label: "Candidate Name",
+                category: "identity",
+                value: "Kanak Sharma",
+                requires_verification: true,
+              },
+            ],
+          },
+          "session-1"
+        ),
+        verificationPlan: normalizeVerificationPlan(
+          {
+            session_id: "session-1",
+            route_decisions: [
+              {
+                credential_id: "name-1",
+                selected_verifier_key: "identity_db",
+                selected_verifier_label: "Identity Database",
+                route_reason: "Identity credential.",
+                preferred_provider_key: "entra_verified_id",
+                preferred_provider_label: "Microsoft Entra Verified ID",
+                planned_provider_key: "entra_verified_id",
+                planned_provider_label: "Microsoft Entra Verified ID",
+                fallback_verifiers: ["manual_review"],
+                manual_review_recommended: false,
+              },
+            ],
+            tasks: [],
+          },
+          "session-1"
+        ),
+        verificationTaskResults: createEmptyVerificationTaskResultCollection("session-1"),
+        credentialBundles: createEmptyCredentialBundleCollection("session-1"),
+        credentialAudits: createEmptyCredentialAuditCollection("session-1"),
+        verificationSummary: createEmptyVerificationSummary("session-1"),
+        analysisStatus: createEmptyAnalysisStatus("session-1"),
+        executionStatus: createEmptyVerificationExecutionStatus("session-1"),
+        providerExecutionTraces: createEmptyProviderExecutionTraceCollection("session-1"),
+        providerExecutionStatus: normalizeProviderExecutionStatus(
+          {
+            session_id: "session-1",
+            provider_execution_status: "READY",
+            provider_operating_mode: "DEMO_MOCK",
+            execution_environment_label: "POC demo environment",
+            demo_profile_key: "academic_transcript_demo",
+            provider_transition_notes: ["Demo-mock mode is active."],
+          },
+          "session-1"
+        ),
+        providerOperatingMode: normalizeProviderOperatingMode(
+          {
+            session_id: "session-1",
+            provider_operating_mode: "DEMO_MOCK",
+            execution_environment_label: "POC demo environment",
+            demo_profile_key: "academic_transcript_demo",
+            provider_transition_notes: ["Demo-mock mode is active."],
+          },
+          "session-1"
+        ),
+        providerCapabilities: normalizeProviderCapabilities(
+          {
+            session_id: "session-1",
+            capabilities: [
+              {
+                provider_key: "entra_verified_id",
+                provider_label: "Microsoft Entra Verified ID",
+                supported_verifier_keys: ["identity_db"],
+                supported_categories: ["identity"],
+                enabled: true,
+                operating_mode: "DEMO_MOCK",
+                demo_supported: true,
+              },
+            ],
+          },
+          "session-1"
+        ),
+        demoProfile: normalizeDemoProfile(
+          {
+            session_id: "session-1",
+            profile_key: "academic_transcript_demo",
+            profile_label: "Academic transcript demo",
+            description: "Seeded academic scenario.",
+            scenario_family: "academic_document",
+            provider_operating_mode: "DEMO_MOCK",
+            seeded: true,
+            notes: ["Entra demo route."],
+          },
+          "session-1"
+        ),
+      });
+
+      assert.match(viewModel.messages.provider, /demo-mock mode/i);
+      assert.equal(viewModel.providerExecutionSummary.operatingModeLabel, "Demo-mock");
+      assert.match(viewModel.messages.providerMode, /Demo-mock mode is active/i);
     },
   },
   {

@@ -8,8 +8,10 @@ import {
   createEmptyCredentialBundleCollection,
   createEmptyCredentialCollection,
   createEmptyDocumentProfile,
+  createEmptyDemoProfile,
   createEmptyProviderCapabilityCollection,
   createEmptyProviderExecutionStatus,
+  createEmptyProviderOperatingMode,
   createEmptyProviderExecutionTraceCollection,
   createEmptyVerificationExecutionStatus,
   createEmptySessionOverview,
@@ -348,6 +350,11 @@ export function normalizeProviderExecutionTraces(payload, sessionId = "") {
         http_status: asInteger(normalizedTrace.http_status),
         response_summary: asObject(normalizedTrace.response_summary),
         fallback_used: asBoolean(normalizedTrace.fallback_used),
+        provider_label: asNullableString(normalizedTrace.provider_label),
+        provider_operating_mode: asString(normalizedTrace.provider_operating_mode, "LIVE_DISABLED"),
+        demo_profile_key: asNullableString(normalizedTrace.demo_profile_key),
+        execution_environment_label: asNullableString(normalizedTrace.execution_environment_label),
+        transition_notes: asStringArray(normalizedTrace.transition_notes),
       };
     }),
   };
@@ -365,6 +372,14 @@ export function normalizeProviderExecutionStatus(payload, sessionId = "") {
     provider_keys_used: asStringArray(status.provider_keys_used),
     outbound_attempted: asBoolean(status.outbound_attempted),
     fallback_used: asBoolean(status.fallback_used),
+    provider_operating_mode: asString(status.provider_operating_mode, "LIVE_DISABLED"),
+    execution_environment_label: asNullableString(status.execution_environment_label),
+    demo_profile_key: asNullableString(status.demo_profile_key),
+    provider_transition_notes: asStringArray(status.provider_transition_notes),
+    live_provider_enabled: asBoolean(status.live_provider_enabled),
+    preferred_provider_rail: asString(status.preferred_provider_rail, "entra_verified_id"),
+    fallback_policy: asString(status.fallback_policy, "SUPPLEMENTARY_THEN_LOCAL_MOCK"),
+    manual_review_policy: asString(status.manual_review_policy, "RECOMMEND_ON_UNCERTAINTY"),
   };
 }
 
@@ -387,8 +402,42 @@ export function normalizeProviderCapabilities(payload, sessionId = "") {
         requires_credentials: asBoolean(normalizedCapability.requires_credentials),
         default_timeout_ms: asInteger(normalizedCapability.default_timeout_ms) ?? 0,
         enabled: asBoolean(normalizedCapability.enabled),
+        operating_mode: asString(normalizedCapability.operating_mode, "LIVE_DISABLED"),
+        execution_environment_label: asNullableString(normalizedCapability.execution_environment_label),
+        demo_supported: asBoolean(normalizedCapability.demo_supported),
       };
     }),
+  };
+}
+
+export function normalizeProviderOperatingMode(payload, sessionId = "") {
+  const mode = { ...createEmptyProviderOperatingMode(sessionId), ...asObject(payload) };
+  return {
+    session_id: asString(mode.session_id, sessionId),
+    workflow_state: asString(mode.workflow_state, "UNKNOWN"),
+    provider_operating_mode: asString(mode.provider_operating_mode, "LIVE_DISABLED"),
+    execution_environment_label: asString(mode.execution_environment_label, "Local environment"),
+    demo_profile_key: asNullableString(mode.demo_profile_key),
+    preferred_provider_rail: asString(mode.preferred_provider_rail, "entra_verified_id"),
+    enabled_provider_modes: asStringArray(mode.enabled_provider_modes),
+    live_provider_enabled: asBoolean(mode.live_provider_enabled),
+    fallback_policy: asString(mode.fallback_policy, "SUPPLEMENTARY_THEN_LOCAL_MOCK"),
+    manual_review_policy: asString(mode.manual_review_policy, "RECOMMEND_ON_UNCERTAINTY"),
+    provider_transition_notes: asStringArray(mode.provider_transition_notes),
+  };
+}
+
+export function normalizeDemoProfile(payload, sessionId = "") {
+  const profile = { ...createEmptyDemoProfile(sessionId), ...asObject(payload) };
+  return {
+    session_id: asString(profile.session_id, sessionId),
+    profile_key: asNullableString(profile.profile_key),
+    profile_label: asString(profile.profile_label, "No seeded demo profile"),
+    description: asString(profile.description, "No seeded demo profile is active for this session."),
+    scenario_family: asString(profile.scenario_family, "none"),
+    provider_operating_mode: asString(profile.provider_operating_mode, "LIVE_DISABLED"),
+    seeded: asBoolean(profile.seeded),
+    notes: asStringArray(profile.notes),
   };
 }
 
@@ -499,6 +548,10 @@ export function normalizeSessionOverview(payload, sessionId = "") {
     agent_run_error: asNullableString(session.agent_run_error),
     provider_execution_status: asNullableString(session.provider_execution_status),
     provider_execution_error: asNullableString(session.provider_execution_error),
+    provider_operating_mode: asNullableString(session.provider_operating_mode),
+    demo_profile_key: asNullableString(session.demo_profile_key),
+    execution_environment_label: asNullableString(session.execution_environment_label),
+    provider_transition_notes: asStringArray(session.provider_transition_notes),
     purge_status: asNullableString(session.purge_status),
     purge_error: asNullableString(session.purge_error),
     created_at: asNullableString(session.created_at),

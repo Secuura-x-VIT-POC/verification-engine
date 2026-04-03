@@ -7,6 +7,7 @@ from ..verifier_providers import (
     PROVIDER_EXECUTION_STATUS_FAILED,
     PROVIDER_EXECUTION_STATUS_RUNNING,
     ProviderExecutionRuntime,
+    get_provider_operating_mode_for_session,
 )
 from ..verification_domain.adapters import build_session_credentials, build_session_verification_plan
 from ..verification_domain.contracts import SessionCredentialCollection, SessionVerificationPlan
@@ -69,6 +70,10 @@ def build_execution_artifacts(
     )
     artifacts["provider_execution_status"] = runtime.infer_status()
     artifacts["provider_execution_error"] = runtime.error
+    artifacts["provider_operating_mode"] = runtime.operating_context.provider_operating_mode
+    artifacts["demo_profile_key"] = runtime.operating_context.demo_profile_key
+    artifacts["execution_environment_label"] = runtime.operating_context.execution_environment_label
+    artifacts["provider_transition_notes"] = list(runtime.operating_context.provider_transition_notes)
     return artifacts
 
 
@@ -83,6 +88,10 @@ def persist_execution_artifacts(
     provider_execution_traces=_UNSET,
     provider_execution_status=_UNSET,
     provider_execution_error=_UNSET,
+    provider_operating_mode=_UNSET,
+    demo_profile_key=_UNSET,
+    execution_environment_label=_UNSET,
+    provider_transition_notes=_UNSET,
 ) -> None:
     if verification_task_results is not _UNSET:
         session.verification_task_results_payload = _dump_model(verification_task_results)
@@ -100,6 +109,14 @@ def persist_execution_artifacts(
         session.provider_execution_status = provider_execution_status
     if provider_execution_error is not _UNSET:
         session.provider_execution_error = provider_execution_error
+    if provider_operating_mode is not _UNSET and hasattr(session, "provider_operating_mode"):
+        session.provider_operating_mode = provider_operating_mode
+    if demo_profile_key is not _UNSET and hasattr(session, "demo_profile_key"):
+        session.demo_profile_key = demo_profile_key
+    if execution_environment_label is not _UNSET and hasattr(session, "execution_environment_label"):
+        session.execution_environment_label = execution_environment_label
+    if provider_transition_notes is not _UNSET and hasattr(session, "provider_transition_notes"):
+        session.provider_transition_notes = provider_transition_notes
 
 
 def build_and_persist_execution_artifacts(
@@ -117,12 +134,17 @@ def build_and_persist_execution_artifacts(
         SessionVerificationPlan,
         getattr(session, "verification_plan_payload", None),
     )
+    provider_operating_mode = get_provider_operating_mode_for_session(session)
     persist_execution_artifacts(
         session,
         verification_execution_status=EXECUTION_STATUS_RUNNING,
         verification_execution_error=None,
         provider_execution_status=PROVIDER_EXECUTION_STATUS_RUNNING,
         provider_execution_error=None,
+        provider_operating_mode=provider_operating_mode.provider_operating_mode,
+        demo_profile_key=provider_operating_mode.demo_profile_key,
+        execution_environment_label=provider_operating_mode.execution_environment_label,
+        provider_transition_notes=list(provider_operating_mode.provider_transition_notes),
     )
     artifacts = build_execution_artifacts(
         session.id,
@@ -133,6 +155,7 @@ def build_and_persist_execution_artifacts(
         credentials=resolved_credentials,
         verification_plan=resolved_verification_plan,
         registry=registry,
+        provider_runtime=ProviderExecutionRuntime(operating_context=provider_operating_mode),
     )
     persist_execution_artifacts(
         session,
@@ -144,6 +167,10 @@ def build_and_persist_execution_artifacts(
         provider_execution_traces=artifacts["provider_execution_traces"],
         provider_execution_status=artifacts["provider_execution_status"],
         provider_execution_error=artifacts["provider_execution_error"],
+        provider_operating_mode=artifacts["provider_operating_mode"],
+        demo_profile_key=artifacts["demo_profile_key"],
+        execution_environment_label=artifacts["execution_environment_label"],
+        provider_transition_notes=artifacts["provider_transition_notes"],
     )
     return artifacts
 

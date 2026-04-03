@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..contracts import ProviderRequest, ProviderResponse
+from ..contracts import PROVIDER_OPERATING_MODE_DEMO_MOCK, ProviderRequest, ProviderResponse
 from ..normalizers import as_dict, as_float, as_string_list
 from .generic_http_json import GenericHttpJsonProvider
 
@@ -80,4 +80,25 @@ class EntraVerifiedIdProvider(GenericHttpJsonProvider):
             reason_codes=reason_codes,
             latency_ms=int(latency_ms or 0),
             manual_review_recommended=manual_review_recommended,
+            operating_mode=str(
+                normalized.get("operating_mode")
+                or request.metadata.get("provider_operating_mode")
+                or self.config.operating_mode
+            ),
+            demo_profile_key=normalized.get("demo_profile_key") or request.metadata.get("demo_profile_key"),
+            execution_environment_label=(
+                normalized.get("execution_environment_label")
+                or request.metadata.get("execution_environment_label")
+                or self.config.execution_environment_label
+            ),
+            transition_notes=as_string_list(
+                normalized.get("transition_notes")
+                or request.metadata.get("provider_transition_notes")
+            ),
+            is_demo_result=bool(
+                normalized.get("is_demo_result")
+                or str(request.metadata.get("provider_operating_mode") or self.config.operating_mode)
+                == PROVIDER_OPERATING_MODE_DEMO_MOCK
+            ),
+            is_live_result=bool(normalized.get("is_live_result") or http_status),
         )

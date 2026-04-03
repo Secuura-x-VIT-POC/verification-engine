@@ -71,6 +71,10 @@ class DatabaseSchemaSyncTests(unittest.TestCase):
         self.assertIn("provider_execution_traces_payload", columns)
         self.assertIn("provider_execution_status", columns)
         self.assertIn("provider_execution_error", columns)
+        self.assertIn("provider_operating_mode", columns)
+        self.assertIn("demo_profile_key", columns)
+        self.assertIn("execution_environment_label", columns)
+        self.assertIn("provider_transition_notes", columns)
         self.assertIn("verification_execution_status", columns)
         self.assertIn("verification_execution_error", columns)
 

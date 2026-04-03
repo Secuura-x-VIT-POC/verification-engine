@@ -9,8 +9,10 @@ import {
   normalizeCredentialAudits,
   normalizeCredentialCollection,
   normalizeDocumentProfile,
+  normalizeDemoProfile,
   normalizeProviderCapabilities,
   normalizeProviderExecutionStatus,
+  normalizeProviderOperatingMode,
   normalizeProviderExecutionTraces,
   normalizeSessionOverview,
   normalizeVerificationExecutionStatus,
@@ -99,9 +101,19 @@ export async function getProviderExecutionStatus(sessionId, token) {
   return normalizeProviderExecutionStatus(payload, sessionId);
 }
 
+export async function getProviderOperatingMode(sessionId, token) {
+  const payload = await apiRequest(`/session/${sessionId}/provider-operating-mode`, { token });
+  return normalizeProviderOperatingMode(payload, sessionId);
+}
+
 export async function getProviderCapabilities(sessionId, token) {
   const payload = await apiRequest(`/session/${sessionId}/provider-capabilities`, { token });
   return normalizeProviderCapabilities(payload, sessionId);
+}
+
+export async function getDemoProfile(sessionId, token) {
+  const payload = await apiRequest(`/session/${sessionId}/demo-profile`, { token });
+  return normalizeDemoProfile(payload, sessionId);
 }
 
 export async function getSessionDocumentBlob(sessionId, token) {

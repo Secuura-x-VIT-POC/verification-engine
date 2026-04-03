@@ -4,8 +4,13 @@ import time
 import uuid
 from urllib.parse import urljoin
 
+from ...demo_profiles import build_demo_provider_fixture
 from ..base import VerifierProvider
 from ..contracts import (
+    OUTBOUND_MODE_HTTP_JSON,
+    OUTBOUND_MODE_LOCAL_ONLY,
+    PROVIDER_OPERATING_MODE_DEMO_MOCK,
+    PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED,
     PROVIDER_TECHNICAL_STATUS_DISABLED,
     PROVIDER_TECHNICAL_STATUS_FAILED,
     PROVIDER_TECHNICAL_STATUS_SUCCESS,
@@ -46,6 +51,8 @@ class GenericHttpJsonProvider(VerifierProvider):
         self.endpoint_path = endpoint_path
 
     def get_capabilities(self) -> ProviderCapability:
+        demo_enabled = self.config.operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK and self.config.demo_enabled
+        live_enabled = self.config.enabled and bool(self.config.base_url)
         return ProviderCapability(
             provider_key=self.provider_key,
             provider_label=self.provider_label,
@@ -55,9 +62,12 @@ class GenericHttpJsonProvider(VerifierProvider):
             supports_partial_match=True,
             supports_document_upload=self.config.allow_document_upload,
             supports_field_lookup=True,
-            requires_credentials=True,
+            requires_credentials=self.config.operating_mode == PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED,
             default_timeout_ms=self.config.timeout_ms,
-            enabled=self.config.enabled and bool(self.config.base_url),
+            enabled=demo_enabled or live_enabled,
+            operating_mode=self.config.operating_mode,
+            execution_environment_label=self.config.execution_environment_label,
+            demo_supported=self.config.demo_enabled,
         )
 
     def prepare_request(
@@ -85,6 +95,9 @@ class GenericHttpJsonProvider(VerifierProvider):
         )
 
     def execute(self, request: ProviderRequest) -> ProviderResponse:
+        operating_mode = str(request.metadata.get("provider_operating_mode") or self.config.operating_mode)
+        if operating_mode == PROVIDER_OPERATING_MODE_DEMO_MOCK:
+            return self._execute_demo_request(request)
         if not self.config.enabled:
             return self.normalize_response(
                 request=request,
@@ -134,6 +147,7 @@ class GenericHttpJsonProvider(VerifierProvider):
         payload = dict(response.payload or {})
         payload["response_summary"] = as_dict(payload.get("response_summary"))
         payload["response_summary"]["retry_count"] = response.retry_count
+        payload["response_summary"].setdefault("outbound_mode", OUTBOUND_MODE_HTTP_JSON)
         return self.normalize_response(
             request=request,
             payload=payload,
@@ -170,4 +184,61 @@ class GenericHttpJsonProvider(VerifierProvider):
             reason_codes=as_string_list(normalized.get("reason_codes")),
             latency_ms=int(latency_ms or 0),
             manual_review_recommended=bool(normalized.get("manual_review_recommended")),
+            operating_mode=str(normalized.get("operating_mode") or request.metadata.get("provider_operating_mode") or self.config.operating_mode),
+            demo_profile_key=normalized.get("demo_profile_key") or request.metadata.get("demo_profile_key"),
+            execution_environment_label=(
+                normalized.get("execution_environment_label")
+                or request.metadata.get("execution_environment_label")
+                or self.config.execution_environment_label
+            ),
+            transition_notes=as_string_list(
+                normalized.get("transition_notes")
+                or request.metadata.get("provider_transition_notes")
+            ),
+            is_demo_result=bool(
+                normalized.get("is_demo_result")
+                or str(request.metadata.get("provider_operating_mode") or self.config.operating_mode)
+                == PROVIDER_OPERATING_MODE_DEMO_MOCK
+            ),
+            is_live_result=bool(normalized.get("is_live_result") or http_status),
+        )
+
+    def _execute_demo_request(self, request: ProviderRequest) -> ProviderResponse:
+        demo_profile_key = str(request.metadata.get("demo_profile_key") or "").strip()
+        fixture = build_demo_provider_fixture(
+            provider_key=self.provider_key,
+            provider_label=self.provider_label,
+            verifier_key=request.verifier_key,
+            input_payload=request.input_payload,
+            metadata=request.metadata,
+            profile_key=demo_profile_key,
+        )
+        payload = {
+            "technical_status": PROVIDER_TECHNICAL_STATUS_SUCCESS,
+            "response_summary": {
+                **dict(fixture.response_summary or {}),
+                "outbound_mode": OUTBOUND_MODE_LOCAL_ONLY,
+            },
+            "matched_fields": fixture.matched_fields,
+            "mismatched_fields": fixture.mismatched_fields,
+            "missing_fields": fixture.missing_fields,
+            "confidence": fixture.confidence,
+            "reason_codes": fixture.reason_codes,
+            "manual_review_recommended": fixture.manual_review_recommended,
+            "operating_mode": request.metadata.get("provider_operating_mode") or self.config.operating_mode,
+            "demo_profile_key": demo_profile_key or None,
+            "execution_environment_label": (
+                request.metadata.get("execution_environment_label")
+                or self.config.execution_environment_label
+            ),
+            "transition_notes": request.metadata.get("provider_transition_notes") or [],
+            "is_demo_result": True,
+            "is_live_result": False,
+        }
+        return self.normalize_response(
+            request=request,
+            payload=payload,
+            technical_status=PROVIDER_TECHNICAL_STATUS_SUCCESS,
+            http_status=None,
+            latency_ms=fixture.latency_ms,
         )

@@ -258,6 +258,14 @@ def build_and_persist_initial_analysis(session) -> dict[str, Any]:
         session.provider_execution_status = "NOT_STARTED"
     if hasattr(session, "provider_execution_error"):
         session.provider_execution_error = None
+    if hasattr(session, "provider_operating_mode"):
+        session.provider_operating_mode = None
+    if hasattr(session, "demo_profile_key"):
+        session.demo_profile_key = None
+    if hasattr(session, "execution_environment_label"):
+        session.execution_environment_label = None
+    if hasattr(session, "provider_transition_notes"):
+        session.provider_transition_notes = None
     if hasattr(session, "verification_execution_status"):
         session.verification_execution_status = "NOT_STARTED"
     if hasattr(session, "verification_execution_error"):

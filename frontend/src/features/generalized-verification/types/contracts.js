@@ -36,6 +36,14 @@ export const PROVIDER_EXECUTION_STATUS_META = Object.freeze({
   FAILED: "Failed",
 });
 
+export const PROVIDER_OPERATING_MODE_META = Object.freeze({
+  DEMO_MOCK: "Demo-mock",
+  LOCAL_MOCK: "Local mock",
+  EXTERNAL_CONFIGURED: "Live configured",
+  LIVE_DISABLED: "Live disabled",
+  MANUAL_ONLY: "Manual only",
+});
+
 export const AGENT_RUN_STATUS_META = Object.freeze({
   NOT_STARTED: "Not started",
   RUNNING: "Running",
@@ -166,6 +174,14 @@ export function createEmptyProviderExecutionStatus(sessionId = "") {
     provider_keys_used: [],
     outbound_attempted: false,
     fallback_used: false,
+    provider_operating_mode: "LIVE_DISABLED",
+    execution_environment_label: null,
+    demo_profile_key: null,
+    provider_transition_notes: [],
+    live_provider_enabled: false,
+    preferred_provider_rail: "entra_verified_id",
+    fallback_policy: "SUPPLEMENTARY_THEN_LOCAL_MOCK",
+    manual_review_policy: "RECOMMEND_ON_UNCERTAINTY",
   };
 }
 
@@ -173,6 +189,35 @@ export function createEmptyProviderCapabilityCollection(sessionId = "") {
   return {
     session_id: sessionId,
     capabilities: [],
+  };
+}
+
+export function createEmptyProviderOperatingMode(sessionId = "") {
+  return {
+    session_id: sessionId,
+    workflow_state: "UNKNOWN",
+    provider_operating_mode: "LIVE_DISABLED",
+    execution_environment_label: "Local environment",
+    demo_profile_key: null,
+    preferred_provider_rail: "entra_verified_id",
+    enabled_provider_modes: [],
+    live_provider_enabled: false,
+    fallback_policy: "SUPPLEMENTARY_THEN_LOCAL_MOCK",
+    manual_review_policy: "RECOMMEND_ON_UNCERTAINTY",
+    provider_transition_notes: [],
+  };
+}
+
+export function createEmptyDemoProfile(sessionId = "") {
+  return {
+    session_id: sessionId,
+    profile_key: null,
+    profile_label: "No seeded demo profile",
+    description: "No seeded demo profile is active for this session.",
+    scenario_family: "none",
+    provider_operating_mode: "LIVE_DISABLED",
+    seeded: false,
+    notes: [],
   };
 }
 
@@ -240,6 +285,10 @@ export function createEmptySessionOverview(sessionId = "") {
     agent_run_error: null,
     provider_execution_status: null,
     provider_execution_error: null,
+    provider_operating_mode: null,
+    demo_profile_key: null,
+    execution_environment_label: null,
+    provider_transition_notes: [],
     purge_status: null,
     purge_error: null,
     created_at: null,

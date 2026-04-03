@@ -25,6 +25,7 @@ The product remains a generic PDF verification framework. Recruitment is only a 
 
 - The deterministic provider is the default path.
 - External providers must remain disabled by default.
+- Demo-mock provider execution is intentional for presentation and must never be mislabeled as live.
 - Any future real provider integration belongs behind `providers/`.
 - Do not hardcode vendor-specific logic into node, workflow, or UI code.
 - Verifier-provider execution is a separate layer under `backend/app/verifier_providers/` and must remain distinct from agent providers.

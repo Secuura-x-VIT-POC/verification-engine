@@ -1,0 +1,28 @@
+{
+  "profiles": [
+    {
+      "profile_key": "academic_transcript_demo",
+      "profile_label": "Academic transcript demo",
+      "document_family": "academic_document",
+      "summary": "Entra-first seeded academic scenario with verified issuer/name fields and amber identifier gaps."
+    },
+    {
+      "profile_key": "certificate_partial_demo",
+      "profile_label": "Certificate partial demo",
+      "document_family": "certificate_document",
+      "summary": "Seeded certificate scenario that shows partial registry evidence and missing supporting claims."
+    },
+    {
+      "profile_key": "identity_mismatch_demo",
+      "profile_label": "Identity mismatch demo",
+      "document_family": "identity_document",
+      "summary": "Seeded identity scenario that demonstrates contradiction handling and red mismatch results."
+    },
+    {
+      "profile_key": "mixed_manual_review_demo",
+      "profile_label": "Mixed manual-review demo",
+      "document_family": "mixed_document",
+      "summary": "Seeded mixed-document scenario that emphasizes manual-review fallbacks."
+    }
+  ]
+}

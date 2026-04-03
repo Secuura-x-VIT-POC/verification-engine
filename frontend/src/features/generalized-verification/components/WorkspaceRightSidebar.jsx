@@ -25,6 +25,8 @@ export default function WorkspaceRightSidebar({
   providerExecutionStatusLabel,
   providerExecutionStatus,
   providerExecutionSummary,
+  providerOperatingMode,
+  demoProfile,
   taskExecutionSummary,
   routingSummary,
   verificationSummary,
@@ -127,6 +129,12 @@ export default function WorkspaceRightSidebar({
             <strong>Status:</strong> {providerExecutionStatusLabel}
           </span>
           <span>
+            <strong>Mode:</strong> {providerExecutionSummary.operatingModeLabel}
+          </span>
+          <span>
+            <strong>Environment:</strong> {providerOperatingMode.execution_environment_label || "Not available"}
+          </span>
+          <span>
             <strong>Primary trust rail:</strong> {providerExecutionSummary.primaryTrustRailLabel}
           </span>
           <span>
@@ -142,6 +150,12 @@ export default function WorkspaceRightSidebar({
             <strong>Fallback used:</strong> {providerExecutionSummary.fallbackUsed ? "Yes" : "No"}
           </span>
         </div>
+
+        {demoProfile.seeded ? (
+          <p className="muted">
+            Demo profile: <strong>{demoProfile.profile_label}</strong>
+          </p>
+        ) : null}
 
         {providerExecutionStatus.provider_execution_error ? (
           <p className="error-text">{providerExecutionStatus.provider_execution_error}</p>
@@ -162,6 +176,16 @@ export default function WorkspaceRightSidebar({
         ) : (
           <p className="muted">No external providers are enabled. The bounded local mock path remains available.</p>
         )}
+        {demoProfile.seeded ? <p className="muted">{demoProfile.description}</p> : null}
+        {providerOperatingMode.provider_transition_notes.length ? (
+          <div className="gv-warning-list">
+            {providerOperatingMode.provider_transition_notes.map((note) => (
+              <p key={note} className="muted">
+                {note}
+              </p>
+            ))}
+          </div>
+        ) : null}
         {!providerExecutionSummary.primaryTrustRailEnabled ? (
           <p className="muted">
             Microsoft Entra Verified ID is the primary VC trust rail for Entra-aligned credentials, but it is not

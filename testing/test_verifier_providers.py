@@ -84,6 +84,25 @@ class ProviderRegistryTests(unittest.TestCase):
         self.assertIsNotNone(provider)
         self.assertEqual(provider.provider_key, "local_mock")
 
+    def test_registry_exposes_entra_demo_provider_when_demo_mode_is_enabled(self):
+        with patch.dict(
+            os.environ,
+            {
+                "VERIFIER_PROVIDER_OPERATING_MODE": "DEMO_MOCK",
+            },
+            clear=False,
+        ):
+            registry = build_default_provider_registry()
+
+        provider = registry.find_provider(
+            verifier_key="identity_db",
+            category="identity",
+            preferred_provider_key="entra_verified_id",
+        )
+
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.provider_key, "entra_verified_id")
+
     def test_registry_prefers_entra_verified_id_when_enabled(self):
         with patch.dict(
             os.environ,
@@ -219,6 +238,110 @@ class ProviderBackedExecutionTests(unittest.TestCase):
         self.assertEqual(result.raw_result_summary["provider_label"], "Microsoft Entra Verified ID")
         self.assertEqual(trace.provider_key, "entra_verified_id")
         self.assertEqual(trace.response_summary["trust_rail"], "Microsoft Entra Verified ID")
+
+    def test_execution_uses_seeded_entra_demo_mode_when_explicitly_enabled(self):
+        credentials, plan = self._build_identity_inputs(preferred_provider_key="entra_verified_id")
+
+        with patch.dict(
+            os.environ,
+            {
+                "VERIFIER_PROVIDER_OPERATING_MODE": "DEMO_MOCK",
+                "VERIFIER_DEMO_PROFILE_KEY": "identity_mismatch_demo",
+            },
+            clear=False,
+        ):
+            artifacts = build_execution_artifacts(
+                "provider-demo-session",
+                {"document_type": "identity_document"},
+                credentials=credentials,
+                verification_plan=plan,
+            )
+
+        result = artifacts["task_results"].results[0]
+        trace = artifacts["provider_execution_traces"].traces[0]
+
+        self.assertEqual(result.raw_result_summary["provider_key"], "entra_verified_id")
+        self.assertEqual(result.raw_result_summary["provider_operating_mode"], "DEMO_MOCK")
+        self.assertTrue(result.raw_result_summary["provider_is_demo_result"])
+        self.assertEqual(trace.provider_operating_mode, "DEMO_MOCK")
+        self.assertEqual(trace.demo_profile_key, "identity_mismatch_demo")
+        self.assertEqual(trace.outbound_mode, "LOCAL_ONLY")
+        self.assertEqual(artifacts["provider_operating_mode"], "DEMO_MOCK")
+        self.assertEqual(artifacts["demo_profile_key"], "identity_mismatch_demo")
+
+    def test_execution_can_use_supplementary_demo_provider_when_planned(self):
+        credentials = SessionCredentialCollection(
+            session_id="provider-demo-academic",
+            document_type="academic_credential",
+            credentials=[
+                ExtractedCredential(
+                    credential_id="credential-1",
+                    label="Credential",
+                    category="academic",
+                    value="BTech",
+                    normalized_value="BTech",
+                    confidence=0.96,
+                    page=1,
+                    bounding_box=BoundingBox(page=1, x0=10, y0=10, x1=40, y1=20),
+                    requires_verification=True,
+                )
+            ],
+        )
+        plan = SessionVerificationPlan(
+            session_id="provider-demo-academic",
+            document_type="academic_credential",
+            route_decisions=[
+                VerifierRouteDecision(
+                    credential_id="credential-1",
+                    selected_verifier_key="academic_registry",
+                    selected_verifier_label="Academic Registry",
+                    route_reason="academic",
+                    preferred_provider_key="entra_verified_id",
+                    preferred_provider_label="Microsoft Entra Verified ID",
+                    planned_provider_key="academic_registry_http",
+                    planned_provider_label="Supplementary Academic Registry HTTP Provider",
+                )
+            ],
+            tasks=[
+                VerificationTask(
+                    task_id="task-academic-1",
+                    credential_id="credential-1",
+                    verifier_key="academic_registry",
+                    verifier_label="Academic Registry",
+                    verification_type="academic",
+                    required=True,
+                    status="PLANNED",
+                    input_payload={
+                        "label": "Credential",
+                        "value": "BTech",
+                        "preferred_provider_key": "entra_verified_id",
+                        "preferred_provider_label": "Microsoft Entra Verified ID",
+                        "planned_provider_key": "academic_registry_http",
+                        "planned_provider_label": "Supplementary Academic Registry HTTP Provider",
+                    },
+                )
+            ],
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "VERIFIER_PROVIDER_OPERATING_MODE": "DEMO_MOCK",
+                "VERIFIER_DEMO_PROFILE_KEY": "certificate_partial_demo",
+            },
+            clear=False,
+        ):
+            artifacts = build_execution_artifacts(
+                "provider-demo-academic",
+                {"document_type": "academic_credential"},
+                credentials=credentials,
+                verification_plan=plan,
+            )
+
+        result = artifacts["task_results"].results[0]
+        self.assertEqual(result.raw_result_summary["provider_key"], "academic_registry_http")
+        self.assertEqual(result.raw_result_summary["provider_operating_mode"], "DEMO_MOCK")
+        self.assertTrue(result.raw_result_summary["provider_is_demo_result"])
 
     def test_execution_falls_back_safely_when_provider_domain_is_blocked(self):
         credentials, plan = self._build_identity_inputs()
@@ -364,6 +487,7 @@ class ProviderPersistenceAndApiTests(unittest.TestCase):
         db.refresh(session)
 
         self.assertEqual(session.provider_execution_status, "READY")
+        self.assertEqual(session.provider_operating_mode, "LIVE_DISABLED")
         self.assertIsNotNone(session.provider_execution_traces_payload)
         trace_payload = session.provider_execution_traces_payload["traces"][0]
         self.assertNotIn("input_payload", trace_payload)
@@ -385,14 +509,52 @@ class ProviderPersistenceAndApiTests(unittest.TestCase):
 
         traces_response = self.client.get("/session/provider-empty-session/provider-execution-traces")
         status_response = self.client.get("/session/provider-empty-session/provider-execution-status")
+        mode_response = self.client.get("/session/provider-empty-session/provider-operating-mode")
+        profile_response = self.client.get("/session/provider-empty-session/demo-profile")
         capabilities_response = self.client.get("/session/provider-empty-session/provider-capabilities")
 
         self.assertEqual(traces_response.status_code, 200)
         self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(mode_response.status_code, 200)
+        self.assertEqual(profile_response.status_code, 200)
         self.assertEqual(capabilities_response.status_code, 200)
         self.assertEqual(traces_response.json()["traces"], [])
         self.assertEqual(status_response.json()["provider_execution_status"], "NOT_STARTED")
+        self.assertEqual(mode_response.json()["provider_operating_mode"], "LIVE_DISABLED")
+        self.assertEqual(profile_response.json()["seeded"], False)
         self.assertTrue(any(cap["provider_key"] == "local_mock" for cap in capabilities_response.json()["capabilities"]))
+
+    def test_demo_metadata_endpoints_report_seeded_demo_context_when_enabled(self):
+        db = self.SessionLocal()
+        session = SessionModel(
+            id="provider-demo-session",
+            user_id="user-1",
+            status=SessionState.VERIFYING,
+            extraction_payload={"document_type": "academic_credential"},
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(session)
+        db.commit()
+        db.close()
+
+        with patch.dict(
+            os.environ,
+            {
+                "VERIFIER_PROVIDER_OPERATING_MODE": "DEMO_MOCK",
+                "VERIFIER_DEMO_PROFILE_KEY": "academic_transcript_demo",
+            },
+            clear=False,
+        ):
+            mode_response = self.client.get("/session/provider-demo-session/provider-operating-mode")
+            profile_response = self.client.get("/session/provider-demo-session/demo-profile")
+
+        self.assertEqual(mode_response.status_code, 200)
+        self.assertEqual(profile_response.status_code, 200)
+        self.assertEqual(mode_response.json()["provider_operating_mode"], "DEMO_MOCK")
+        self.assertEqual(mode_response.json()["demo_profile_key"], "academic_transcript_demo")
+        self.assertEqual(profile_response.json()["profile_key"], "academic_transcript_demo")
+        self.assertTrue(profile_response.json()["seeded"])
 
     def _override_get_db(self):
         db = self.SessionLocal()

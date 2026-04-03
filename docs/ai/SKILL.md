@@ -45,6 +45,10 @@
 - `provider_execution_traces_payload`
 - `provider_execution_status`
 - `provider_execution_error`
+- `provider_operating_mode`
+- `demo_profile_key`
+- `execution_environment_label`
+- `provider_transition_notes`
 
 ### Agent orchestration
 
@@ -90,6 +94,7 @@ All of these are additive, nullable, and must remain backward compatible with ol
 
 - External verifier providers must remain optional and disabled by default unless explicitly configured.
 - The default verifier-provider path is `local_mock`, which is local-only and must not pretend to be live evidence.
+- `DEMO_MOCK` mode is intentional and supported for presentation. It must be labeled honestly and must not be described as live provider execution.
 - Prefer `entra_verified_id` for VC-presentable identity, academic, and certificate-style credentials when it is executable.
 - Real outbound verifier integrations belong under `backend/app/verifier_providers/`.
 - Use the provider registry, policy loader, and safe HTTP client instead of making direct network calls.
@@ -126,6 +131,7 @@ All of these are additive, nullable, and must remain backward compatible with ol
 
 - Real provider-backed agent integrations are deferred to a later stage.
 - Broader verifier-provider coverage beyond the initial HTTP adapters is deferred.
+- Live Microsoft Entra Verified ID tenant wiring is deferred. Demo-mode and live-mode must continue to share the same provider framework.
 - Reviewer override and mutation flows are deferred.
 - Grouped-claim execution beyond the current per-credential backbone is deferred.
 - Deterministic trust remains the final document/session authority unless an explicitly bounded later stage changes that contract.

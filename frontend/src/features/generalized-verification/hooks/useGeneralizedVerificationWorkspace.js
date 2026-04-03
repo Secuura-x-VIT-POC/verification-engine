@@ -8,9 +8,11 @@ import {
   getCredentialBundles,
   getCredentialAudits,
   getCredentials,
+  getDemoProfile,
   getDocumentProfile,
   getProviderCapabilities,
   getProviderExecutionStatus,
+  getProviderOperatingMode,
   getProviderExecutionTraces,
   getSessionDocumentBlob,
   getSessionOverview,
@@ -29,8 +31,10 @@ import {
   createEmptyCredentialAuditCollection,
   createEmptyCredentialCollection,
   createEmptyDocumentProfile,
+  createEmptyDemoProfile,
   createEmptyProviderCapabilityCollection,
   createEmptyProviderExecutionStatus,
+  createEmptyProviderOperatingMode,
   createEmptyProviderExecutionTraceCollection,
   createEmptySessionOverview,
   createEmptyVerificationExecutionStatus,
@@ -53,7 +57,9 @@ function createEmptyWorkspaceData(sessionId) {
     executionStatus: createEmptyVerificationExecutionStatus(sessionId),
     providerExecutionTraces: createEmptyProviderExecutionTraceCollection(sessionId),
     providerExecutionStatus: createEmptyProviderExecutionStatus(sessionId),
+    providerOperatingMode: createEmptyProviderOperatingMode(sessionId),
     providerCapabilities: createEmptyProviderCapabilityCollection(sessionId),
+    demoProfile: createEmptyDemoProfile(sessionId),
     agentDocumentUnderstanding: createEmptyAgentDocumentUnderstanding(sessionId),
     agentCredentialCandidates: createEmptyAgentCredentialCandidateCollection(sessionId),
     agentRouteRecommendations: createEmptyAgentRouteRecommendationCollection(sessionId),
@@ -114,7 +120,9 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
           getVerificationExecutionStatus(sessionId, token),
           getProviderExecutionTraces(sessionId, token),
           getProviderExecutionStatus(sessionId, token),
+          getProviderOperatingMode(sessionId, token),
           getProviderCapabilities(sessionId, token),
+          getDemoProfile(sessionId, token),
           session.document_available ? getSessionDocumentBlob(sessionId, token) : Promise.resolve(null),
         ];
 
@@ -134,7 +142,9 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
           executionStatusResult,
           providerExecutionTracesResult,
           providerExecutionStatusResult,
+          providerOperatingModeResult,
           providerCapabilitiesResult,
+          demoProfileResult,
           documentBlobResult,
         ] = await Promise.allSettled(artifactRequests);
 
@@ -233,10 +243,22 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
           "Provider execution status",
           warnings
         );
+        const providerOperatingMode = readSettledValue(
+          providerOperatingModeResult,
+          createEmptyProviderOperatingMode(sessionId),
+          "Provider operating mode",
+          warnings
+        );
         const providerCapabilities = readSettledValue(
           providerCapabilitiesResult,
           createEmptyProviderCapabilityCollection(sessionId),
           "Provider capabilities",
+          warnings
+        );
+        const demoProfile = readSettledValue(
+          demoProfileResult,
+          createEmptyDemoProfile(sessionId),
+          "Demo profile",
           warnings
         );
 
@@ -268,7 +290,9 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
             executionStatus,
             providerExecutionTraces,
             providerExecutionStatus,
+            providerOperatingMode,
             providerCapabilities,
+            demoProfile,
           },
         });
       } catch (requestError) {

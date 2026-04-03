@@ -38,7 +38,9 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
     executionStatus: workspace.data.executionStatus,
     providerExecutionTraces: workspace.data.providerExecutionTraces,
     providerExecutionStatus: workspace.data.providerExecutionStatus,
+    providerOperatingMode: workspace.data.providerOperatingMode,
     providerCapabilities: workspace.data.providerCapabilities,
+    demoProfile: workspace.data.demoProfile,
   });
 
   useEffect(() => {
@@ -122,6 +124,12 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
             </div>
           ) : null}
 
+          {viewModel.messages.providerMode ? (
+            <div className="panel gv-info-banner">
+              <p>{viewModel.messages.providerMode}</p>
+            </div>
+          ) : null}
+
           <div className="gv-workspace-layout">
             <WorkspaceLeftSidebar
               documentProfile={workspace.data.documentProfile}
@@ -179,6 +187,8 @@ export default function GeneralizedVerifyPage({ auth, onLogout }) {
               providerExecutionStatusLabel={viewModel.providerExecutionStatusLabel}
               providerExecutionStatus={workspace.data.providerExecutionStatus}
               providerExecutionSummary={viewModel.providerExecutionSummary}
+              providerOperatingMode={workspace.data.providerOperatingMode}
+              demoProfile={workspace.data.demoProfile}
               taskExecutionSummary={viewModel.taskExecutionSummary}
               routingSummary={viewModel.routingSummary}
               verificationSummary={workspace.data.verificationSummary}

@@ -59,7 +59,7 @@ Generic PDF verification framework for session-scoped document review, connector
 
 ## Status
 
-This repository is a POC implementation of the verification backbone and reviewer workspace. Mock paths remain available so the repo works without live provider credentials, but the architecture is now aligned for Entra-first verification with supplementary connectors.
+This repository is a POC implementation of the verification backbone and reviewer workspace. Stage 8 adds an explicit demo-mode transition layer so the repo can present Entra-first verification honestly before live tenant wiring exists. Mock paths remain available, demo mode is explicit, and the architecture remains aligned for later live Entra and supplementary-provider rollout.
 
 ## License
 

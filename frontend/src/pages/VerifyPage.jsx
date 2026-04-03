@@ -4,6 +4,7 @@ import AuditReceiptPanel from "../audit_receipt/AuditReceiptPanel";
 import StatusBadge from "../components/StatusBadge";
 import { apiRequest } from "../lib/api";
 import PdfViewer from "../pdf_viewer/PdfViewer";
+import { getGeneralizedVerifyPath } from "../routes/paths";
 import TrustPanel from "../trust_panel/TrustPanel";
 
 export default function VerifyPage({ auth, onLogout }) {
@@ -125,6 +126,13 @@ export default function VerifyPage({ auth, onLogout }) {
           <p className="muted">Signed in as {auth.username}</p>
         </div>
         <div className="header-actions">
+          <button
+            type="button"
+            className="secondary-btn"
+            onClick={() => navigate(getGeneralizedVerifyPath(sessionId))}
+          >
+            Generalized Workspace
+          </button>
           <button type="button" className="secondary-btn" onClick={() => navigate("/upload")}>
             New Upload
           </button>

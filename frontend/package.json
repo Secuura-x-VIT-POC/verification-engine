@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host",
     "build": "vite build",
-    "preview": "vite preview --host"
+    "preview": "vite preview --host",
+    "test": "node tests/run-frontend-checks.mjs"
   },
   "dependencies": {
     "pdfjs-dist": "^5.4.296",

@@ -17,6 +17,15 @@ from ..connectors.broker import call_connector
 from ..sessions.constants import SessionState, VERIFIED_STATES
 from ..sessions.models import Session as SessionModel
 from ..trust.trust_engine import evaluate_trust
+from ..verifier_execution.service import (
+    build_and_persist_execution_artifacts,
+    mark_execution_failure,
+)
+from ..verification_domain.service import (
+    build_and_persist_final_analysis,
+    build_and_persist_initial_analysis,
+    mark_analysis_failure,
+)
 from . import repository
 from .failures import WorkflowProcessingError
 from .service import call_connector_with_retry, handle_processing_failure
@@ -82,6 +91,7 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
 
         extraction_payload = extract_document_payload(file_path)
         session.extraction_payload = extraction_payload["view"]
+        _run_generalized_pass_a(session)
         session.worker_phase = "CONNECTOR_EVAL"
         session.heartbeat_at = datetime.utcnow()
         db.commit()
@@ -89,6 +99,11 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
         policy = build_policy(extraction_payload)
         connector_responses = build_connector_responses(extraction_payload, policy)
         session.connector_payload = connector_responses
+        session.heartbeat_at = datetime.utcnow()
+        db.commit()
+        db.refresh(session)
+        _run_verification_execution(db, session)
+
         session.worker_phase = "TRUST_SCORING"
         session.heartbeat_at = datetime.utcnow()
         db.commit()
@@ -130,6 +145,7 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
         )
         db.commit()
         db.refresh(session)
+        _run_generalized_pass_b(db, session)
         return session
     except Exception as exc:
         failure_error = exc
@@ -158,6 +174,7 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
             extra_values=failure_values,
         )
         db.refresh(session)
+        _run_generalized_pass_b(db, session)
         return session
 
 
@@ -190,6 +207,18 @@ def close_session(db: DbSession, session: SessionModel) -> SessionModel:
                 "filename": None,
                 "extraction_payload": None,
                 "connector_payload": None,
+                "document_profile_payload": None,
+                "generalized_credentials_payload": None,
+                "verification_plan_payload": None,
+                "verification_task_results_payload": None,
+                "credential_verification_bundles_payload": None,
+                "verification_execution_summary_payload": None,
+                "credential_audits_payload": None,
+                "verification_summary_payload": None,
+                "generalized_analysis_status": None,
+                "generalized_analysis_error": None,
+                "verification_execution_status": None,
+                "verification_execution_error": None,
                 "worker_phase": None,
                 "lease_holder_id": None,
                 "heartbeat_at": None,
@@ -250,6 +279,10 @@ def serialize_session(db: DbSession, session: SessionModel) -> dict[str, Any]:
         "trust_outcome": session.trust_outcome,
         "reason_codes": session.reason_codes or [],
         "connector_ids": session.connector_ids or [],
+        "generalized_analysis_status": session.generalized_analysis_status,
+        "generalized_analysis_error": session.generalized_analysis_error,
+        "verification_execution_status": session.verification_execution_status,
+        "verification_execution_error": session.verification_execution_error,
         "purge_status": session.purge_status,
         "purge_error": session.purge_error,
         "created_at": _serialize_dt(session.created_at),
@@ -300,6 +333,7 @@ def get_result_response(session: SessionModel) -> dict[str, Any]:
 
 def extract_document_payload(file_path: Path) -> dict[str, Any]:
     raw_result = _load_extraction_result(file_path)
+    page_count = _resolve_page_count(file_path, raw_result)
     fields = raw_result.get("fields") or {}
 
     extracted_fields: dict[str, str] = {}
@@ -343,6 +377,7 @@ def extract_document_payload(file_path: Path) -> dict[str, Any]:
     return {
         "view": {
             "document_type": "academic_credential",
+            "page_count": page_count,
             "used_ocr": bool(raw_result.get("used_ocr")),
             "fields": extracted_fields,
             "confidence": confidence,
@@ -483,6 +518,7 @@ def _fallback_extract_document(file_path: Path) -> dict[str, Any]:
 
     return {
         "is_successful": any(extracted.values()),
+        "page_count": len(reader.pages),
         "used_ocr": False,
         "fields": fields,
         "raw_text": raw_text,
@@ -565,3 +601,53 @@ def _serialize_dt(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
+
+
+def _run_generalized_pass_a(session: SessionModel) -> None:
+    if session.extraction_payload is None:
+        return
+
+    try:
+        build_and_persist_initial_analysis(session)
+    except Exception as exc:  # pragma: no cover - defensive path
+        mark_analysis_failure(session, exc)
+
+
+def _run_generalized_pass_b(db: DbSession, session: SessionModel) -> None:
+    if session.extraction_payload is None:
+        return
+
+    try:
+        build_and_persist_final_analysis(session)
+    except Exception as exc:  # pragma: no cover - defensive path
+        mark_analysis_failure(session, exc)
+
+    db.commit()
+    db.refresh(session)
+
+
+def _run_verification_execution(db: DbSession, session: SessionModel) -> None:
+    if session.extraction_payload is None:
+        return
+
+    try:
+        build_and_persist_execution_artifacts(session)
+    except Exception as exc:  # pragma: no cover - defensive path
+        mark_execution_failure(session, exc)
+
+    db.commit()
+    db.refresh(session)
+
+
+def _resolve_page_count(file_path: Path, raw_result: dict[str, Any]) -> int | None:
+    if raw_result.get("page_count") not in (None, ""):
+        try:
+            return int(raw_result["page_count"])
+        except (TypeError, ValueError):
+            pass
+
+    try:
+        reader = PdfReader(str(file_path))
+    except Exception:
+        return None
+    return len(reader.pages)

@@ -587,13 +587,20 @@ class ProviderPersistenceAndApiTests(unittest.TestCase):
             status=SessionState.VERIFYING,
             extraction_payload={
                 "document_type": "identity_document",
-                "field_details": [
+                "field_candidates": [
                     {
-                        "key": "name",
+                        "candidate_id": "cand-name",
                         "label": "Candidate Name",
-                        "value": "Kanak Sharma",
+                        "category": "person_name",
+                        "raw_value": "Kanak Sharma",
+                        "normalized_value": "Kanak Sharma",
+                        "source_text": "Candidate Name: Kanak Sharma",
                         "confidence": 0.98,
-                        "bounding_boxes": [{"page": 1, "x0": 10, "y0": 10, "x1": 40, "y1": 20}],
+                        "page": 1,
+                        "bounding_box": {"page": 1, "x0": 10, "y0": 10, "x1": 40, "y1": 20},
+                        "is_pii": True,
+                        "requires_verification": True,
+                        "verification_reason": "Identity claim",
                     }
                 ],
             },

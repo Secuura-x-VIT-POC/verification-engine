@@ -36,7 +36,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
 
-FIELD_CONFIG = [
+TRUST_FIELD_CONFIG = [
     ("candidate_name", "name", "Candidate Name", True),
     ("institution", "institution", "Institution", True),
     ("credential_type", "credential", "Credential", True),
@@ -109,7 +109,7 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
         db.commit()
         _raise_on_processing_connector_failure(connector_responses)
 
-        trust_result = evaluate_trust(extraction_payload["view"], connector_responses, policy)
+        trust_result = evaluate_trust(extraction_payload["trust_input"], connector_responses, policy)
 
         try:
             with file_path.open("rb") as source_file:
@@ -164,6 +164,9 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
                 "confidence": {},
                 "bounding_boxes": {},
                 "field_details": [],
+                "field_candidates": [],
+                "generalized_analysis": None,
+                "enrichment_metadata": None,
                 "error_message": str(exc),
             }
 
@@ -356,55 +359,31 @@ def get_result_response(session: SessionModel) -> dict[str, Any]:
 def extract_document_payload(file_path: Path) -> dict[str, Any]:
     raw_result = _load_extraction_result(file_path)
     page_count = _resolve_page_count(file_path, raw_result)
-    fields = raw_result.get("fields") or {}
-
-    extracted_fields: dict[str, str] = {}
-    confidence: dict[str, float] = {}
-    bounding_boxes: dict[str, dict[str, Any]] = {}
-    field_details: list[dict[str, Any]] = []
-    trust_fields: list[dict[str, Any]] = []
-
-    for source_key, api_key, label, is_mandatory in FIELD_CONFIG:
-        field = fields.get(source_key) or {}
-        value = (field.get("value") or "").strip()
-        boxes = field.get("bounding_boxes") or []
-        converted_boxes = [_convert_box(box) for box in boxes]
-        grounded = bool(converted_boxes)
-
-        extracted_fields[api_key] = value
-        confidence[api_key] = round(float(field.get("confidence") or 0), 2) if value else 0
-        if converted_boxes:
-            bounding_boxes[api_key] = converted_boxes[0]
-
-        field_details.append(
-            {
-                "key": api_key,
-                "label": label,
-                "value": value,
-                "confidence": confidence[api_key],
-                "is_mandatory": is_mandatory,
-                "is_grounded": grounded,
-                "bounding_boxes": converted_boxes,
-            }
-        )
-        trust_fields.append(
-            {
-                "name": api_key,
-                "is_mandatory": is_mandatory,
-                "is_grounded": grounded and bool(value),
-                "value": value,
-            }
-        )
+    document_type = _resolve_document_type(raw_result)
+    generalized_entries = _collect_generalized_view_entries(raw_result)
+    extracted_fields, confidence, bounding_boxes, field_details = _build_generalized_view_payload(generalized_entries)
+    semantic_aliases = _build_semantic_aliases(raw_result)
+    trust_fields = _build_trust_fields(semantic_aliases)
 
     return {
         "view": {
-            "document_type": "academic_credential",
+            "document_type": document_type,
             "page_count": page_count,
             "used_ocr": bool(raw_result.get("used_ocr")),
             "fields": extracted_fields,
             "confidence": confidence,
             "bounding_boxes": bounding_boxes,
             "field_details": field_details,
+            "raw_text": raw_result.get("raw_text"),
+            "warnings": raw_result.get("warnings") or [],
+            "reason_code": raw_result.get("reason_code"),
+            "metadata": raw_result.get("metadata"),
+            "enrichment_metadata": raw_result.get("enrichment_metadata"),
+            "safety_report": raw_result.get("safety_report"),
+            "spatial_text_map": raw_result.get("spatial_text_map") or [],
+            "evidence_lines": raw_result.get("evidence_lines") or [],
+            "field_candidates": raw_result.get("field_candidates") or [],
+            "generalized_analysis": raw_result.get("generalized_analysis"),
             "error_message": raw_result.get("error_message"),
         },
         "trust_input": {
@@ -413,12 +392,199 @@ def extract_document_payload(file_path: Path) -> dict[str, Any]:
             "fields": trust_fields,
         },
         "connector_input": {
-            "name": extracted_fields.get("name", ""),
-            "degree": _normalize_degree(extracted_fields.get("credential", "")),
-            "institution": extracted_fields.get("institution", ""),
-            "document_id": extracted_fields.get("id", ""),
+            "name": semantic_aliases.get("name", {}).get("value", ""),
+            "degree": _normalize_degree(semantic_aliases.get("credential", {}).get("value", "")),
+            "institution": semantic_aliases.get("institution", {}).get("value", ""),
+            "document_id": semantic_aliases.get("id", {}).get("value", ""),
         },
     }
+
+
+def _collect_generalized_view_entries(raw_result: dict[str, Any]) -> list[dict[str, Any]]:
+    generalized_analysis = raw_result.get("generalized_analysis") or {}
+    generalized_credentials = generalized_analysis.get("generalized_credentials_payload")
+    if isinstance(generalized_credentials, list) and generalized_credentials:
+        return [entry for entry in generalized_credentials if isinstance(entry, dict)]
+
+    field_candidates = raw_result.get("field_candidates")
+    if isinstance(field_candidates, list) and field_candidates:
+        return [entry for entry in field_candidates if isinstance(entry, dict)]
+
+    return []
+
+
+def _build_generalized_view_payload(
+    entries: list[dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, float], dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    extracted_fields: dict[str, str] = {}
+    confidence: dict[str, float] = {}
+    bounding_boxes: dict[str, dict[str, Any]] = {}
+    field_details: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+
+    for index, entry in enumerate(entries, start=1):
+        value = _normalize_string(
+            entry.get("value")
+            if "value" in entry
+            else entry.get("raw_value") or entry.get("normalized_value")
+        )
+        source_text = _normalize_string(entry.get("source_text"))
+        if not value and not source_text:
+            continue
+
+        label = _normalize_string(entry.get("label")) or f"Credential {index}"
+        key = _unique_view_key(
+            _slug(label or _normalize_string(entry.get("category")) or _normalize_string(entry.get("credential_id")) or f"field-{index}"),
+            seen_keys,
+        )
+        box = _first_box(entry.get("bounding_boxes")) or entry.get("bounding_box")
+        converted_boxes = [_convert_box(box)] if isinstance(box, dict) else []
+        page = converted_boxes[0]["page"] if converted_boxes else _coerce_int(entry.get("page"))
+        detail = {
+            "key": key,
+            "label": label,
+            "value": value,
+            "confidence": round(float(entry.get("confidence") or 0), 2) if value else 0,
+            "is_mandatory": bool(entry.get("requires_verification")),
+            "is_grounded": bool(converted_boxes),
+            "bounding_boxes": converted_boxes,
+            "source_text": source_text,
+            "extraction_method": entry.get("extraction_method"),
+            "category": entry.get("category"),
+            "is_pii": bool(entry.get("is_pii")),
+            "requires_verification": bool(entry.get("requires_verification", True)),
+            "verification_reason": entry.get("verification_reason"),
+        }
+        if page is not None:
+            detail["page"] = page
+
+        extracted_fields[key] = value
+        confidence[key] = detail["confidence"]
+        if converted_boxes:
+            bounding_boxes[key] = converted_boxes[0]
+        field_details.append(detail)
+
+    return extracted_fields, confidence, bounding_boxes, field_details
+
+
+def _build_semantic_aliases(raw_result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    semantic_aliases: dict[str, dict[str, Any]] = {}
+    fields = raw_result.get("fields") or {}
+    for source_key, api_key, _, _ in TRUST_FIELD_CONFIG:
+        field = fields.get(source_key) or {}
+        if not isinstance(field, dict):
+            continue
+        value = _normalize_string(field.get("value"))
+        boxes = field.get("bounding_boxes") or []
+        converted_boxes = [_convert_box(box) for box in boxes if isinstance(box, dict)]
+        semantic_aliases[api_key] = {
+            "value": value,
+            "confidence": round(float(field.get("confidence") or 0), 2) if value else 0,
+            "bounding_boxes": converted_boxes,
+            "is_grounded": bool(converted_boxes),
+        }
+    return semantic_aliases
+
+
+def _build_trust_fields(semantic_aliases: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    trust_fields: list[dict[str, Any]] = []
+    for _, api_key, _, is_mandatory in TRUST_FIELD_CONFIG:
+        alias = semantic_aliases.get(api_key, {})
+        value = alias.get("value") or ""
+        trust_fields.append(
+            {
+                "name": api_key,
+                "is_mandatory": is_mandatory,
+                "is_grounded": bool(alias.get("is_grounded")) and bool(value),
+                "value": value,
+                "confidence": alias.get("confidence", 0),
+            }
+        )
+    return trust_fields
+
+
+def _resolve_document_type(raw_result: dict[str, Any]) -> str:
+    generalized_analysis = raw_result.get("generalized_analysis") or {}
+    summary_payload = generalized_analysis.get("verification_summary_payload") or {}
+    summary_document_type = str(summary_payload.get("document_type") or "").strip()
+    if summary_document_type and summary_document_type not in {"generic_pdf_evidence", "structured_supporting_document"}:
+        return _map_summary_document_type(summary_document_type)
+
+    profile_payload = generalized_analysis.get("document_profile_payload") or {}
+    family_hints = list(profile_payload.get("document_family_hints") or [])
+    for hint in family_hints:
+        mapped = _map_summary_document_type(str(hint))
+        if mapped:
+            return mapped
+
+    lowered_text = str(raw_result.get("raw_text") or "").lower()
+    if any(token in lowered_text for token in ("report card", "marksheet", "mark sheet", "grade report")):
+        return "report_card"
+    if any(token in lowered_text for token in ("transcript", "semester", "cgpa", "student")):
+        return "academic_credential"
+    if any(token in lowered_text for token in ("aadhaar", "pan", "passport", "date of birth")):
+        return "identity_document"
+    if any(token in lowered_text for token in ("certificate", "course completion")):
+        return "certificate_document"
+    if any(token in lowered_text for token in ("invoice", "tax", "balance", "account")):
+        return "financial_document"
+    return "academic_credential"
+
+
+def _map_summary_document_type(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"report_card", "transcript", "academic_record"}:
+        return "report_card" if normalized == "report_card" else "academic_credential"
+    if normalized in {"academic_credential", "academic_document"}:
+        return "academic_credential"
+    if normalized in {"identity_document", "license"}:
+        return "identity_document"
+    if normalized in {"certificate", "certificate_document"}:
+        return "certificate_document"
+    if normalized == "financial_document":
+        return "financial_document"
+    if normalized:
+        return normalized
+    return "academic_credential"
+
+
+def _normalize_string(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    return str(value).strip()
+
+
+def _slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "field"
+
+
+def _unique_view_key(base_key: str, seen_keys: set[str]) -> str:
+    key = base_key
+    suffix = 2
+    while key in seen_keys:
+        key = f"{base_key}-{suffix}"
+        suffix += 1
+    seen_keys.add(key)
+    return key
+
+
+def _first_box(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, list) and value:
+        candidate = value[0]
+        return candidate if isinstance(candidate, dict) else None
+    if isinstance(value, dict):
+        return value
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_connector_responses(extraction_payload: dict[str, Any], policy: dict | None = None) -> list[dict[str, Any]]:
@@ -526,76 +692,17 @@ def _load_extraction_result(file_path: Path) -> dict[str, Any]:
 def _fallback_extract_document(file_path: Path) -> dict[str, Any]:
     reader = PdfReader(str(file_path))
     raw_text = "\n".join((page.extract_text() or "") for page in reader.pages)
-    extracted = _apply_extraction_rules(raw_text)
-    fields: dict[str, Any] = {}
-    for key, value in extracted.items():
-        if not value:
-            fields[key] = None
-            continue
-        fields[key] = {
-            "value": value,
-            "confidence": 0.6,
-            "bounding_boxes": [],
-        }
-
     return {
-        "is_successful": any(extracted.values()),
+        "is_successful": bool(raw_text.strip()),
         "page_count": len(reader.pages),
         "used_ocr": False,
-        "fields": fields,
+        "fields": {},
         "raw_text": raw_text,
+        "field_candidates": [],
+        "generalized_analysis": None,
+        "enrichment_metadata": None,
         "error_message": None,
     }
-
-
-def _apply_extraction_rules(text: str) -> dict[str, str]:
-    extracted = {
-        "candidate_name": "",
-        "institution": "",
-        "credential_type": "",
-        "issue_date": "",
-        "document_id": "",
-    }
-
-    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
-    if lines:
-        extracted["candidate_name"] = lines[0]
-
-    institution_match = re.search(
-        (
-            r"([A-Za-z.' ]*Vishwakarma Institute of Technology[A-Za-z, ]*|"
-            r"[A-Za-z.' ]*Vellore Institute of Technology[A-Za-z, ]*|"
-            r"\bVIT\b[A-Za-z, ]*)"
-        ),
-        text,
-        re.IGNORECASE,
-    )
-    if institution_match:
-        extracted["institution"] = institution_match.group(1).strip(", \n")
-
-    credential_match = re.search(
-        r"(Bachelor of Technology|B\.Tech|BTech|Bachelor of Engineering|B\.E\.|Master of Technology|M\.Tech)",
-        text,
-        re.IGNORECASE,
-    )
-    if credential_match:
-        extracted["credential_type"] = credential_match.group(1).strip()
-
-    date_match = re.search(
-        r"([A-Z][a-z]{2,8}\s+\d{4}\s*-\s*(?:Present|\d{4}))",
-        text,
-        re.IGNORECASE,
-    )
-    if date_match:
-        extracted["issue_date"] = date_match.group(1).strip()
-
-    id_match = re.search(r"\b([A-Z0-9]{10,12})\b", text)
-    if not id_match:
-        id_match = re.search(r"\b(\d{10})\b", text)
-    if id_match:
-        extracted["document_id"] = id_match.group(1).strip()
-
-    return extracted
 
 
 def _normalize_degree(value: str) -> str:

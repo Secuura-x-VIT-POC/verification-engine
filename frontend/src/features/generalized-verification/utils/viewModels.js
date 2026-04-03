@@ -595,6 +595,9 @@ export function buildAgentUnderstandingSummary(understanding, runStatus) {
       ? understanding.credential_candidates.length
       : 0,
     providerUsed: runStatus?.provider_used || null,
+    reasoningModelUsed: runStatus?.reasoning_model_used || null,
+    piiModelUsed: runStatus?.pii_model_used || null,
+    piiEnrichmentUsed: Boolean(runStatus?.pii_enrichment_used),
     fallbackUsed: Boolean(runStatus?.fallback_used),
     warnings: Array.isArray(runStatus?.warnings) ? runStatus.warnings : [],
   };

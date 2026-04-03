@@ -1,137 +1,164 @@
 {
-  "version": 1,
-  "records": [
-    {
-      "record_id": "aadhaar-template-record",
-      "record_label": "Aadhaar template record",
-      "document_types": ["aadhaar", "aadhaar_card", "identity_document"],
-      "categories": ["identity"],
-      "verifier_keys": ["identity_db"],
-      "fields": [
-        {
-          "field_key": "aadhaar_number",
-          "label": "Aadhaar Number",
-          "label_aliases": ["aadhaar", "aadhaar number", "uid", "uid number", "identity number", "document id"],
-          "value": "9999 8888 7777",
-          "normalized_value": "999988887777"
-        },
-        {
-          "field_key": "full_name",
-          "label": "Full Name",
-          "label_aliases": ["name", "candidate name", "full name"],
-          "value": "Demo Aadhaar User",
-          "normalized_value": "demo aadhaar user"
-        },
-        {
-          "field_key": "date_of_birth",
-          "label": "Date Of Birth",
-          "label_aliases": ["dob", "date of birth"],
-          "value": "2001-01-01",
-          "normalized_value": "2001-01-01"
-        }
-      ],
-      "notes": [
-        "Replace these placeholder values with your own local truth data before the demo."
-      ]
-    },
-    {
-      "record_id": "pan-template-record",
-      "record_label": "PAN template record",
-      "document_types": ["pan", "pan_card", "tax_document"],
-      "categories": ["tax"],
-      "verifier_keys": ["tax_authority"],
-      "fields": [
-        {
-          "field_key": "pan_number",
-          "label": "PAN Number",
-          "label_aliases": ["pan", "pan number", "permanent account number", "document id"],
-          "value": "ABCDE1234F",
-          "normalized_value": "abcde1234f"
-        },
-        {
-          "field_key": "full_name",
-          "label": "Full Name",
-          "label_aliases": ["name", "full name", "candidate name"],
-          "value": "Demo Tax User",
-          "normalized_value": "demo tax user"
-        }
-      ],
-      "notes": [
-        "Keep only demo-safe personal truth data in this local file."
-      ]
-    },
-    {
-      "record_id": "report-card-template-record",
-      "record_label": "Report card template record",
-      "document_types": ["report_card", "marksheet", "academic_credential"],
-      "categories": ["academic", "identity"],
-      "verifier_keys": ["academic_registry", "identity_db"],
-      "fields": [
-        {
-          "field_key": "student_name",
-          "label": "Student Name",
-          "label_aliases": ["student name", "candidate name", "name", "full name"],
-          "value": "Demo Student",
-          "normalized_value": "demo student"
-        },
-        {
-          "field_key": "roll_number",
-          "label": "Roll Number",
-          "label_aliases": ["roll number", "roll no", "roll no.", "document id", "student id"],
-          "value": "RC2026001",
-          "normalized_value": "rc2026001"
-        },
-        {
-          "field_key": "institution",
-          "label": "Institution",
-          "label_aliases": ["institution", "school", "board", "issuer"],
-          "value": "Demo Central School",
-          "normalized_value": "demo central school"
-        },
-        {
-          "field_key": "final_grade",
-          "label": "Final Grade",
-          "label_aliases": ["grade", "result", "percentage", "marks"],
-          "value": "91",
-          "normalized_value": "91"
-        }
-      ],
-      "notes": [
-        "Use this record for report-card or marksheet style demo verification."
-      ]
-    },
-    {
-      "record_id": "certificate-template-record",
-      "record_label": "Certificate template record",
-      "document_types": ["certificate", "certificate_document", "completion_certificate"],
-      "categories": ["certificate", "academic"],
-      "verifier_keys": ["certificate_registry", "academic_registry"],
-      "fields": [
-        {
-          "field_key": "certificate_number",
-          "label": "Certificate Number",
-          "label_aliases": ["certificate number", "credential id", "document id"],
-          "value": "CERT-2026-001",
-          "normalized_value": "cert2026001"
-        },
-        {
-          "field_key": "credential_name",
-          "label": "Credential",
-          "label_aliases": ["credential", "certificate", "course", "degree"],
-          "value": "Demo Completion Certificate",
-          "normalized_value": "demo completion certificate"
-        },
-        {
-          "field_key": "issuer",
-          "label": "Issuer",
-          "label_aliases": ["issuer", "institution", "awarded by"],
-          "value": "Demo Issuer",
-          "normalized_value": "demo issuer"
-        }
-      ],
-      "notes": [
-        "Certificate-style local verification template."
-      ]
-    }
-  ]
+	"version": 1,
+	"records": [
+		{
+			"record_id": "aadhaar-template-record",
+			"record_label": "Aadhaar template record",
+			"document_types": ["aadhaar", "aadhaar_card", "identity_document"],
+			"categories": ["identity"],
+			"verifier_keys": ["identity_db"],
+			"fields": [
+				{
+					"field_key": "aadhaar_number",
+					"label": "Aadhaar Number",
+					"label_aliases": [
+						"aadhaar",
+						"aadhaar number",
+						"uid",
+						"uid number",
+						"identity number",
+						"document id"
+					],
+					"value": "9999 8888 7777",
+					"normalized_value": "999988887777"
+				},
+				{
+					"field_key": "full_name",
+					"label": "Full Name",
+					"label_aliases": ["name", "candidate name", "full name"],
+					"value": "Demo Aadhaar User",
+					"normalized_value": "demo aadhaar user"
+				},
+				{
+					"field_key": "date_of_birth",
+					"label": "Date Of Birth",
+					"label_aliases": ["dob", "date of birth"],
+					"value": "2001-01-01",
+					"normalized_value": "2001-01-01"
+				}
+			],
+			"notes": [
+				"Replace these placeholder values with your own local truth data before the demo."
+			]
+		},
+		{
+			"record_id": "pan-template-record",
+			"record_label": "PAN template record",
+			"document_types": ["pan", "pan_card", "tax_document"],
+			"categories": ["tax"],
+			"verifier_keys": ["tax_authority"],
+			"fields": [
+				{
+					"field_key": "pan_number",
+					"label": "PAN Number",
+					"label_aliases": [
+						"pan",
+						"pan number",
+						"permanent account number",
+						"document id"
+					],
+					"value": "ABCDE1234F",
+					"normalized_value": "abcde1234f"
+				},
+				{
+					"field_key": "full_name",
+					"label": "Full Name",
+					"label_aliases": ["name", "full name", "candidate name"],
+					"value": "Demo Tax User",
+					"normalized_value": "demo tax user"
+				}
+			],
+			"notes": ["Keep only demo-safe personal truth data in this local file."]
+		},
+		{
+			"record_id": "report-card-template-record",
+			"record_label": "Report card template record",
+			"document_types": ["report_card", "marksheet", "academic_credential"],
+			"categories": ["academic", "identity"],
+			"verifier_keys": ["academic_registry", "identity_db"],
+			"fields": [
+				{
+					"field_key": "student_name",
+					"label": "Student Name",
+					"label_aliases": [
+						"student name",
+						"candidate name",
+						"name",
+						"full name"
+					],
+					"value": "Demo Student",
+					"normalized_value": "demo student"
+				},
+				{
+					"field_key": "roll_number",
+					"label": "Roll Number",
+					"label_aliases": [
+						"roll number",
+						"roll no",
+						"roll no.",
+						"document id",
+						"student id"
+					],
+					"value": "RC2026001",
+					"normalized_value": "rc2026001"
+				},
+				{
+					"field_key": "institution",
+					"label": "Institution",
+					"label_aliases": ["institution", "school", "board", "issuer"],
+					"value": "Demo Central School",
+					"normalized_value": "demo central school"
+				},
+				{
+					"field_key": "final_grade",
+					"label": "Final Grade",
+					"label_aliases": ["grade", "result", "percentage", "marks"],
+					"value": "91",
+					"normalized_value": "91"
+				}
+			],
+			"notes": [
+				"Use this record for report-card or marksheet style demo verification."
+			]
+		},
+		{
+			"record_id": "certificate-template-record",
+			"record_label": "Certificate template record",
+			"document_types": [
+				"certificate",
+				"certificate_document",
+				"completion_certificate"
+			],
+			"categories": ["certificate", "academic"],
+			"verifier_keys": ["certificate_registry", "academic_registry"],
+			"fields": [
+				{
+					"field_key": "certificate_number",
+					"label": "Certificate Number",
+					"label_aliases": [
+						"certificate number",
+						"credential id",
+						"document id"
+					],
+					"value": "CERT-2026-001",
+					"normalized_value": "cert2026001"
+				},
+				{
+					"field_key": "credential_name",
+					"label": "Credential",
+					"label_aliases": ["credential", "certificate", "course", "degree"],
+					"value": "Demo Completion Certificate",
+					"normalized_value": "demo completion certificate"
+				},
+				{
+					"field_key": "issuer",
+					"label": "Issuer",
+					"label_aliases": ["issuer", "institution", "awarded by"],
+					"value": "Demo Issuer",
+					"normalized_value": "demo issuer"
+				}
+			],
+			"notes": ["Certificate-style local verification template."]
+		}
+	]
 }

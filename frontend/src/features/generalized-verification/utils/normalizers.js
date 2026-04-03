@@ -118,26 +118,34 @@ export function normalizeCredentialCollection(payload, sessionId = "") {
   return {
     session_id: asString(collection.session_id, sessionId),
     document_type: asString(collection.document_type, "unknown"),
-    credentials: credentials.map((credential, index) => {
-      const normalizedCredential = asObject(credential);
-      const page = asInteger(normalizedCredential.page);
-      return {
-        credential_id: asString(normalizedCredential.credential_id, `credential-${index + 1}`),
-        label: asString(normalizedCredential.label, `Credential ${index + 1}`),
-        category: asString(normalizedCredential.category, "unknown"),
-        value: normalizedCredential.value ?? null,
-        normalized_value: asNullableString(normalizedCredential.normalized_value),
-        source_text: asNullableString(normalizedCredential.source_text),
-        confidence: asNumber(normalizedCredential.confidence),
-        page,
-        bounding_box: normalizeBoundingBox(normalizedCredential.bounding_box, page),
-        is_pii: asBoolean(normalizedCredential.is_pii),
-        requires_verification: asBoolean(normalizedCredential.requires_verification),
-        verification_reason: asNullableString(normalizedCredential.verification_reason),
-        extraction_method: asString(normalizedCredential.extraction_method, "unknown"),
-      };
-    }),
+    credentials: credentials
+      .map((credential, index) => {
+        const normalizedCredential = asObject(credential);
+        const page = asInteger(normalizedCredential.page);
+        return {
+          credential_id: asString(normalizedCredential.credential_id, `credential-${index + 1}`),
+          label: asString(normalizedCredential.label, `Credential ${index + 1}`),
+          category: asString(normalizedCredential.category, "unknown"),
+          value: normalizedCredential.value ?? null,
+          normalized_value: asNullableString(normalizedCredential.normalized_value),
+          source_text: asNullableString(normalizedCredential.source_text),
+          confidence: asNumber(normalizedCredential.confidence),
+          page,
+          bounding_box: normalizeBoundingBox(normalizedCredential.bounding_box, page),
+          is_pii: asBoolean(normalizedCredential.is_pii),
+          requires_verification: asBoolean(normalizedCredential.requires_verification),
+          verification_reason: asNullableString(normalizedCredential.verification_reason),
+          extraction_method: asString(normalizedCredential.extraction_method, "unknown"),
+        };
+      })
+      .filter(hasUsableCredentialData),
   };
+}
+
+function hasUsableCredentialData(credential) {
+  return [credential.value, credential.normalized_value, credential.source_text].some(
+    (value) => value !== null && value !== undefined && value !== ""
+  );
 }
 
 export function normalizeVerificationPlan(payload, sessionId = "") {
@@ -521,6 +529,9 @@ export function normalizeAgentRunStatus(payload, sessionId = "") {
     agent_run_status: asString(status.agent_run_status, "NOT_STARTED"),
     agent_run_error: asNullableString(status.agent_run_error),
     provider_used: asNullableString(status.provider_used),
+    reasoning_model_used: asNullableString(status.reasoning_model_used),
+    pii_model_used: asNullableString(status.pii_model_used),
+    pii_enrichment_used: asBoolean(status.pii_enrichment_used),
     fallback_used: asBoolean(status.fallback_used),
     warnings: asStringArray(status.warnings),
     document_understanding_available: asBoolean(status.document_understanding_available),

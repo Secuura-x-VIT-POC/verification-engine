@@ -41,6 +41,9 @@ from backend.app.verification_domain import (
     build_extracted_credentials,
     build_verification_summary,
     get_analysis_status_for_session,
+    get_credentials_for_session,
+    get_credential_audits_for_session,
+    get_verification_summary_for_session,
 )
 
 
@@ -55,41 +58,81 @@ def _sample_extraction_payload() -> dict:
         "document_type": "academic_credential",
         "page_count": 2,
         "used_ocr": False,
-        "field_details": [
+        "field_candidates": [
             {
-                "key": "name",
+                "candidate_id": "cand-name",
                 "label": "Candidate Name",
-                "value": "Kanak Sharma",
+                "category": "person_name",
+                "raw_value": "Kanak Sharma",
+                "normalized_value": "Kanak Sharma",
+                "source_text": "Student Name: Kanak Sharma",
                 "confidence": 0.98,
-                "bounding_boxes": [{"page": 1, "x0": 10, "y0": 10, "x1": 80, "y1": 20}],
+                "page": 1,
+                "bounding_box": {"page": 1, "x0": 10, "y0": 10, "x1": 80, "y1": 20},
+                "is_pii": True,
+                "requires_verification": True,
+                "verification_reason": "Identity claim",
+                "extraction_method": "native_text",
             },
             {
-                "key": "institution",
+                "candidate_id": "cand-institution",
                 "label": "Institution",
-                "value": "VIT Vellore",
+                "category": "issuer",
+                "raw_value": "VIT Vellore",
+                "normalized_value": "VIT Vellore",
+                "source_text": "Institution: VIT Vellore",
                 "confidence": 0.97,
-                "bounding_boxes": [{"page": 1, "x0": 10, "y0": 25, "x1": 120, "y1": 35}],
+                "page": 1,
+                "bounding_box": {"page": 1, "x0": 10, "y0": 25, "x1": 120, "y1": 35},
+                "is_pii": False,
+                "requires_verification": True,
+                "verification_reason": "Academic issuer",
+                "extraction_method": "native_text",
             },
             {
-                "key": "credential",
+                "candidate_id": "cand-credential",
                 "label": "Credential",
-                "value": "BTech",
+                "category": "credential_title",
+                "raw_value": "BTech",
+                "normalized_value": "BTech",
+                "source_text": "Credential: BTech",
                 "confidence": 0.96,
-                "bounding_boxes": [{"page": 1, "x0": 10, "y0": 40, "x1": 90, "y1": 50}],
+                "page": 1,
+                "bounding_box": {"page": 1, "x0": 10, "y0": 40, "x1": 90, "y1": 50},
+                "is_pii": False,
+                "requires_verification": True,
+                "verification_reason": "Academic credential",
+                "extraction_method": "native_text",
             },
             {
-                "key": "document_id",
+                "candidate_id": "cand-id",
                 "label": "Document ID",
-                "value": "22BCE1234",
+                "category": "registration_number",
+                "raw_value": "22BCE1234",
+                "normalized_value": "22BCE1234",
+                "source_text": "Document ID: 22BCE1234",
                 "confidence": 0.95,
-                "bounding_boxes": [{"page": 1, "x0": 10, "y0": 55, "x1": 90, "y1": 65}],
+                "page": 1,
+                "bounding_box": {"page": 1, "x0": 10, "y0": 55, "x1": 90, "y1": 65},
+                "is_pii": False,
+                "requires_verification": True,
+                "verification_reason": "Academic identifier",
+                "extraction_method": "native_text",
             },
             {
-                "key": "issue_date",
+                "candidate_id": "cand-date",
                 "label": "Issue Date",
-                "value": "2024-06-15",
+                "category": "issue_date",
+                "raw_value": "2024-06-15",
+                "normalized_value": "2024-06-15",
+                "source_text": "Issue Date: 2024-06-15",
                 "confidence": 0.91,
-                "bounding_boxes": [{"page": 1, "x0": 10, "y0": 70, "x1": 90, "y1": 80}],
+                "page": 1,
+                "bounding_box": {"page": 1, "x0": 10, "y0": 70, "x1": 90, "y1": 80},
+                "is_pii": False,
+                "requires_verification": False,
+                "verification_reason": "Supporting metadata",
+                "extraction_method": "native_text",
             },
         ],
     }
@@ -117,20 +160,73 @@ class GeneralizedVerificationPlannerTests(unittest.TestCase):
     def test_build_extracted_credentials_classifies_fields_and_flags_verification(self):
         extraction_payload = {
             "document_type": "mixed_document",
-            "fields": {
-                "full_name": "Asha Rao",
-                "home_address": "221B Baker Street",
-                "passport_number": "P1234567",
-                "issue_date": "2026-01-10",
-                "misc_note": "Boarded successfully",
-            },
-            "confidence": {
-                "full_name": 0.99,
-                "home_address": 0.94,
-                "passport_number": 0.91,
-                "issue_date": 0.85,
-                "misc_note": 0.5,
-            },
+            "field_candidates": [
+                {
+                    "candidate_id": "cand-name",
+                    "label": "Full Name",
+                    "category": "person_name",
+                    "raw_value": "Asha Rao",
+                    "normalized_value": "Asha Rao",
+                    "source_text": "Full Name: Asha Rao",
+                    "confidence": 0.99,
+                    "page": 1,
+                    "is_pii": True,
+                    "requires_verification": True,
+                    "verification_reason": "Identity claim",
+                },
+                {
+                    "candidate_id": "cand-address",
+                    "label": "Home Address",
+                    "category": "address",
+                    "raw_value": "221B Baker Street",
+                    "normalized_value": "221B Baker Street",
+                    "source_text": "Home Address: 221B Baker Street",
+                    "confidence": 0.94,
+                    "page": 1,
+                    "is_pii": True,
+                    "requires_verification": True,
+                    "verification_reason": "Address claim",
+                },
+                {
+                    "candidate_id": "cand-passport",
+                    "label": "Passport Number",
+                    "category": "document_number",
+                    "raw_value": "P1234567",
+                    "normalized_value": "P1234567",
+                    "source_text": "Passport Number: P1234567",
+                    "confidence": 0.91,
+                    "page": 1,
+                    "is_pii": True,
+                    "requires_verification": True,
+                    "verification_reason": "Passport claim",
+                },
+                {
+                    "candidate_id": "cand-date",
+                    "label": "Issue Date",
+                    "category": "issue_date",
+                    "raw_value": "2026-01-10",
+                    "normalized_value": "2026-01-10",
+                    "source_text": "Issue Date: 2026-01-10",
+                    "confidence": 0.85,
+                    "page": 1,
+                    "is_pii": False,
+                    "requires_verification": False,
+                    "verification_reason": "Supporting metadata",
+                },
+                {
+                    "candidate_id": "cand-note",
+                    "label": "Misc Note",
+                    "category": "unknown",
+                    "raw_value": "Boarded successfully",
+                    "normalized_value": "Boarded successfully",
+                    "source_text": "Misc Note: Boarded successfully",
+                    "confidence": 0.5,
+                    "page": 1,
+                    "is_pii": False,
+                    "requires_verification": False,
+                    "verification_reason": "No route",
+                },
+            ],
         }
 
         credentials = build_extracted_credentials(extraction_payload)
@@ -149,14 +245,66 @@ class GeneralizedVerificationPlannerTests(unittest.TestCase):
         self.assertTrue(pii_flags["Full Name"])
         self.assertTrue(pii_flags["Home Address"])
 
+    def test_build_extracted_credentials_ignores_legacy_field_details_without_generalized_candidates(self):
+        credentials = build_extracted_credentials(
+            {
+                "document_type": "academic_credential",
+                "field_details": [
+                    {
+                        "key": "name",
+                        "label": "Candidate Name",
+                        "value": None,
+                        "confidence": 0,
+                        "bounding_boxes": [],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(credentials, [])
+
     def test_report_card_identifier_fields_are_classified_as_academic(self):
         extraction_payload = {
             "document_type": "report_card",
-            "fields": {
-                "student_name": "Demo Student",
-                "roll_number": "RC2026001",
-                "issue_date": "2026-03-10",
-            },
+            "field_candidates": [
+                {
+                    "candidate_id": "cand-student",
+                    "label": "Student Name",
+                    "category": "person_name",
+                    "raw_value": "Demo Student",
+                    "normalized_value": "Demo Student",
+                    "source_text": "Student Name: Demo Student",
+                    "confidence": 0.94,
+                    "page": 1,
+                    "is_pii": True,
+                    "requires_verification": True,
+                    "verification_reason": "Student identity",
+                },
+                {
+                    "candidate_id": "cand-roll",
+                    "label": "Roll Number",
+                    "category": "registration_number",
+                    "raw_value": "RC2026001",
+                    "normalized_value": "RC2026001",
+                    "source_text": "Roll Number: RC2026001",
+                    "confidence": 0.95,
+                    "page": 1,
+                    "requires_verification": True,
+                    "verification_reason": "Academic identifier",
+                },
+                {
+                    "candidate_id": "cand-date",
+                    "label": "Issue Date",
+                    "category": "issue_date",
+                    "raw_value": "2026-03-10",
+                    "normalized_value": "2026-03-10",
+                    "source_text": "Issue Date: 2026-03-10",
+                    "confidence": 0.82,
+                    "page": 1,
+                    "requires_verification": False,
+                    "verification_reason": "Supporting metadata",
+                },
+            ],
         }
 
         credentials = build_extracted_credentials(extraction_payload)
@@ -165,7 +313,7 @@ class GeneralizedVerificationPlannerTests(unittest.TestCase):
 
         self.assertEqual(categories["Roll Number"], "academic")
         self.assertTrue(requirements["Roll Number"])
-        self.assertEqual(categories["Student Name"], "academic")
+        self.assertEqual(categories["Student Name"], "identity")
 
 
 class GeneralizedVerificationRoutingTests(unittest.TestCase):
@@ -567,6 +715,146 @@ class GeneralizedVerificationServiceTests(unittest.TestCase):
         self.assertIsNone(payload.generalized_analysis_error)
         self.assertTrue(payload.document_profile_available)
         self.assertTrue(payload.verification_summary_available)
+
+    def test_persisted_placeholder_credentials_are_filtered_from_read_models(self):
+        session = SessionModel(
+            id="session-sanitized",
+            user_id="user-1",
+            status=SessionState.VERIFIED_AMBER,
+            trust_outcome="AMBER",
+            reason_codes=["NOT_VERIFIED"],
+            extraction_payload={"document_type": "academic_credential", "field_candidates": []},
+            generalized_credentials_payload={
+                "session_id": "session-sanitized",
+                "document_type": "academic_credential",
+                "credentials": [
+                    {
+                        "credential_id": "legacy-empty",
+                        "label": "Candidate Name",
+                        "category": "identity",
+                        "value": None,
+                        "normalized_value": None,
+                        "source_text": None,
+                        "confidence": 0,
+                        "page": None,
+                        "bounding_box": None,
+                        "is_pii": True,
+                        "requires_verification": True,
+                        "verification_reason": "Legacy placeholder",
+                        "extraction_method": "legacy",
+                    },
+                    {
+                        "credential_id": "real-id",
+                        "label": "Document ID",
+                        "category": "academic",
+                        "value": "22BCE1234",
+                        "normalized_value": "22BCE1234",
+                        "source_text": "Document ID: 22BCE1234",
+                        "confidence": 0.95,
+                        "page": 1,
+                        "bounding_box": {"page": 1, "x0": 10, "y0": 10, "x1": 90, "y1": 20},
+                        "is_pii": False,
+                        "requires_verification": True,
+                        "verification_reason": "Academic identifier",
+                        "extraction_method": "native_text",
+                    },
+                ],
+            },
+            verification_plan_payload={
+                "session_id": "session-sanitized",
+                "document_type": "academic_credential",
+                "route_decisions": [
+                    {
+                        "credential_id": "legacy-empty",
+                        "selected_verifier_key": "identity_db",
+                        "selected_verifier_label": "Identity Database",
+                        "route_reason": "legacy",
+                        "fallback_verifiers": [],
+                        "manual_review_recommended": False,
+                    },
+                    {
+                        "credential_id": "real-id",
+                        "selected_verifier_key": "academic_registry",
+                        "selected_verifier_label": "Academic Registry",
+                        "route_reason": "academic",
+                        "fallback_verifiers": [],
+                        "manual_review_recommended": False,
+                    },
+                ],
+                "tasks": [
+                    {
+                        "task_id": "task-legacy",
+                        "credential_id": "legacy-empty",
+                        "verifier_key": "identity_db",
+                        "verifier_label": "Identity Database",
+                        "verification_type": "identity",
+                        "required": True,
+                        "status": "PLANNED",
+                        "reason_codes": [],
+                        "input_payload": {},
+                    },
+                    {
+                        "task_id": "task-real",
+                        "credential_id": "real-id",
+                        "verifier_key": "academic_registry",
+                        "verifier_label": "Academic Registry",
+                        "verification_type": "academic",
+                        "required": True,
+                        "status": "PLANNED",
+                        "reason_codes": [],
+                        "input_payload": {},
+                    },
+                ],
+            },
+            credential_audits_payload={
+                "session_id": "session-sanitized",
+                "document_type": "academic_credential",
+                "audits": [
+                    {
+                        "credential_id": "legacy-empty",
+                        "label": "Candidate Name",
+                        "document_value": None,
+                        "normalized_value": None,
+                        "verifier_label": "Identity Database",
+                        "audit_status": "UNVERIFIED",
+                        "outcome_color": "amber",
+                        "explanation": "Legacy placeholder",
+                        "reason_codes": [],
+                        "matched_fields": {},
+                        "mismatched_fields": {},
+                        "missing_fields": [],
+                        "evidence": [],
+                        "timestamp": None,
+                    },
+                    {
+                        "credential_id": "real-id",
+                        "label": "Document ID",
+                        "document_value": "22BCE1234",
+                        "normalized_value": "22BCE1234",
+                        "verifier_label": "Academic Registry",
+                        "audit_status": "UNVERIFIED",
+                        "outcome_color": "amber",
+                        "explanation": "Pending verification",
+                        "reason_codes": [],
+                        "matched_fields": {},
+                        "mismatched_fields": {},
+                        "missing_fields": [],
+                        "evidence": [],
+                        "timestamp": None,
+                    },
+                ],
+            },
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+
+        credentials = get_credentials_for_session(session)
+        audits = get_credential_audits_for_session(session)
+        summary = get_verification_summary_for_session(session)
+
+        self.assertEqual([credential.credential_id for credential in credentials.credentials], ["real-id"])
+        self.assertEqual([audit.credential_id for audit in audits.audits], ["real-id"])
+        self.assertEqual(summary.total_credentials_found, 1)
 
 
 class GeneralizedVerificationApiTests(unittest.TestCase):

@@ -73,31 +73,47 @@ def build_extracted_credentials(extraction_payload: dict[str, Any] | None) -> li
     if not extraction_payload:
         return []
 
-    document_type = str(extraction_payload.get("document_type") or "unknown")
+    document_type = _resolve_document_type(extraction_payload)
     extraction_method = _resolve_extraction_method(extraction_payload)
     credentials: list[ExtractedCredential] = []
 
-    for index, entry in enumerate(_iter_field_entries(extraction_payload), start=1):
+    for index, entry in enumerate(_iter_generalized_entries(extraction_payload), start=1):
         label = entry["label"]
         raw_value = entry["value"]
-        normalized_value = normalize_value(raw_value)
+        source_category = entry.get("source_category")
+        normalized_value = normalize_value(entry.get("normalized_value") or raw_value)
+        if not normalized_value and not _coerce_source_text(entry["source_text"], raw_value):
+            continue
         category = classify_credential_category(
             label=label,
             key=entry["key"],
+            source_category=source_category,
             normalized_value=normalized_value,
             document_type=document_type,
         )
-        requires_verification, verification_reason = determine_verification_requirement(
-            label=label,
-            key=entry["key"],
-            category=category,
-            normalized_value=normalized_value,
-        )
+        explicit_requires_verification = entry.get("requires_verification")
+        explicit_verification_reason = entry.get("verification_reason")
+        if explicit_requires_verification is None:
+            requires_verification, verification_reason = determine_verification_requirement(
+                label=label,
+                key=entry["key"],
+                category=category,
+                normalized_value=normalized_value,
+            )
+        else:
+            requires_verification = bool(explicit_requires_verification)
+            verification_reason = explicit_verification_reason or (
+                "This extracted credential is marked for verification in the generalized analysis payload."
+                if requires_verification
+                else "The generalized analysis payload marked this field as out of scope for direct verification."
+            )
         bounding_box = _normalize_bounding_box(entry["bounding_box"])
-        page = bounding_box.page if bounding_box is not None else None
+        page = _coerce_int(entry.get("page"))
+        if page is None and bounding_box is not None:
+            page = bounding_box.page
         credentials.append(
             ExtractedCredential(
-                credential_id=_build_credential_id(entry["key"], index),
+                credential_id=str(entry.get("credential_id") or _build_credential_id(entry["key"], index)),
                 label=label,
                 category=category,
                 value=raw_value,
@@ -106,11 +122,15 @@ def build_extracted_credentials(extraction_payload: dict[str, Any] | None) -> li
                 confidence=_coerce_confidence(entry["confidence"]),
                 page=page,
                 bounding_box=bounding_box,
-                is_pii=is_pii_field(
-                    label=label,
-                    key=entry["key"],
-                    category=category,
-                    normalized_value=normalized_value,
+                is_pii=(
+                    bool(entry["is_pii"])
+                    if entry.get("is_pii") is not None
+                    else is_pii_field(
+                        label=label,
+                        key=entry["key"],
+                        category=category,
+                        normalized_value=normalized_value,
+                    )
                 ),
                 requires_verification=requires_verification,
                 verification_reason=verification_reason,
@@ -118,13 +138,14 @@ def build_extracted_credentials(extraction_payload: dict[str, Any] | None) -> li
             )
         )
 
-    return credentials
+    return _dedupe_credentials(credentials)
 
 
 def classify_credential_category(
     *,
     label: str,
     key: str | None = None,
+    source_category: str | None = None,
     normalized_value: str | None = None,
     document_type: str | None = None,
 ) -> str:
@@ -132,12 +153,35 @@ def classify_credential_category(
         part
         for part in (
             (key or "").replace("_", " "),
+            (source_category or "").replace("_", " "),
             label.lower(),
             (normalized_value or "").lower(),
         )
         if part
     )
     document_context = (document_type or "").replace("_", " ").lower()
+    normalized_source_category = (source_category or "").strip().lower()
+
+    if normalized_source_category in {"person_name", "date_of_birth", "national_identifier"}:
+        return "identity"
+    if normalized_source_category == "address":
+        return "address"
+    if normalized_source_category in {"passport_number", "passport_identifier"}:
+        return "passport"
+    if normalized_source_category in {"license_number", "license_identifier"}:
+        return "license"
+    if normalized_source_category in {"tax_identifier"}:
+        return "tax"
+    if normalized_source_category in {"email", "phone_number"}:
+        return "identity"
+    if normalized_source_category in {"issuer", "credential_title", "program_name", "program_branch", "registration_number", "score"}:
+        if any(
+            token in document_context
+            for token in ("academic", "transcript", "credential", "report card", "marksheet", "mark sheet", "grade report")
+        ):
+            return "academic"
+        if "certificate" in document_context:
+            return "certificate"
 
     if _contains_any_keyword(primary_haystack, CATEGORY_KEYWORDS["passport"]):
         return "passport"
@@ -221,45 +265,65 @@ def normalize_value(value: Any) -> str | None:
     return text or None
 
 
-def _iter_field_entries(extraction_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    field_details = extraction_payload.get("field_details")
-    if isinstance(field_details, list) and field_details:
+def _iter_generalized_entries(extraction_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    generalized_analysis = extraction_payload.get("generalized_analysis") or {}
+    generalized_credentials = generalized_analysis.get("generalized_credentials_payload")
+    if isinstance(generalized_credentials, list) and generalized_credentials:
         entries = []
-        for index, detail in enumerate(field_details, start=1):
-            key = str(detail.get("key") or detail.get("name") or f"field_{index}")
-            bounding_boxes = detail.get("bounding_boxes") or []
+        for index, credential in enumerate(generalized_credentials, start=1):
+            if not isinstance(credential, dict):
+                continue
+            label = str(credential.get("label") or f"Credential {index}")
+            key = str(credential.get("credential_id") or _slug(label) or f"credential_{index}")
             entries.append(
                 {
+                    "credential_id": credential.get("credential_id"),
                     "key": key,
-                    "label": str(detail.get("label") or _humanize_key(key)),
-                    "value": detail.get("value"),
-                    "confidence": detail.get("confidence"),
-                    "bounding_box": (bounding_boxes[0] if bounding_boxes else None),
-                    "source_text": _coerce_source_text(detail.get("source_text"), detail.get("value")),
-                    "extraction_method": detail.get("extraction_method"),
+                    "label": label,
+                    "value": credential.get("value"),
+                    "normalized_value": credential.get("normalized_value"),
+                    "confidence": credential.get("confidence"),
+                    "bounding_box": credential.get("bounding_box"),
+                    "page": credential.get("page"),
+                    "source_text": _coerce_source_text(credential.get("source_text"), credential.get("value")),
+                    "extraction_method": credential.get("extraction_method"),
+                    "source_category": credential.get("category"),
+                    "is_pii": credential.get("is_pii"),
+                    "requires_verification": credential.get("requires_verification"),
+                    "verification_reason": credential.get("verification_reason"),
                 }
             )
         return entries
 
-    raw_fields = extraction_payload.get("fields") or {}
-    confidence_map = extraction_payload.get("confidence") or {}
-    bounding_boxes = extraction_payload.get("bounding_boxes") or {}
-    entries = []
-    for index, (key, raw_value) in enumerate(raw_fields.items(), start=1):
-        detail = raw_value if isinstance(raw_value, dict) else {}
-        value = detail.get("value") if detail else raw_value
-        entries.append(
-            {
-                "key": str(key or f"field_{index}"),
-                "label": _humanize_key(str(key or f"field_{index}")),
-                "value": value,
-                "confidence": detail.get("confidence", confidence_map.get(key)),
-                "bounding_box": _first_box(detail.get("bounding_boxes")) or bounding_boxes.get(key),
-                "source_text": _coerce_source_text(detail.get("source_text"), value),
-                "extraction_method": detail.get("extraction_method"),
-            }
-        )
-    return entries
+    field_candidates = extraction_payload.get("field_candidates")
+    if isinstance(field_candidates, list) and field_candidates:
+        entries = []
+        for index, candidate in enumerate(field_candidates, start=1):
+            if not isinstance(candidate, dict):
+                continue
+            label = str(candidate.get("label") or f"Credential {index}")
+            key = str(candidate.get("candidate_id") or _slug(label) or f"candidate_{index}")
+            entries.append(
+                {
+                    "credential_id": candidate.get("candidate_id"),
+                    "key": key,
+                    "label": label,
+                    "value": candidate.get("raw_value"),
+                    "normalized_value": candidate.get("normalized_value"),
+                    "confidence": candidate.get("confidence"),
+                    "bounding_box": candidate.get("bounding_box"),
+                    "page": candidate.get("page"),
+                    "source_text": _coerce_source_text(candidate.get("source_text"), candidate.get("raw_value")),
+                    "extraction_method": candidate.get("extraction_method"),
+                    "source_category": candidate.get("category"),
+                    "is_pii": candidate.get("is_pii"),
+                    "requires_verification": candidate.get("requires_verification"),
+                    "verification_reason": candidate.get("verification_reason"),
+                }
+            )
+        return entries
+
+    return []
 
 
 def _build_credential_id(key: str, index: int) -> str:
@@ -267,6 +331,10 @@ def _build_credential_id(key: str, index: int) -> str:
     if not slug:
         slug = "credential"
     return f"{slug}-{index}"
+
+
+def _slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
 def _humanize_key(value: str) -> str:
@@ -292,9 +360,22 @@ def _coerce_source_text(source_text: Any, fallback_value: Any) -> str | None:
 def _resolve_extraction_method(extraction_payload: dict[str, Any]) -> str:
     if extraction_payload.get("used_ocr") or extraction_payload.get("ocr_used"):
         return "ocr"
-    if extraction_payload.get("field_details"):
-        return "structured_extraction"
+    generalized_analysis = extraction_payload.get("generalized_analysis") or {}
+    generalized_credentials = generalized_analysis.get("generalized_credentials_payload") or []
+    if generalized_credentials:
+        return "generalized_analysis"
+    if extraction_payload.get("field_candidates"):
+        return "generalized_analysis"
     return "rule_based"
+
+
+def _resolve_document_type(extraction_payload: dict[str, Any]) -> str:
+    generalized_analysis = extraction_payload.get("generalized_analysis") or {}
+    summary_payload = generalized_analysis.get("verification_summary_payload") or {}
+    summary_document_type = normalize_value(summary_payload.get("document_type"))
+    if summary_document_type:
+        return summary_document_type
+    return str(extraction_payload.get("document_type") or "unknown")
 
 
 def _first_box(value: Any) -> dict[str, Any] | None:
@@ -344,3 +425,17 @@ def _contains_any_keyword(haystack: str, keywords: tuple[str, ...]) -> bool:
 def _contains_keyword(haystack: str, keyword: str) -> bool:
     pattern = r"\b" + re.escape(keyword) + r"\b"
     return re.search(pattern, haystack) is not None
+
+
+def _dedupe_credentials(credentials: list[ExtractedCredential]) -> list[ExtractedCredential]:
+    grouped: dict[tuple[str, str, int | None], ExtractedCredential] = {}
+    for credential in credentials:
+        key = (
+            credential.label.lower(),
+            (credential.normalized_value or str(credential.value or "")).lower(),
+            credential.page,
+        )
+        current = grouped.get(key)
+        if current is None or (credential.confidence or 0) > (current.confidence or 0):
+            grouped[key] = credential
+    return list(grouped.values())

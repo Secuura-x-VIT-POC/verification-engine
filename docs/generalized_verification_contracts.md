@@ -14,6 +14,13 @@ Microsoft Entra Verified ID is the primary VC and identity trust rail for Entra-
 
 The LangGraph layer exists to improve document understanding, credential grouping, route suggestions, and reviewer-facing explanations. It does not decide final trust, bypass verifier execution, or replace the deterministic trust engine.
 
+Optional NVIDIA-hosted inference now sits behind that bounded architecture:
+
+- `minimaxai/minimax-m2.5` for agent reasoning
+- `nvidia/gliner-pii` for PII and field-candidate enrichment
+
+These integrations are config-driven, privacy-minimized, and must fall back to deterministic local behavior if disabled, unconfigured, or unavailable.
+
 ## Persisted Session Artifact Families
 
 ### Generalized analysis artifacts
@@ -55,6 +62,16 @@ The LangGraph layer exists to improve document understanding, credential groupin
 - `agent_run_error`
 
 All artifact fields are additive, nullable, and backward compatible with older rows.
+
+## Primary Extraction Rule
+
+Generalized analysis is now the default extraction contract for downstream planning and audit rendering.
+
+- `field_candidates`
+- `generalized_analysis`
+- grounded evidence lines and spatial metadata
+
+The older five-field compatibility schema (`Candidate Name`, `Institution`, `Credential`, `Issue Date`, `Document ID`) may still exist inside bounded trust-only compatibility surfaces, but it is no longer an active source for generalized credential discovery, verification planning, or audit rendering.
 
 ## Generalized Analysis Contracts
 
@@ -132,6 +149,25 @@ Bounded task statuses:
 - `SUCCEEDED`
 - `PARTIAL`
 - `FAILED`
+
+## NVIDIA Inference Boundary
+
+The shared `backend/app/inference/` module is the optional outbound model boundary.
+
+- `NVIDIA_API_KEY`
+- `NVIDIA_BASE_URL` with default `https://integrate.api.nvidia.com/v1`
+- `NVIDIA_REASONING_MODEL` with default `minimaxai/minimax-m2.5`
+- `NVIDIA_PII_MODEL` with default `nvidia/gliner-pii`
+- `AGENT_PROVIDER=nvidia`
+- `AGENT_EXTERNAL_PROVIDER_ENABLED=1`
+
+Bounded precedence remains:
+
+- deterministic extracted text and geometry stay source-of-record
+- GLiNER may enrich label and category typing for field candidates
+- MiniMax may improve document understanding, grouping, routing suggestions, and explanation text
+- deterministic verifier execution decides field-level verification
+- deterministic trust remains the final document-level authority
 - `MANUAL_REVIEW`
 - `SKIPPED`
 

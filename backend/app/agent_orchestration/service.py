@@ -37,7 +37,7 @@ from .contracts import (
 from .graph import build_agent_graph
 from .policies import load_agent_runtime_policy, minimize_extraction_payload
 from .prompts import load_prompt_bundle
-from .providers import DeterministicProvider, NvidiaProvider
+from .providers import AgentProviderUnavailable, DeterministicProvider, NvidiaProvider
 
 
 LOGGER = logging.getLogger(__name__)
@@ -318,10 +318,14 @@ def get_agent_run_summary_for_session(session) -> AgentRunSummary:
     persisted = _load_model(AgentRunSummary, session.agent_run_summary_payload)
     if persisted is not None:
         return persisted
+    enrichment_metadata = ((session.extraction_payload or {}).get("enrichment_metadata") or {})
     return AgentRunSummary(
         session_id=session.id,
         run_status=_infer_agent_run_status(session),
         provider_used="deterministic",
+        reasoning_model_used="deterministic",
+        pii_model_used=enrichment_metadata.get("pii_model_used"),
+        pii_enrichment_used=bool(enrichment_metadata.get("pii_enrichment_used")),
         warnings=[],
         fallback_used=False,
     )
@@ -335,6 +339,9 @@ def get_agent_run_status_for_session(session) -> SessionAgentRunStatus:
         agent_run_status=_infer_agent_run_status(session),
         agent_run_error=session.agent_run_error,
         provider_used=run_summary.provider_used,
+        reasoning_model_used=run_summary.reasoning_model_used,
+        pii_model_used=run_summary.pii_model_used,
+        pii_enrichment_used=run_summary.pii_enrichment_used,
         fallback_used=run_summary.fallback_used,
         warnings=list(run_summary.warnings or []),
         document_understanding_available=bool(session.agent_document_understanding_payload),
@@ -363,10 +370,14 @@ def _run_agent_graph(
 ) -> dict[str, Any]:
     policy = load_agent_runtime_policy()
     if not policy.orchestration_enabled:
+        enrichment_metadata = (extraction_payload or {}).get("enrichment_metadata") or {}
         empty_summary = AgentRunSummary(
             session_id=session_id,
             run_status=AGENT_RUN_STATUS_NOT_STARTED,
             provider_used="deterministic",
+            reasoning_model_used="deterministic",
+            pii_model_used=enrichment_metadata.get("pii_model_used"),
+            pii_enrichment_used=bool(enrichment_metadata.get("pii_enrichment_used")),
             warnings=["Agent orchestration is disabled by policy."],
             fallback_used=False,
         )
@@ -379,37 +390,59 @@ def _run_agent_graph(
         }
 
     provider, warnings, fallback_used = _resolve_provider(policy)
-    graph = build_agent_graph(provider)
+    minimized_payload = minimize_extraction_payload(
+        extraction_payload,
+        max_fields=policy.max_fields_for_provider,
+        max_value_chars=policy.max_value_chars,
+    )
+    enrichment_metadata = (extraction_payload or {}).get("enrichment_metadata") or {}
     started_at = datetime.utcnow()
-    result = graph.invoke(
-        {
-            "session_id": session_id,
-            "phase": phase,
-            "extraction_payload": extraction_payload,
-            "minimized_extraction_payload": minimize_extraction_payload(
-                extraction_payload,
-                max_fields=policy.max_fields_for_provider,
-                max_value_chars=policy.max_value_chars,
-            ),
-            "document_type": document_profile.document_type,
-            "document_profile": document_profile,
-            "credentials": credentials,
-            "verification_plan": verification_plan,
-            "verification_task_results": verification_task_results,
-            "credential_bundles": credential_bundles,
-            "credential_audits": credential_audits,
-            "existing_document_understanding": existing_document_understanding,
-            "existing_credential_candidates": existing_credential_candidates,
-            "existing_route_recommendations": existing_route_recommendations,
-            "existing_explanations": existing_explanations,
-            "prompt_text": load_prompt_bundle(),
+    state = {
+        "session_id": session_id,
+        "phase": phase,
+        "extraction_payload": extraction_payload,
+        "minimized_extraction_payload": minimized_payload,
+        "document_type": document_profile.document_type,
+        "document_profile": document_profile,
+        "credentials": credentials,
+        "verification_plan": verification_plan,
+        "verification_task_results": verification_task_results,
+        "credential_bundles": credential_bundles,
+        "credential_audits": credential_audits,
+        "existing_document_understanding": existing_document_understanding,
+        "existing_credential_candidates": existing_credential_candidates,
+        "existing_route_recommendations": existing_route_recommendations,
+        "existing_explanations": existing_explanations,
+        "prompt_text": load_prompt_bundle(),
+        "warnings": warnings,
+        "nodes_executed": [],
+        "provider_name": provider.provider_key,
+        "reasoning_model_used": (
+            policy.nvidia_reasoning_model if provider.provider_key == "nvidia" else "deterministic"
+        ),
+        "pii_model_used": enrichment_metadata.get("pii_model_used"),
+        "pii_enrichment_used": bool(enrichment_metadata.get("pii_enrichment_used")),
+        "fallback_used": fallback_used,
+        "started_at": started_at,
+    }
+    graph = build_agent_graph(provider)
+    try:
+        result = graph.invoke(state)
+    except AgentProviderUnavailable as exc:
+        if provider.provider_key != "nvidia":
+            raise
+        warnings = list(warnings)
+        warnings.append(str(exc))
+        fallback_provider = DeterministicProvider(policy)
+        fallback_state = {
+            **state,
             "warnings": warnings,
             "nodes_executed": [],
-            "provider_name": provider.provider_key,
-            "fallback_used": fallback_used,
-            "started_at": started_at,
+            "provider_name": fallback_provider.provider_key,
+            "reasoning_model_used": "deterministic",
+            "fallback_used": True,
         }
-    )
+        result = build_agent_graph(fallback_provider).invoke(fallback_state)
     run_summary = result["run_summary"]
     if run_summary.started_at is None:
         run_summary.started_at = started_at

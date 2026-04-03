@@ -113,9 +113,9 @@ def claim_key_candidates(credential: ExtractedCredential) -> set[str]:
 
     if category == "identity" or "name" in label:
         keys.update({"name", "candidate_name", "full_name"})
-    if "institution" in label or "issuer" in label or category == "academic":
+    if "institution" in label or "issuer" in label or "university" in label or "college" in label:
         keys.update({"institution", "issuer"})
-    if "credential" in label or "degree" in label or category in {"academic", "certificate"}:
+    if "credential" in label or "degree" in label or "certificate" in label:
         keys.update({"degree", "credential", "certificate"})
     if "address" in label or category == "address":
         keys.update({"address", "postal_address"})
@@ -131,6 +131,8 @@ def claim_key_candidates(credential: ExtractedCredential) -> set[str]:
         or "document id" in label
     ):
         keys.update({"document_id", "identifier", "id"})
+    if "registration" in label or "roll number" in label or "roll no" in label:
+        keys.update({"document_id", "registration_number", "roll_number", "id"})
 
     return {key for key in keys if key}
 

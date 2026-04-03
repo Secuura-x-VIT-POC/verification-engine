@@ -75,6 +75,7 @@ def build_document_profile(
     notes: list[str] = []
     if has_extraction_payload:
         error_message = (extraction_payload or {}).get("error_message")
+        enrichment_metadata = (extraction_payload or {}).get("enrichment_metadata") or {}
         if error_message:
             notes.append(str(error_message))
         if not credential_collection.credentials:
@@ -83,6 +84,12 @@ def build_document_profile(
             notes.append("Document type could not be confidently inferred from the current extraction payload.")
         if any(decision.manual_review_recommended for decision in plan.route_decisions):
             notes.append("At least one credential is currently routed to manual review.")
+        if enrichment_metadata.get("pii_enrichment_used"):
+            notes.append("NVIDIA GLiNER PII enrichment contributed label or entity typing support.")
+        elif enrichment_metadata.get("warning_codes"):
+            notes.append(
+                "NVIDIA GLiNER PII enrichment was unavailable and deterministic extraction remained the source of record."
+            )
 
     return DocumentProfile(
         session_id=session_id,
@@ -376,49 +383,58 @@ def get_document_profile_for_session(session) -> DocumentProfile:
 def get_credentials_for_session(session) -> SessionCredentialCollection:
     persisted = _load_model(SessionCredentialCollection, session.generalized_credentials_payload)
     if persisted is not None:
-        return persisted
-    return build_credentials(session.id, session.extraction_payload)
+        return _sanitize_credential_collection(persisted)
+    return _sanitize_credential_collection(build_credentials(session.id, session.extraction_payload))
 
 
 def get_verification_plan_for_session(session) -> SessionVerificationPlan:
+    credentials = get_credentials_for_session(session)
     persisted = _load_model(SessionVerificationPlan, session.verification_plan_payload)
     if persisted is not None:
-        return persisted
-    return build_verification_plan(session.id, session.extraction_payload)
+        return _sanitize_verification_plan(persisted, credentials)
+    return _sanitize_verification_plan(
+        build_verification_plan(session.id, session.extraction_payload, credentials=credentials),
+        credentials,
+    )
 
 
 def get_credential_audits_for_session(session) -> CredentialAuditCollection:
+    credentials = get_credentials_for_session(session)
     persisted = _load_model(CredentialAuditCollection, session.credential_audits_payload)
     if persisted is not None:
-        return persisted
+        return _sanitize_credential_audits(persisted, credentials)
 
-    credentials = build_credentials(session.id, session.extraction_payload)
     verification_plan = build_verification_plan(
         session.id,
         session.extraction_payload,
         credentials=credentials,
     )
     bundles = get_credential_bundles_for_session(session)
-    return assemble_credential_audits(
-        session.id,
-        session.extraction_payload,
-        connector_payload=session.connector_payload,
-        trust_outcome=session.trust_outcome,
-        reason_codes=list(session.reason_codes or []),
-        audit_timestamp=session.verified_at or session.updated_at or session.created_at,
-        credentials=credentials,
-        verification_plan=verification_plan,
-        credential_bundles=bundles,
+    return _sanitize_credential_audits(
+        assemble_credential_audits(
+            session.id,
+            session.extraction_payload,
+            connector_payload=session.connector_payload,
+            trust_outcome=session.trust_outcome,
+            reason_codes=list(session.reason_codes or []),
+            audit_timestamp=session.verified_at or session.updated_at or session.created_at,
+            credentials=credentials,
+            verification_plan=verification_plan,
+            credential_bundles=bundles,
+        ),
+        credentials,
     )
 
 
 def get_verification_summary_for_session(session) -> DocumentVerificationSummary:
     persisted = _load_model(DocumentVerificationSummary, session.verification_summary_payload)
-    if persisted is not None:
-        return persisted
-
-    credentials = build_credentials(session.id, session.extraction_payload)
+    credentials = get_credentials_for_session(session)
     audits = get_credential_audits_for_session(session)
+    if persisted is not None:
+        if not session.generalized_credentials_payload and not session.credential_audits_payload:
+            return persisted
+        if persisted.total_credentials_found == len(credentials.credentials):
+            return persisted
     return build_verification_summary(
         session.id,
         session.extraction_payload,
@@ -430,16 +446,31 @@ def get_verification_summary_for_session(session) -> DocumentVerificationSummary
 
 
 def get_analysis_status_for_session(session) -> SessionAnalysisStatus:
+    credentials = get_credentials_for_session(session) if session.extraction_payload else SessionCredentialCollection(
+        session_id=session.id,
+        document_type="unknown",
+        credentials=[],
+    )
+    verification_plan = (
+        get_verification_plan_for_session(session)
+        if session.extraction_payload or session.verification_plan_payload
+        else SessionVerificationPlan(session_id=session.id, document_type="unknown", route_decisions=[], tasks=[])
+    )
+    audits = (
+        get_credential_audits_for_session(session)
+        if session.extraction_payload or session.credential_audits_payload
+        else CredentialAuditCollection(session_id=session.id, document_type="unknown", audits=[])
+    )
     return SessionAnalysisStatus(
         session_id=session.id,
         workflow_state=session.status,
         generalized_analysis_status=_infer_analysis_status(session),
         generalized_analysis_error=session.generalized_analysis_error,
         document_profile_available=bool(session.document_profile_payload) or bool(session.extraction_payload),
-        credentials_available=bool(session.generalized_credentials_payload) or bool(session.extraction_payload),
-        verification_plan_available=bool(session.verification_plan_payload) or bool(session.extraction_payload),
-        credential_audits_available=bool(session.credential_audits_payload) or bool(session.extraction_payload),
-        verification_summary_available=bool(session.verification_summary_payload) or bool(session.extraction_payload),
+        credentials_available=bool(credentials.credentials),
+        verification_plan_available=bool(verification_plan.tasks or verification_plan.route_decisions),
+        credential_audits_available=bool(audits.audits),
+        verification_summary_available=bool(session.verification_summary_payload) or bool(audits.audits),
     )
 
 
@@ -461,6 +492,9 @@ def _collect_extraction_methods(
         for credential in credentials.credentials
         if credential.extraction_method and credential.extraction_method != "unknown"
     ]
+    enrichment_metadata = (extraction_payload or {}).get("enrichment_metadata") or {}
+    if enrichment_metadata.get("pii_enrichment_used"):
+        methods.append("nvidia_gliner_pii")
     if methods:
         return sorted(dict.fromkeys(methods))
 
@@ -468,6 +502,9 @@ def _collect_extraction_methods(
         return []
     if extraction_payload.get("used_ocr") or extraction_payload.get("ocr_used"):
         return ["ocr"]
+    generalized_analysis = extraction_payload.get("generalized_analysis") or {}
+    if generalized_analysis.get("generalized_credentials_payload") or extraction_payload.get("field_candidates"):
+        return ["generalized_analysis"]
     if extraction_payload.get("field_details"):
         return ["structured_extraction"]
     return ["rule_based"]
@@ -514,6 +551,7 @@ def _coerce_page_count(value: Any) -> int | None:
 
 
 def _infer_analysis_status(session) -> str:
+    has_generalized_credentials = bool(get_credentials_for_session(session).credentials) if session.extraction_payload else False
     if session.generalized_analysis_status and (
         str(session.generalized_analysis_status) != ANALYSIS_STATUS_NOT_STARTED
         or any(
@@ -540,15 +578,104 @@ def _infer_analysis_status(session) -> str:
         return ANALYSIS_STATUS_CREDENTIALS_BUILT
     if session.document_profile_payload:
         return ANALYSIS_STATUS_PROFILED
-    if session.extraction_payload and (
+    if has_generalized_credentials and (
         session.connector_payload is not None
         or session.trust_outcome is not None
         or bool(session.reason_codes)
     ):
         return ANALYSIS_STATUS_READY
-    if session.extraction_payload:
+    if has_generalized_credentials:
         return ANALYSIS_STATUS_PLAN_BUILT
+    if session.extraction_payload:
+        return ANALYSIS_STATUS_NOT_STARTED
     return ANALYSIS_STATUS_NOT_STARTED
+
+
+def _sanitize_credential_collection(
+    collection: SessionCredentialCollection,
+) -> SessionCredentialCollection:
+    sanitized_credentials = [
+        credential
+        for credential in collection.credentials
+        if _has_usable_credential_content(credential)
+    ]
+    if len(sanitized_credentials) == len(collection.credentials):
+        return collection
+    return SessionCredentialCollection(
+        session_id=collection.session_id,
+        document_type=collection.document_type,
+        credentials=sanitized_credentials,
+    )
+
+
+def _sanitize_verification_plan(
+    plan: SessionVerificationPlan,
+    credentials: SessionCredentialCollection,
+) -> SessionVerificationPlan:
+    valid_ids = {credential.credential_id for credential in credentials.credentials}
+    if not valid_ids:
+        return SessionVerificationPlan(
+            session_id=plan.session_id,
+            document_type=plan.document_type,
+            route_decisions=[],
+            tasks=[],
+        )
+
+    route_decisions = [
+        decision
+        for decision in plan.route_decisions
+        if decision.credential_id in valid_ids
+    ]
+    tasks = [
+        task
+        for task in plan.tasks
+        if task.credential_id in valid_ids
+    ]
+    if len(route_decisions) == len(plan.route_decisions) and len(tasks) == len(plan.tasks):
+        return plan
+    return SessionVerificationPlan(
+        session_id=plan.session_id,
+        document_type=plan.document_type,
+        route_decisions=route_decisions,
+        tasks=tasks,
+    )
+
+
+def _sanitize_credential_audits(
+    audits: CredentialAuditCollection,
+    credentials: SessionCredentialCollection,
+) -> CredentialAuditCollection:
+    valid_ids = {credential.credential_id for credential in credentials.credentials}
+    if not valid_ids:
+        return CredentialAuditCollection(
+            session_id=audits.session_id,
+            document_type=audits.document_type,
+            audits=[],
+        )
+
+    sanitized_audits = [
+        audit
+        for audit in audits.audits
+        if audit.credential_id in valid_ids
+    ]
+    if len(sanitized_audits) == len(audits.audits):
+        return audits
+    return CredentialAuditCollection(
+        session_id=audits.session_id,
+        document_type=audits.document_type,
+        audits=sanitized_audits,
+    )
+
+
+def _has_usable_credential_content(credential) -> bool:
+    return any(
+        value not in (None, "")
+        for value in (
+            getattr(credential, "value", None),
+            getattr(credential, "normalized_value", None),
+            getattr(credential, "source_text", None),
+        )
+    )
 
 
 def _load_model(model_cls, payload: Any):

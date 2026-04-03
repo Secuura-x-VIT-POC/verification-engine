@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from ..inference import load_nvidia_inference_config
+
 
 def _read_bool(name: str, default: bool) -> bool:
     raw_value = os.getenv(name)
@@ -42,12 +44,18 @@ class AgentRuntimePolicy:
     classification_override_confidence: float = 0.74
     max_fields_for_provider: int = 18
     max_value_chars: int = 160
-    nvidia_base_url: str | None = None
-    nvidia_model: str | None = None
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_reasoning_model: str = "minimaxai/minimax-m2.5"
+    nvidia_pii_model: str = "nvidia/gliner-pii"
     nvidia_api_key: str | None = None
+    nvidia_retry_budget: int = 0
+    nvidia_max_input_chars: int = 4000
+    nvidia_reasoning_enabled: bool = True
+    nvidia_gliner_enabled: bool = True
 
 
 def load_agent_runtime_policy() -> AgentRuntimePolicy:
+    nvidia = load_nvidia_inference_config()
     return AgentRuntimePolicy(
         orchestration_enabled=_read_bool("AGENT_ORCHESTRATION_ENABLED", True),
         provider_key=os.getenv("AGENT_PROVIDER", "deterministic").strip().lower() or "deterministic",
@@ -57,9 +65,14 @@ def load_agent_runtime_policy() -> AgentRuntimePolicy:
         classification_override_confidence=_read_float("AGENT_CLASSIFICATION_OVERRIDE_CONFIDENCE", 0.74),
         max_fields_for_provider=_read_int("AGENT_MAX_FIELDS_FOR_PROVIDER", 18),
         max_value_chars=_read_int("AGENT_MAX_VALUE_CHARS", 160),
-        nvidia_base_url=(os.getenv("AGENT_NVIDIA_BASE_URL") or "").strip() or None,
-        nvidia_model=(os.getenv("AGENT_NVIDIA_MODEL") or "").strip() or None,
-        nvidia_api_key=(os.getenv("AGENT_NVIDIA_API_KEY") or "").strip() or None,
+        nvidia_base_url=nvidia.base_url,
+        nvidia_reasoning_model=nvidia.reasoning_model,
+        nvidia_pii_model=nvidia.pii_model,
+        nvidia_api_key=nvidia.api_key,
+        nvidia_retry_budget=nvidia.retry_budget,
+        nvidia_max_input_chars=nvidia.max_input_chars,
+        nvidia_reasoning_enabled=nvidia.reasoning_enabled,
+        nvidia_gliner_enabled=nvidia.pii_enrichment_enabled,
     )
 
 
@@ -73,33 +86,37 @@ def minimize_extraction_payload(
         return None
 
     fields = []
-    for detail in list(extraction_payload.get("field_details") or [])[:max_fields]:
-        if not isinstance(detail, dict):
-            continue
-        value = detail.get("value")
-        fields.append(
-            {
-                "key": str(detail.get("key") or ""),
-                "label": str(detail.get("label") or ""),
-                "value": _truncate_text(value, max_value_chars),
-                "confidence": detail.get("confidence"),
-                "page": _resolve_page(detail),
-            }
-        )
-
-    if not fields:
-        raw_fields = extraction_payload.get("fields") or {}
-        for index, (key, value) in enumerate(raw_fields.items()):
-            if index >= max_fields:
+    generalized_analysis = extraction_payload.get("generalized_analysis") or {}
+    generalized_credentials = generalized_analysis.get("generalized_credentials_payload") or []
+    if isinstance(generalized_credentials, list):
+        for index, credential in enumerate(generalized_credentials):
+            if index >= max_fields or not isinstance(credential, dict):
                 break
-            resolved = value.get("value") if isinstance(value, dict) else value
+            value = credential.get("value")
             fields.append(
                 {
-                    "key": str(key),
-                    "label": str(key).replace("_", " ").title(),
-                    "value": _truncate_text(resolved, max_value_chars),
-                    "confidence": value.get("confidence") if isinstance(value, dict) else None,
-                    "page": None,
+                    "key": str(credential.get("credential_id") or ""),
+                    "label": str(credential.get("label") or ""),
+                    "value": _truncate_text(value, max_value_chars),
+                    "confidence": credential.get("confidence"),
+                    "page": credential.get("page"),
+                    "category": credential.get("category"),
+                }
+            )
+
+    if not fields:
+        for index, candidate in enumerate(list(extraction_payload.get("field_candidates") or [])[:max_fields]):
+            if not isinstance(candidate, dict):
+                continue
+            value = candidate.get("raw_value")
+            fields.append(
+                {
+                    "key": str(candidate.get("candidate_id") or ""),
+                    "label": str(candidate.get("label") or ""),
+                    "value": _truncate_text(value, max_value_chars),
+                    "confidence": candidate.get("confidence"),
+                    "page": candidate.get("page"),
+                    "category": candidate.get("category"),
                 }
             )
 
@@ -108,6 +125,11 @@ def minimize_extraction_payload(
         "page_count": extraction_payload.get("page_count"),
         "used_ocr": bool(extraction_payload.get("used_ocr") or extraction_payload.get("ocr_used")),
         "fields": fields,
+        "warnings": [
+            warning.get("code") if isinstance(warning, dict) else str(warning)
+            for warning in list(extraction_payload.get("warnings") or [])[:8]
+        ],
+        "enrichment_metadata": extraction_payload.get("enrichment_metadata") or {},
     }
 
 
@@ -119,14 +141,3 @@ def _truncate_text(value: Any, max_value_chars: int) -> str | None:
         return text
     return f"{text[:max_value_chars].rstrip()}..."
 
-
-def _resolve_page(detail: dict[str, Any]) -> int | None:
-    boxes = detail.get("bounding_boxes") or []
-    if isinstance(boxes, list) and boxes:
-        first_box = boxes[0]
-        if isinstance(first_box, dict):
-            try:
-                return int(first_box.get("page"))
-            except (TypeError, ValueError):
-                return None
-    return None

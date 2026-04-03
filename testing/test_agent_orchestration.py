@@ -19,6 +19,7 @@ from backend.app.agent_orchestration.service import build_agent_pass_a_artifacts
 from backend.app.api.routes import router
 from backend.app.auth.routes import get_current_user
 from backend.app.db.database import Base, get_db
+from backend.app.inference.nvidia import NvidiaInferenceError
 from backend.app.sessions.constants import SessionState
 from backend.app.sessions.models import Session as SessionModel
 from backend.app.verification_domain.service import (
@@ -36,34 +37,62 @@ def _sample_academic_extraction_payload() -> dict:
         "document_type": "academic_credential",
         "page_count": 1,
         "used_ocr": False,
-        "field_details": [
+        "field_candidates": [
             {
-                "key": "candidate_name",
+                "candidate_id": "cand-name",
                 "label": "Candidate Name",
-                "value": "Kanak Sharma",
+                "category": "person_name",
+                "raw_value": "Kanak Sharma",
+                "normalized_value": "Kanak Sharma",
+                "source_text": "Candidate Name: Kanak Sharma",
                 "confidence": 0.98,
-                "bounding_boxes": [{"page": 1, "x0": 10, "y0": 10, "x1": 80, "y1": 20}],
+                "page": 1,
+                "bounding_box": {"page": 1, "x0": 10, "y0": 10, "x1": 80, "y1": 20},
+                "is_pii": True,
+                "requires_verification": True,
+                "verification_reason": "Identity claim",
             },
             {
-                "key": "institution",
+                "candidate_id": "cand-institution",
                 "label": "Institution",
-                "value": "VIT Vellore",
+                "category": "issuer",
+                "raw_value": "VIT Vellore",
+                "normalized_value": "VIT Vellore",
+                "source_text": "Institution: VIT Vellore",
                 "confidence": 0.97,
-                "bounding_boxes": [{"page": 1, "x0": 10, "y0": 25, "x1": 120, "y1": 35}],
+                "page": 1,
+                "bounding_box": {"page": 1, "x0": 10, "y0": 25, "x1": 120, "y1": 35},
+                "is_pii": False,
+                "requires_verification": True,
+                "verification_reason": "Issuer claim",
             },
             {
-                "key": "credential",
+                "candidate_id": "cand-credential",
                 "label": "Credential",
-                "value": "BTech",
+                "category": "credential_title",
+                "raw_value": "BTech",
+                "normalized_value": "BTech",
+                "source_text": "Credential: BTech",
                 "confidence": 0.96,
-                "bounding_boxes": [{"page": 1, "x0": 10, "y0": 40, "x1": 90, "y1": 50}],
+                "page": 1,
+                "bounding_box": {"page": 1, "x0": 10, "y0": 40, "x1": 90, "y1": 50},
+                "is_pii": False,
+                "requires_verification": True,
+                "verification_reason": "Academic credential",
             },
             {
-                "key": "document_id",
+                "candidate_id": "cand-id",
                 "label": "Document ID",
-                "value": "22BCE1234",
+                "category": "registration_number",
+                "raw_value": "22BCE1234",
+                "normalized_value": "22BCE1234",
+                "source_text": "Document ID: 22BCE1234",
                 "confidence": 0.95,
-                "bounding_boxes": [{"page": 1, "x0": 10, "y0": 55, "x1": 90, "y1": 65}],
+                "page": 1,
+                "bounding_box": {"page": 1, "x0": 10, "y0": 55, "x1": 90, "y1": 65},
+                "is_pii": False,
+                "requires_verification": True,
+                "verification_reason": "Academic identifier",
             },
         ],
     }
@@ -74,13 +103,20 @@ def _sample_unknown_but_address_like_payload() -> dict:
         "document_type": "utility_document",
         "page_count": 1,
         "used_ocr": False,
-        "field_details": [
+        "field_candidates": [
             {
-                "key": "residency_proof_number",
+                "candidate_id": "cand-address",
                 "label": "Residency Proof Number",
-                "value": "ADDR-42",
+                "category": "address",
+                "raw_value": "ADDR-42",
+                "normalized_value": "ADDR-42",
+                "source_text": "Residency Proof Number: ADDR-42",
                 "confidence": 0.91,
-                "bounding_boxes": [{"page": 1, "x0": 10, "y0": 10, "x1": 120, "y1": 20}],
+                "page": 1,
+                "bounding_box": {"page": 1, "x0": 10, "y0": 10, "x1": 120, "y1": 20},
+                "is_pii": True,
+                "requires_verification": True,
+                "verification_reason": "Address-like claim",
             }
         ],
     }
@@ -127,7 +163,77 @@ def _sample_runtime_extraction_payload() -> dict:
                 "credential": {"page": 1, "x0": 10, "y0": 40, "x1": 120, "y1": 50},
                 "id": {"page": 1, "x0": 10, "y0": 55, "x1": 120, "y1": 65},
             },
-            "field_details": [],
+            "field_details": [
+                {
+                    "key": "candidate-name",
+                    "label": "Candidate Name",
+                    "value": "Kanak Sharma",
+                    "confidence": 0.98,
+                    "is_mandatory": True,
+                    "is_grounded": True,
+                    "bounding_boxes": [{"page": 1, "x0": 10, "y0": 10, "x1": 100, "y1": 20}],
+                    "category": "person_name",
+                    "requires_verification": True,
+                }
+            ],
+            "field_candidates": [
+                {
+                    "candidate_id": "cand-name",
+                    "label": "Candidate Name",
+                    "category": "person_name",
+                    "raw_value": "Kanak Sharma",
+                    "normalized_value": "Kanak Sharma",
+                    "source_text": "Candidate Name: Kanak Sharma",
+                    "confidence": 0.98,
+                    "page": 1,
+                    "bounding_box": {"page": 1, "x0": 10, "y0": 10, "x1": 100, "y1": 20},
+                    "is_pii": True,
+                    "requires_verification": True,
+                    "verification_reason": "Identity claim",
+                },
+                {
+                    "candidate_id": "cand-institution",
+                    "label": "Institution",
+                    "category": "issuer",
+                    "raw_value": "VIT Vellore",
+                    "normalized_value": "VIT Vellore",
+                    "source_text": "Institution: VIT Vellore",
+                    "confidence": 0.97,
+                    "page": 1,
+                    "bounding_box": {"page": 1, "x0": 10, "y0": 25, "x1": 150, "y1": 35},
+                    "is_pii": False,
+                    "requires_verification": True,
+                    "verification_reason": "Issuer claim",
+                },
+                {
+                    "candidate_id": "cand-credential",
+                    "label": "Credential",
+                    "category": "credential_title",
+                    "raw_value": "BTech",
+                    "normalized_value": "BTech",
+                    "source_text": "Credential: BTech",
+                    "confidence": 0.96,
+                    "page": 1,
+                    "bounding_box": {"page": 1, "x0": 10, "y0": 40, "x1": 120, "y1": 50},
+                    "is_pii": False,
+                    "requires_verification": True,
+                    "verification_reason": "Academic credential",
+                },
+                {
+                    "candidate_id": "cand-id",
+                    "label": "Document ID",
+                    "category": "registration_number",
+                    "raw_value": "22BCE1234",
+                    "normalized_value": "22BCE1234",
+                    "source_text": "Document ID: 22BCE1234",
+                    "confidence": 0.95,
+                    "page": 1,
+                    "bounding_box": {"page": 1, "x0": 10, "y0": 55, "x1": 120, "y1": 65},
+                    "is_pii": False,
+                    "requires_verification": True,
+                    "verification_reason": "Academic identifier",
+                },
+            ],
             "error_message": None,
         },
         "trust_input": {
@@ -221,6 +327,146 @@ class AgentGraphTests(unittest.TestCase):
 
         self.assertEqual(artifacts["run_summary"].provider_used, "deterministic")
         self.assertTrue(artifacts["run_summary"].fallback_used)
+        self.assertTrue(artifacts["run_summary"].warnings)
+
+    def test_nvidia_provider_uses_minimax_when_configured(self):
+        extraction_payload = _sample_academic_extraction_payload()
+        credentials = build_credentials("session-agent-nvidia", extraction_payload)
+        verification_plan = build_verification_plan(
+            "session-agent-nvidia",
+            extraction_payload,
+            credentials=credentials,
+        )
+        document_profile = build_document_profile(
+            "session-agent-nvidia",
+            extraction_payload,
+            credentials=credentials,
+            verification_plan=verification_plan,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "AGENT_PROVIDER": "nvidia",
+                "AGENT_EXTERNAL_PROVIDER_ENABLED": "1",
+                "NVIDIA_API_KEY": "demo-key",
+                "NVIDIA_REASONING_MODEL": "minimaxai/minimax-m2.5",
+            },
+            clear=False,
+        ), patch(
+            "backend.app.agent_orchestration.providers.nvidia.NvidiaChatClient.chat_json",
+            side_effect=[
+                {
+                    "document_type_guess": "academic_credential",
+                    "document_family_guess": "academic_document",
+                    "confidence": 0.91,
+                    "detected_sections": ["identity_section", "credential_section"],
+                    "detected_entities": [{"label": "Candidate Name", "category": "identity", "credential_id": "cand-name"}],
+                    "pii_signals": ["Candidate Name"],
+                    "credential_candidates": ["candidate-cand-name"],
+                    "reasoning_summary": "NVIDIA reasoning summarized the academic document conservatively.",
+                    "manual_review_recommended": False,
+                },
+                {
+                    "candidates": [
+                        {
+                            "candidate_id": "candidate-cand-name",
+                            "label": "Candidate Name",
+                            "category": "identity",
+                            "source_fields": ["Candidate Name"],
+                            "grouped_field_ids": ["cand-name"],
+                            "grouped_values": {"Candidate Name": "Kanak Sharma"},
+                            "confidence": 0.9,
+                            "verification_recommended": True,
+                            "verification_reason": "Identity field should be verified.",
+                            "possible_verifier_keys": ["identity_db"],
+                            "ambiguity_flags": [],
+                        }
+                    ]
+                },
+                {
+                    "recommendations": [
+                        {
+                            "candidate_id": "candidate-cand-name",
+                            "recommended_verifier_key": "identity_db",
+                            "alternative_verifier_keys": ["manual_review"],
+                            "route_reason": "Identity candidate should use the bounded identity verifier.",
+                            "confidence": 0.89,
+                            "manual_review_recommended": False,
+                        }
+                    ]
+                },
+                {
+                    "explanations": [
+                        {
+                            "target_type": "document",
+                            "target_id": "session-agent-nvidia",
+                            "explanation_kind": "document_understanding",
+                            "summary": "MiniMax returned a bounded document-understanding summary.",
+                            "structured_reasons": ["academic_credential"],
+                            "caution_notes": [],
+                        }
+                    ]
+                },
+            ],
+        ):
+            artifacts = build_agent_pass_a_artifacts(
+                "session-agent-nvidia",
+                extraction_payload=extraction_payload,
+                document_profile=document_profile,
+                credentials=credentials,
+                verification_plan=verification_plan,
+            )
+
+        self.assertEqual(artifacts["run_summary"].provider_used, "nvidia")
+        self.assertEqual(artifacts["run_summary"].reasoning_model_used, "minimaxai/minimax-m2.5")
+        self.assertFalse(artifacts["run_summary"].fallback_used)
+        self.assertGreater(len(artifacts["credential_candidates"].candidates), 0)
+
+    def test_nvidia_runtime_failure_reruns_deterministic_provider(self):
+        extraction_payload = _sample_academic_extraction_payload()
+        extraction_payload["enrichment_metadata"] = {
+            "pii_enrichment_used": True,
+            "pii_model_used": "nvidia/gliner-pii",
+        }
+        credentials = build_credentials("session-agent-fallback", extraction_payload)
+        verification_plan = build_verification_plan(
+            "session-agent-fallback",
+            extraction_payload,
+            credentials=credentials,
+        )
+        document_profile = build_document_profile(
+            "session-agent-fallback",
+            extraction_payload,
+            credentials=credentials,
+            verification_plan=verification_plan,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "AGENT_PROVIDER": "nvidia",
+                "AGENT_EXTERNAL_PROVIDER_ENABLED": "1",
+                "NVIDIA_API_KEY": "demo-key",
+            },
+            clear=False,
+        ), patch(
+            "backend.app.agent_orchestration.providers.nvidia.NvidiaChatClient.chat_json",
+            side_effect=NvidiaInferenceError("network_error", "network down"),
+        ):
+            artifacts = build_agent_pass_a_artifacts(
+                "session-agent-fallback",
+                extraction_payload=extraction_payload,
+                document_profile=document_profile,
+                credentials=credentials,
+                verification_plan=verification_plan,
+            )
+
+        self.assertEqual(artifacts["run_summary"].provider_used, "deterministic")
+        self.assertEqual(artifacts["run_summary"].reasoning_model_used, "deterministic")
+        self.assertTrue(artifacts["run_summary"].fallback_used)
+        self.assertTrue(artifacts["run_summary"].pii_enrichment_used)
+        self.assertEqual(artifacts["run_summary"].pii_model_used, "nvidia/gliner-pii")
         self.assertTrue(artifacts["run_summary"].warnings)
 
 

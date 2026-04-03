@@ -33,6 +33,9 @@ class AgentGraphState(TypedDict, total=False):
     warnings: list[str]
     nodes_executed: list[str]
     provider_name: str
+    reasoning_model_used: str | None
+    pii_model_used: str | None
+    pii_enrichment_used: bool
     fallback_used: bool
     started_at: Any
     document_understanding: AgentDocumentUnderstanding

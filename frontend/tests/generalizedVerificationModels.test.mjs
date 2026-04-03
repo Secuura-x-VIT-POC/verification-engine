@@ -126,6 +126,40 @@ export const checks = [
     },
   },
   {
+    name: "normalizeCredentialCollection drops empty placeholder credentials",
+    run() {
+      const credentials = normalizeCredentialCollection(
+        {
+          session_id: "session-1",
+          credentials: [
+            {
+              credential_id: "legacy-empty",
+              label: "Candidate Name",
+              category: "identity",
+              value: null,
+              normalized_value: null,
+              source_text: null,
+              confidence: 0,
+            },
+            {
+              credential_id: "real-credential",
+              label: "Passport Number",
+              category: "passport",
+              value: "P1234",
+              normalized_value: "P1234",
+              source_text: "Passport Number: P1234",
+              confidence: 0.94,
+            },
+          ],
+        },
+        "session-1"
+      );
+
+      assert.equal(credentials.credentials.length, 1);
+      assert.equal(credentials.credentials[0].credential_id, "real-credential");
+    },
+  },
+  {
     name: "buildHighlightItems uses audit status colors and skips credentials without geometry",
     run() {
       const credentials = normalizeCredentialCollection(
@@ -413,7 +447,10 @@ export const checks = [
         {
           session_id: "session-1",
           agent_run_status: "READY",
-          provider_used: "deterministic",
+          provider_used: "nvidia",
+          reasoning_model_used: "minimaxai/minimax-m2.5",
+          pii_model_used: "nvidia/gliner-pii",
+          pii_enrichment_used: true,
           fallback_used: false,
           warnings: [],
         },
@@ -479,6 +516,10 @@ export const checks = [
       assert.equal(viewModel.analysisRows[0].agentRecommendedVerifierLabel, "Address Check");
       assert.equal(viewModel.auditDetails[0].agentAssisted, true);
       assert.equal(viewModel.agentStatusLabel, "Ready");
+      assert.equal(viewModel.agentUnderstandingSummary.providerUsed, "nvidia");
+      assert.equal(viewModel.agentUnderstandingSummary.reasoningModelUsed, "minimaxai/minimax-m2.5");
+      assert.equal(viewModel.agentUnderstandingSummary.piiModelUsed, "nvidia/gliner-pii");
+      assert.equal(viewModel.agentUnderstandingSummary.piiEnrichmentUsed, true);
     },
   },
   {

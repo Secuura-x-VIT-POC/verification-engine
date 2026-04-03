@@ -68,6 +68,9 @@ class AgentRunSummary(ContractModel):
     run_status: str = AGENT_RUN_STATUS_NOT_STARTED
     nodes_executed: list[str] = Field(default_factory=list)
     provider_used: str = "deterministic"
+    reasoning_model_used: str | None = None
+    pii_model_used: str | None = None
+    pii_enrichment_used: bool = False
     started_at: datetime | None = None
     completed_at: datetime | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -98,6 +101,9 @@ class SessionAgentRunStatus(ContractModel):
     agent_run_status: str = AGENT_RUN_STATUS_NOT_STARTED
     agent_run_error: str | None = None
     provider_used: str | None = None
+    reasoning_model_used: str | None = None
+    pii_model_used: str | None = None
+    pii_enrichment_used: bool = False
     fallback_used: bool = False
     warnings: list[str] = Field(default_factory=list)
     document_understanding_available: bool = False

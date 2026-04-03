@@ -71,6 +71,15 @@ export default function WorkspaceRightSidebar({
           <span>
             <strong>Provider:</strong> {agentUnderstandingSummary.providerUsed || "deterministic"}
           </span>
+          <span>
+            <strong>Reasoning model:</strong> {agentUnderstandingSummary.reasoningModelUsed || "deterministic"}
+          </span>
+          <span>
+            <strong>PII enrichment:</strong> {agentUnderstandingSummary.piiEnrichmentUsed ? "Yes" : "No"}
+          </span>
+          <span>
+            <strong>PII model:</strong> {agentUnderstandingSummary.piiModelUsed || "Not used"}
+          </span>
         </div>
         <p className="muted">{agentUnderstandingSummary.reasoningSummary}</p>
         {agentUnderstandingSummary.manualReviewRecommended ? (

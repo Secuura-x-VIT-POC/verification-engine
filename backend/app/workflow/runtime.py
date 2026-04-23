@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -9,31 +10,21 @@ from typing import Any
 from PyPDF2 import PdfReader
 from sqlalchemy.orm import Session as DbSession
 
-from ..audit.hmac_utils import generate_commitment, generate_nonce
-from ..audit.receipt_generator import generate_receipt
-from ..audit.service import get_latest_audit_receipt, store_audit_bundle
+from ..audit.service import get_latest_audit_receipt
 from ..cleanup.controller import complete_cleanup, fail_cleanup, start_cleanup
 from ..connectors.broker import call_connector
 from ..sessions.constants import SessionState, VERIFIED_STATES
 from ..sessions.models import Session as SessionModel
-from ..trust.trust_engine import evaluate_trust
-from ..verifier_execution.service import (
-    build_and_persist_execution_artifacts,
-    mark_execution_failure,
-)
-from ..verification_domain.service import (
-    build_and_persist_final_analysis,
-    build_and_persist_initial_analysis,
-    mark_analysis_failure,
-)
 from . import repository
 from .failures import WorkflowProcessingError
-from .service import call_connector_with_retry, handle_processing_failure
+from .service import call_connector_with_retry
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
+
+LOGGER = logging.getLogger(__name__)
 
 
 TRUST_FIELD_CONFIG = [
@@ -59,17 +50,6 @@ CLEANUP_READY_STATES = VERIFIED_STATES | {
     SessionState.FAILED_PURGED,
     SessionState.ABANDONED_VERIFYING,
 }
-
-
-def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) -> SessionModel:
-    # OBSOLETE DIRECT EXECUTION PATH:
-    # This bypasses workflow.service.start_verification(), orchestrator lease
-    # acquisition, and run_worker_pipeline(). Keep temporarily for tests and
-    # migration only; API routes must not call this function.
-    del db, session, reviewer_ref
-    raise RuntimeError(
-        "run_verification is disabled; use the worker-driven run_worker_pipeline path"
-    )
 
 
 def close_session(db: DbSession, session: SessionModel) -> SessionModel:
@@ -516,6 +496,12 @@ def _raise_on_processing_connector_failure(connector_responses: list[dict[str, A
         }
 
         if status == "TIMEOUT" and assurance_class == "HIGH":
+            LOGGER.warning(
+                "CONNECTOR_FAILURE connector_id=%s status=%s assurance_class=%s",
+                response.get("connector_id"),
+                status,
+                assurance_class,
+            )
             raise WorkflowProcessingError(
                 "connector_timeout",
                 message="Required connector timed out",
@@ -523,6 +509,12 @@ def _raise_on_processing_connector_failure(connector_responses: list[dict[str, A
             )
 
         if status == "ERROR":
+            LOGGER.warning(
+                "CONNECTOR_FAILURE connector_id=%s status=%s assurance_class=%s",
+                response.get("connector_id"),
+                status,
+                assurance_class,
+            )
             raise WorkflowProcessingError(
                 "transient_connector_error",
                 message="Connector execution failed",
@@ -608,42 +600,6 @@ def _serialize_dt(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
-
-
-def _run_generalized_pass_a(session: SessionModel) -> None:
-    if session.extraction_payload is None:
-        return
-
-    try:
-        build_and_persist_initial_analysis(session)
-    except Exception as exc:  # pragma: no cover - defensive path
-        mark_analysis_failure(session, exc)
-
-
-def _run_generalized_pass_b(db: DbSession, session: SessionModel) -> None:
-    if session.extraction_payload is None:
-        return
-
-    try:
-        build_and_persist_final_analysis(session)
-    except Exception as exc:  # pragma: no cover - defensive path
-        mark_analysis_failure(session, exc)
-
-    db.commit()
-    db.refresh(session)
-
-
-def _run_verification_execution(db: DbSession, session: SessionModel) -> None:
-    if session.extraction_payload is None:
-        return
-
-    try:
-        build_and_persist_execution_artifacts(session)
-    except Exception as exc:  # pragma: no cover - defensive path
-        mark_execution_failure(session, exc)
-
-    db.commit()
-    db.refresh(session)
 
 
 def _resolve_page_count(file_path: Path, raw_result: dict[str, Any]) -> int | None:

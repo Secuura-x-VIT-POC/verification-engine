@@ -39,7 +39,6 @@ from backend.app.verifier_execution import (
     CredentialVerificationBundle,
     CredentialVerificationBundleCollection,
     VerificationTaskResult,
-    build_and_persist_execution_artifacts,
     build_execution_artifacts,
     build_default_verifier_registry,
 )
@@ -452,7 +451,7 @@ class VerificationExecutionServiceTests(unittest.TestCase):
     def tearDown(self):
         self.engine.dispose()
 
-    def test_execution_artifacts_persist_on_session_row(self):
+    def test_execution_artifacts_are_built_without_session_persistence(self):
         db = self.SessionLocal()
         session = SessionModel(
             id="session-persisted-execution",
@@ -467,15 +466,18 @@ class VerificationExecutionServiceTests(unittest.TestCase):
         db.commit()
         db.refresh(session)
 
-        artifacts = build_and_persist_execution_artifacts(session)
+        artifacts = build_execution_artifacts(
+            session.id,
+            session.extraction_payload,
+            connector_payload=session.connector_payload,
+        )
         db.commit()
         db.refresh(session)
 
-        self.assertEqual(session.verification_execution_status, EXECUTION_STATUS_READY)
-        self.assertIsNotNone(session.verification_task_results_payload)
-        self.assertIsNotNone(session.credential_verification_bundles_payload)
-        self.assertIsNotNone(session.verification_execution_summary_payload)
-        self.assertIsNotNone(session.provider_execution_traces_payload)
+        self.assertIsNone(session.verification_task_results_payload)
+        self.assertIsNone(session.credential_verification_bundles_payload)
+        self.assertIsNone(session.verification_execution_summary_payload)
+        self.assertIsNone(session.provider_execution_traces_payload)
         self.assertEqual(session.provider_execution_status, "NOT_STARTED")
         self.assertEqual(artifacts["execution_summary"].succeeded_tasks, 3)
         db.close()
@@ -797,26 +799,9 @@ class VerificationExecutionApiTests(unittest.TestCase):
         bundles_response = self.client.get("/session/session-empty-execution/credential-bundles")
         status_response = self.client.get("/session/session-empty-execution/verification-execution-status")
 
-        self.assertEqual(results_response.status_code, 200)
-        self.assertEqual(bundles_response.status_code, 200)
-        self.assertEqual(status_response.status_code, 200)
-        self.assertEqual(
-            results_response.json(),
-            {
-                "session_id": "session-empty-execution",
-                "document_type": "unknown",
-                "results": [],
-            },
-        )
-        self.assertEqual(
-            bundles_response.json(),
-            {
-                "session_id": "session-empty-execution",
-                "document_type": "unknown",
-                "bundles": [],
-            },
-        )
-        self.assertEqual(status_response.json()["verification_execution_status"], "NOT_STARTED")
+        for response in (results_response, bundles_response, status_response):
+            self.assertEqual(response.status_code, 410)
+            self.assertIn("processing-only", response.json()["detail"])
 
     def test_execution_endpoints_compute_for_legacy_rows_when_payloads_are_missing(self):
         self._create_session(
@@ -832,13 +817,9 @@ class VerificationExecutionApiTests(unittest.TestCase):
         bundles_response = self.client.get("/session/session-legacy-execution/credential-bundles")
         status_response = self.client.get("/session/session-legacy-execution/verification-execution-status")
 
-        self.assertEqual(results_response.status_code, 200)
-        self.assertEqual(bundles_response.status_code, 200)
-        self.assertEqual(status_response.status_code, 200)
-        self.assertEqual(len(results_response.json()["results"]), 3)
-        self.assertEqual(len(bundles_response.json()["bundles"]), 3)
-        self.assertEqual(status_response.json()["verification_execution_status"], "READY")
-        self.assertTrue(status_response.json()["task_results_available"])
+        for response in (results_response, bundles_response, status_response):
+            self.assertEqual(response.status_code, 410)
+            self.assertIn("processing-only", response.json()["detail"])
 
     def _override_get_db(self):
         db = self.SessionLocal()

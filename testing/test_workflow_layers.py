@@ -17,7 +17,6 @@ from backend.app.db.database import Base
 from backend.app.sessions.constants import SessionState
 from backend.app.sessions.models import Session as SessionModel
 from backend.app.workflow import repository
-from backend.app.workflow.runtime import run_verification
 from backend.app.workflow.state_machine import InvalidStateTransitionError, validate_transition
 from backend.app.workflow.service import (
     WORKER_PHASE_CONNECTOR_EVAL,
@@ -438,19 +437,48 @@ class WorkflowRuntimeFailureTests(unittest.TestCase):
         self.temp_dir.cleanup()
         self.engine.dispose()
 
-    def test_run_verification_direct_path_is_disabled(self):
+    def test_default_worker_pipeline_keeps_sensitive_payloads_in_memory(self):
         db = self.SessionLocal()
         session = self._create_session(
             db,
             session_id="runtime-failure-1",
-            status=SessionState.UPLOADED_PENDING_REVIEW,
+            status=SessionState.VERIFYING,
         )
+        session.lease_id = "worker-1"
+        session.lease_holder_id = "worker-1"
+        db.commit()
 
-        with self.assertRaisesRegex(RuntimeError, "worker-driven run_worker_pipeline"):
-            run_verification(db, session, "worker-1")
+        with patch(
+            "backend.app.workflow.runtime.extract_document_payload",
+            return_value=self._successful_extraction_payload(),
+        ), patch(
+            "backend.app.agent_orchestration.service.normalize_extraction_payload",
+            side_effect=lambda payload: payload,
+        ), patch(
+            "backend.app.workflow.runtime.build_connector_responses",
+            return_value=[
+                {
+                    "connector_id": "vit_registry",
+                    "status": "VERIFIED",
+                    "assurance_class": "HIGH",
+                    "matched_claims": {},
+                    "mismatched_claims": {},
+                }
+            ],
+        ), patch(
+            "backend.app.workflow.service._build_completion_values",
+            return_value={"document_commitment": "commitment-1", "audit_receipt_id": "audit-1"},
+        ):
+            result = run_worker_pipeline(
+                db,
+                session.id,
+                "worker-1",
+                heartbeat_interval_seconds=0,
+            )
 
         db.refresh(session)
-        self.assertEqual(session.status, SessionState.UPLOADED_PENDING_REVIEW)
+        self.assertEqual(result["outcome"], "GREEN")
+        self.assertEqual(session.status, SessionState.VERIFIED_GREEN)
         self.assertIsNone(session.extraction_payload)
         self.assertIsNone(session.connector_payload)
         db.close()

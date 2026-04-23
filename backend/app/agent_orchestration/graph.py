@@ -4,54 +4,26 @@ import copy
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from .nodes import (
-    build_credential_grouping_node,
-    build_document_understanding_node,
-    build_explanation_synthesis_node,
-    build_input_normalization_node,
-    build_output_consolidation_node,
-    build_route_recommendation_node,
-)
-from .state import AgentGraphState, GeminiNormalizationState
+from .state import GeminiNormalizationState
 
 
 LOGGER = logging.getLogger(__name__)
 
 _CANONICAL_FIELDS = ("name", "institution", "credential", "date", "id")
 _MANDATORY_FIELDS = {"name", "institution", "credential", "id"}
-
-
-def build_agent_graph(provider):
-    # DEPRECATED AGENT GRAPH:
-    # This graph powers legacy pass A/pass B agent artifacts and is kept only
-    # for migration compatibility. The worker path uses
-    # build_gemini_normalization_graph(), which is stateless and in-memory.
-    input_node = "node_input_normalization"
-    understanding_node = "node_document_understanding"
-    grouping_node = "node_credential_grouping"
-    routing_node = "node_route_recommendation"
-    explanation_node = "node_explanation_synthesis"
-    consolidation_node = "node_output_consolidation"
-
-    graph = StateGraph(AgentGraphState)
-    graph.add_node(input_node, build_input_normalization_node())
-    graph.add_node(understanding_node, build_document_understanding_node(provider))
-    graph.add_node(grouping_node, build_credential_grouping_node(provider))
-    graph.add_node(routing_node, build_route_recommendation_node(provider))
-    graph.add_node(explanation_node, build_explanation_synthesis_node(provider))
-    graph.add_node(consolidation_node, build_output_consolidation_node())
-    graph.add_edge(START, input_node)
-    graph.add_edge(input_node, understanding_node)
-    graph.add_edge(understanding_node, grouping_node)
-    graph.add_edge(grouping_node, routing_node)
-    graph.add_edge(routing_node, explanation_node)
-    graph.add_edge(explanation_node, consolidation_node)
-    graph.add_edge(consolidation_node, END)
-    return graph.compile()
+_ALLOWED_DOCUMENT_TYPES = {
+    "academic_credential",
+    "report_card",
+    "identity_document",
+    "certificate_document",
+    "financial_document",
+    "unknown",
+}
 
 
 def build_gemini_normalization_graph(
@@ -83,15 +55,17 @@ def _run_gemini_normalization(
 
     try:
         llm = _build_gemini_llm(model=model, temperature=temperature)
+        LOGGER.info("LLM_NORMALIZATION_STARTED provider=gemini model=%s", model)
         response = llm.invoke(_build_normalization_prompt(raw_extraction))
         parsed_output = _parse_json_response(getattr(response, "content", response))
+        LOGGER.info("LLM_NORMALIZATION_COMPLETED provider=gemini model=%s", model)
         return {
             "gemini_output": parsed_output,
             "fallback_used": False,
             "validation_errors": [],
         }
     except Exception as exc:
-        LOGGER.warning("GEMINI_NORMALIZATION_FALLBACK error=%s", exc)
+        LOGGER.warning("LLM_NORMALIZATION_FALLBACK reason=invoke_or_parse_failed error=%s", exc)
         return _fallback_state(raw_extraction, [str(exc)])
 
 
@@ -110,16 +84,14 @@ def _validate_normalization(state: GeminiNormalizationState) -> dict[str, Any]:
         errors.append("Gemini output is not a JSON object")
         return _fallback_state(raw_extraction, errors)
 
-    fields = gemini_output.get("fields")
-    connector_input = gemini_output.get("connector_input")
-    if not isinstance(fields, dict):
-        errors.append("Gemini output missing fields object")
-    if connector_input is not None and not isinstance(connector_input, dict):
-        errors.append("Gemini connector_input is not an object")
-    if not any(str((fields or {}).get(name) or "").strip() for name in _CANONICAL_FIELDS):
-        errors.append("Gemini output contains no canonical field values")
+    errors.extend(_validate_gemini_output(gemini_output))
 
     if errors:
+        LOGGER.warning(
+            "LLM_NORMALIZATION_VALIDATION_FAILED error_count=%s errors=%s",
+            len(errors),
+            errors,
+        )
         return _fallback_state(raw_extraction, errors)
 
     try:
@@ -130,6 +102,7 @@ def _validate_normalization(state: GeminiNormalizationState) -> dict[str, Any]:
             "validation_errors": [],
         }
     except Exception as exc:
+        LOGGER.warning("LLM_NORMALIZATION_VALIDATION_FAILED error_count=1 errors=%s", [str(exc)])
         return _fallback_state(raw_extraction, [str(exc)])
 
 
@@ -219,6 +192,63 @@ def _merge_normalized_output(
     }
     normalized["connector_input"] = connector_input
     return normalized
+
+
+def _validate_gemini_output(gemini_output: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    document_type = gemini_output.get("document_type")
+    fields = gemini_output.get("fields")
+    confidence = gemini_output.get("confidence")
+    connector_input = gemini_output.get("connector_input")
+    ambiguities = gemini_output.get("ambiguities")
+
+    if not isinstance(document_type, str) or not document_type.strip():
+        errors.append("document_type must be a non-empty string")
+    elif document_type.strip() not in _ALLOWED_DOCUMENT_TYPES:
+        errors.append("document_type is not allowed")
+
+    if not isinstance(fields, dict):
+        errors.append("fields must be an object")
+        fields = {}
+    if not isinstance(confidence, dict):
+        errors.append("confidence must be an object")
+        confidence = {}
+    if not isinstance(connector_input, dict):
+        errors.append("connector_input must be an object")
+        connector_input = {}
+    if ambiguities is not None and not isinstance(ambiguities, list):
+        errors.append("ambiguities must be a list when present")
+
+    for name in _CANONICAL_FIELDS:
+        value = fields.get(name)
+        if value is not None and not isinstance(value, str):
+            errors.append(f"fields.{name} must be a string")
+        if name in _MANDATORY_FIELDS and not str(value or "").strip():
+            errors.append(f"fields.{name} is required")
+
+        confidence_value = confidence.get(name)
+        if not isinstance(confidence_value, (int, float)):
+            errors.append(f"confidence.{name} must be numeric")
+        elif confidence_value < 0 or confidence_value > 1:
+            errors.append(f"confidence.{name} must be between 0 and 1")
+
+    for name in ("name", "degree", "institution", "document_id"):
+        value = connector_input.get(name)
+        if value is not None and not isinstance(value, str):
+            errors.append(f"connector_input.{name} must be a string")
+
+    date_value = str(fields.get("date") or "").strip()
+    if date_value:
+        match = re.search(r"(19\d{2}|20\d{2})", date_value)
+        if not match:
+            errors.append("fields.date must contain a four-digit year when present")
+        else:
+            year = int(match.group(1))
+            max_year = datetime.utcnow().year + 1
+            if year < 1900 or year > max_year:
+                errors.append("fields.date year is out of range")
+
+    return errors
 
 
 def _merge_trust_fields(

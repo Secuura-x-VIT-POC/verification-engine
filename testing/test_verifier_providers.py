@@ -31,7 +31,7 @@ from backend.app.verification_domain.contracts import (
     VerificationTask,
     VerifierRouteDecision,
 )
-from backend.app.verifier_execution.service import build_and_persist_execution_artifacts, build_execution_artifacts
+from backend.app.verifier_execution.service import build_execution_artifacts
 from backend.app.verifier_providers.http_client import SafeHttpClientError, SafeHttpJsonClient
 from backend.app.verifier_providers.policies import minimize_payload
 from backend.app.verifier_providers.registry import build_default_provider_registry
@@ -726,14 +726,19 @@ class ProviderPersistenceAndApiTests(unittest.TestCase):
         db.commit()
         db.refresh(session)
 
-        build_and_persist_execution_artifacts(session)
+        artifacts = build_execution_artifacts(
+            session.id,
+            session.extraction_payload,
+            connector_payload=session.connector_payload,
+        )
         db.commit()
         db.refresh(session)
 
-        self.assertEqual(session.provider_execution_status, "READY")
-        self.assertEqual(session.provider_operating_mode, "LIVE_DISABLED")
-        self.assertIsNotNone(session.provider_execution_traces_payload)
-        trace_payload = session.provider_execution_traces_payload["traces"][0]
+        self.assertEqual(session.provider_execution_status, "NOT_STARTED")
+        self.assertIsNone(session.provider_operating_mode)
+        self.assertIsNone(session.provider_execution_traces_payload)
+        traces = artifacts["provider_execution_traces"]
+        trace_payload = (traces.model_dump(mode="python") if hasattr(traces, "model_dump") else traces.dict())["traces"][0]
         self.assertNotIn("input_payload", trace_payload)
         self.assertNotIn("redacted_payload", trace_payload)
         db.close()
@@ -757,15 +762,12 @@ class ProviderPersistenceAndApiTests(unittest.TestCase):
         profile_response = self.client.get("/session/provider-empty-session/demo-profile")
         capabilities_response = self.client.get("/session/provider-empty-session/provider-capabilities")
 
-        self.assertEqual(traces_response.status_code, 200)
-        self.assertEqual(status_response.status_code, 200)
-        self.assertEqual(mode_response.status_code, 200)
-        self.assertEqual(profile_response.status_code, 200)
+        self.assertEqual(traces_response.status_code, 410)
+        self.assertEqual(status_response.status_code, 410)
+        self.assertEqual(mode_response.status_code, 410)
+        self.assertEqual(profile_response.status_code, 410)
         self.assertEqual(capabilities_response.status_code, 200)
-        self.assertEqual(traces_response.json()["traces"], [])
-        self.assertEqual(status_response.json()["provider_execution_status"], "NOT_STARTED")
-        self.assertEqual(mode_response.json()["provider_operating_mode"], "LIVE_DISABLED")
-        self.assertEqual(profile_response.json()["seeded"], False)
+        self.assertIn("processing-only", traces_response.json()["detail"])
         self.assertTrue(any(cap["provider_key"] == "local_mock" for cap in capabilities_response.json()["capabilities"]))
 
     def test_demo_metadata_endpoints_report_seeded_demo_context_when_enabled(self):
@@ -793,12 +795,8 @@ class ProviderPersistenceAndApiTests(unittest.TestCase):
             mode_response = self.client.get("/session/provider-demo-session/provider-operating-mode")
             profile_response = self.client.get("/session/provider-demo-session/demo-profile")
 
-        self.assertEqual(mode_response.status_code, 200)
-        self.assertEqual(profile_response.status_code, 200)
-        self.assertEqual(mode_response.json()["provider_operating_mode"], "DEMO_MOCK")
-        self.assertEqual(mode_response.json()["demo_profile_key"], "academic_transcript_demo")
-        self.assertEqual(profile_response.json()["profile_key"], "academic_transcript_demo")
-        self.assertTrue(profile_response.json()["seeded"])
+        self.assertEqual(mode_response.status_code, 410)
+        self.assertEqual(profile_response.status_code, 410)
 
     def _override_get_db(self):
         db = self.SessionLocal()

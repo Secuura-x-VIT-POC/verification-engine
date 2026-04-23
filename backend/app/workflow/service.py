@@ -126,44 +126,6 @@ def start_verification(
     return result
 
 
-def _run_worker_pipeline_in_new_session(
-    session_id: str,
-    worker_id: str,
-    *,
-    extraction_stage: Callable | None = None,
-    grounding_stage: Callable | None = None,
-    connector_stage: Callable | None = None,
-    policy_loader: Callable | None = None,
-    heartbeat_interval_seconds: int = 10,
-) -> None:
-    # OBSOLETE BACKGROUNDTASKS EXECUTION HELPER:
-    # Verification execution is now owned by backend.app.worker.worker after a
-    # queue dequeue and explicit lease acquisition. Keep temporarily for any
-    # external imports during migration; do not call from API/orchestrator.
-    from ..db.database import SessionLocal
-
-    db = SessionLocal()
-    try:
-        run_worker_pipeline(
-            db,
-            session_id,
-            worker_id,
-            extraction_stage=extraction_stage,
-            grounding_stage=grounding_stage,
-            connector_stage=connector_stage,
-            policy_loader=policy_loader,
-            heartbeat_interval_seconds=heartbeat_interval_seconds,
-        )
-    except Exception:
-        LOGGER.exception(
-            "BACKGROUND_WORKER_PIPELINE_FAILED session_id=%s worker_id=%s",
-            session_id,
-            worker_id,
-        )
-    finally:
-        db.close()
-
-
 def run_worker_pipeline(
     conn,
     session_id: str,
@@ -219,6 +181,13 @@ def run_worker_pipeline(
             failure_type = "unknown_processing_error"
             trust_input = _resolve_trust_input(grounded_data)
             trust_result = evaluate_trust(trust_input, connector_responses, policy)
+            LOGGER.info(
+                "TRUST_DECISION session_id=%s outcome=%s reason_count=%s connector_count=%s",
+                session_id,
+                trust_result.get("outcome"),
+                len(trust_result.get("reason_codes") or []),
+                len(trust_result.get("connector_ids") or []),
+            )
             completion_values = (
                 _build_completion_values(
                     conn,

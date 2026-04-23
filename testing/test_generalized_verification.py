@@ -36,10 +36,12 @@ from backend.app.verification_domain import (
     adapt_session_to_credentials,
     adapt_session_to_verification_plan,
     adapt_session_to_verification_summary,
-    build_and_persist_final_analysis,
-    build_and_persist_initial_analysis,
+    assemble_credential_audits,
+    build_credentials,
+    build_document_profile,
     build_extracted_credentials,
     build_verification_summary,
+    build_verification_plan,
     get_analysis_status_for_session,
     get_credentials_for_session,
     get_credential_audits_for_session,
@@ -666,7 +668,7 @@ class GeneralizedVerificationServiceTests(unittest.TestCase):
     def tearDown(self):
         self.engine.dispose()
 
-    def test_two_pass_analysis_persists_artifacts_on_session_row(self):
+    def test_generalized_artifacts_can_be_built_without_session_persistence(self):
         db = self.SessionLocal()
         session = SessionModel(
             id="session-persisted",
@@ -685,30 +687,44 @@ class GeneralizedVerificationServiceTests(unittest.TestCase):
         db.commit()
         db.refresh(session)
 
-        build_and_persist_initial_analysis(session)
-        db.commit()
-        db.refresh(session)
+        credentials = build_credentials(session.id, session.extraction_payload)
+        plan = build_verification_plan(session.id, session.extraction_payload, credentials=credentials)
+        profile = build_document_profile(
+            session.id,
+            session.extraction_payload,
+            credentials=credentials,
+            verification_plan=plan,
+        )
+        audits = assemble_credential_audits(
+            session.id,
+            session.extraction_payload,
+            connector_payload=session.connector_payload,
+            trust_outcome=session.trust_outcome,
+            reason_codes=list(session.reason_codes or []),
+            audit_timestamp=session.verified_at,
+            credentials=credentials,
+            verification_plan=plan,
+        )
+        summary = build_verification_summary(
+            session.id,
+            session.extraction_payload,
+            credential_audits=audits,
+            trust_outcome=session.trust_outcome,
+            reason_codes=list(session.reason_codes or []),
+            credentials=credentials,
+        )
 
-        self.assertEqual(session.generalized_analysis_status, ANALYSIS_STATUS_PLAN_BUILT)
-        self.assertIsNotNone(session.document_profile_payload)
-        self.assertIsNotNone(session.generalized_credentials_payload)
-        self.assertIsNotNone(session.verification_plan_payload)
+        self.assertEqual(profile.document_family, "academic_document")
+        self.assertEqual(summary.green_count, 3)
+        self.assertTrue(credentials.credentials)
+        self.assertTrue(plan.tasks)
+        self.assertTrue(audits.audits)
+        db.refresh(session)
+        self.assertIsNone(session.document_profile_payload)
+        self.assertIsNone(session.generalized_credentials_payload)
+        self.assertIsNone(session.verification_plan_payload)
         self.assertIsNone(session.credential_audits_payload)
         self.assertIsNone(session.verification_summary_payload)
-
-        build_and_persist_final_analysis(session)
-        db.commit()
-        db.refresh(session)
-
-        self.assertEqual(session.generalized_analysis_status, ANALYSIS_STATUS_READY)
-        self.assertEqual(session.verification_execution_status, "READY")
-        self.assertIsNotNone(session.verification_task_results_payload)
-        self.assertIsNotNone(session.credential_verification_bundles_payload)
-        self.assertIsNotNone(session.verification_execution_summary_payload)
-        self.assertIsNotNone(session.credential_audits_payload)
-        self.assertIsNotNone(session.verification_summary_payload)
-        self.assertEqual(session.verification_summary_payload["green_count"], 3)
-        self.assertEqual(session.document_profile_payload["document_family"], "academic_document")
         db.close()
 
     def test_summary_counts_are_derived_from_bounded_audit_statuses(self):
@@ -1015,7 +1031,7 @@ class GeneralizedVerificationApiTests(unittest.TestCase):
         self.app.dependency_overrides.clear()
         self.engine.dispose()
 
-    def test_new_endpoints_return_safe_structures_when_no_generalized_data_exists(self):
+    def test_sensitive_artifact_endpoints_return_gone_when_no_generalized_data_exists(self):
         self._create_session(
             session_id="session-empty-generalized",
             status=SessionState.CREATED,
@@ -1029,84 +1045,18 @@ class GeneralizedVerificationApiTests(unittest.TestCase):
         profile_response = self.client.get("/session/session-empty-generalized/document-profile")
         analysis_status_response = self.client.get("/session/session-empty-generalized/analysis-status")
 
-        self.assertEqual(credentials_response.status_code, 200)
-        self.assertEqual(plan_response.status_code, 200)
-        self.assertEqual(audits_response.status_code, 200)
-        self.assertEqual(summary_response.status_code, 200)
-        self.assertEqual(profile_response.status_code, 200)
-        self.assertEqual(analysis_status_response.status_code, 200)
+        for response in (
+            credentials_response,
+            plan_response,
+            audits_response,
+            summary_response,
+            profile_response,
+            analysis_status_response,
+        ):
+            self.assertEqual(response.status_code, 410)
+            self.assertIn("processing-only", response.json()["detail"])
 
-        self.assertEqual(
-            credentials_response.json(),
-            {
-                "session_id": "session-empty-generalized",
-                "document_type": "unknown",
-                "credentials": [],
-                "context_fields": [],
-            },
-        )
-        self.assertEqual(
-            plan_response.json(),
-            {
-                "session_id": "session-empty-generalized",
-                "document_type": "unknown",
-                "route_decisions": [],
-                "tasks": [],
-            },
-        )
-        self.assertEqual(
-            audits_response.json(),
-            {
-                "session_id": "session-empty-generalized",
-                "document_type": "unknown",
-                "audits": [],
-            },
-        )
-        self.assertEqual(
-            summary_response.json(),
-            {
-                "session_id": "session-empty-generalized",
-                "document_type": "unknown",
-                "total_credentials_found": 0,
-                "total_credentials_verified": 0,
-                "green_count": 0,
-                "amber_count": 0,
-                "red_count": 0,
-                "manual_review_count": 0,
-                "overall_outcome": None,
-                "overall_reason_codes": [],
-            },
-        )
-        self.assertEqual(
-            profile_response.json(),
-            {
-                "session_id": "session-empty-generalized",
-                "document_type": "unknown",
-                "document_family": "unknown",
-                "page_count": None,
-                "extraction_methods_used": [],
-                "pii_detected": False,
-                "detected_categories": [],
-                "requires_manual_review": False,
-                "notes": [],
-            },
-        )
-        self.assertEqual(
-            analysis_status_response.json(),
-            {
-                "session_id": "session-empty-generalized",
-                "workflow_state": SessionState.CREATED,
-                "generalized_analysis_status": "NOT_STARTED",
-                "generalized_analysis_error": None,
-                "document_profile_available": False,
-                "credentials_available": False,
-                "verification_plan_available": False,
-                "credential_audits_available": False,
-                "verification_summary_available": False,
-            },
-        )
-
-    def test_endpoints_prefer_persisted_generalized_artifacts_when_present(self):
+    def test_sensitive_artifact_endpoints_ignore_persisted_generalized_artifacts(self):
         self._create_session(
             session_id="session-persisted-summary",
             status=SessionState.VERIFIED_GREEN,
@@ -1144,14 +1094,10 @@ class GeneralizedVerificationApiTests(unittest.TestCase):
         summary_response = self.client.get("/session/session-persisted-summary/verification-summary")
         profile_response = self.client.get("/session/session-persisted-summary/document-profile")
 
-        self.assertEqual(summary_response.status_code, 200)
-        self.assertEqual(profile_response.status_code, 200)
-        self.assertEqual(summary_response.json()["document_type"], "persisted_document")
-        self.assertEqual(summary_response.json()["overall_reason_codes"], ["PERSISTED_SUMMARY"])
-        self.assertEqual(profile_response.json()["page_count"], 9)
-        self.assertEqual(profile_response.json()["notes"], ["persisted"])
+        self.assertEqual(summary_response.status_code, 410)
+        self.assertEqual(profile_response.status_code, 410)
 
-    def test_analysis_status_endpoint_infers_ready_for_legacy_verified_sessions(self):
+    def test_analysis_status_endpoint_returns_gone_for_legacy_verified_sessions(self):
         self._create_session(
             session_id="session-legacy-analysis",
             status=SessionState.VERIFIED_GREEN,
@@ -1164,10 +1110,7 @@ class GeneralizedVerificationApiTests(unittest.TestCase):
 
         response = self.client.get("/session/session-legacy-analysis/analysis-status")
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["generalized_analysis_status"], ANALYSIS_STATUS_READY)
-        self.assertTrue(response.json()["document_profile_available"])
-        self.assertTrue(response.json()["verification_summary_available"])
+        self.assertEqual(response.status_code, 410)
 
     def _override_get_db(self):
         db = self.SessionLocal()

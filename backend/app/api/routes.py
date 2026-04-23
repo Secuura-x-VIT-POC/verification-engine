@@ -9,49 +9,32 @@ from ..auth.routes import get_current_user
 from ..db.database import get_db
 from ..sessions.constants import SessionState
 from ..sessions.models import Session as SessionModel
-from ..agent_orchestration import (
+from ..agent_orchestration.contracts import (
     AgentDocumentUnderstanding,
     SessionAgentCredentialCandidateCollection,
     SessionAgentRouteRecommendationCollection,
     SessionAgentRunStatus,
-    get_agent_credential_candidates_for_session,
-    get_agent_document_understanding_for_session,
-    get_agent_route_recommendations_for_session,
-    get_agent_run_status_for_session,
 )
 from ..verifier_providers import (
     ProviderCapabilityCollection,
     ProviderExecutionTraceCollection,
     SessionProviderOperatingMode,
     SessionProviderExecutionStatus,
-    get_demo_profile_for_session,
     get_provider_capabilities_for_session,
-    get_provider_operating_mode_for_session,
-    get_provider_execution_status_for_session,
-    get_provider_execution_traces_for_session,
 )
 from ..demo_profiles import DemoProfileSummary
-from ..verifier_execution import (
+from ..verifier_execution.contracts import (
     CredentialVerificationBundleCollection,
     SessionVerificationExecutionStatus,
     VerificationTaskResultCollection,
-    get_credential_bundles_for_session,
-    get_verification_execution_status_for_session,
-    get_verification_task_results_for_session,
 )
-from ..verification_domain import (
+from ..verification_domain.contracts import (
     CredentialAuditCollection,
     DocumentProfile,
     DocumentVerificationSummary,
     SessionAnalysisStatus,
     SessionCredentialCollection,
     SessionVerificationPlan,
-    get_analysis_status_for_session,
-    get_credential_audits_for_session,
-    get_credentials_for_session,
-    get_document_profile_for_session,
-    get_verification_plan_for_session,
-    get_verification_summary_for_session,
 )
 from ..workflow.runtime import get_result_response, get_status_response, serialize_session
 from ..workflow.service import start_verification

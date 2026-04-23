@@ -24,15 +24,12 @@ from .contracts import (
 _LAZY_IMPORTS = {
     "VerificationTaskExecutor": (".executor", "VerificationTaskExecutor"),
     "VerifierRegistry": (".registry", "VerifierRegistry"),
-    "build_and_persist_execution_artifacts": (".service", "build_and_persist_execution_artifacts"),
     "build_default_verifier_registry": (".registry", "build_default_verifier_registry"),
     "build_execution_artifacts": (".service", "build_execution_artifacts"),
     "get_credential_bundles_for_session": (".service", "get_credential_bundles_for_session"),
     "get_verification_execution_status_for_session": (".service", "get_verification_execution_status_for_session"),
     "get_verification_execution_summary_for_session": (".service", "get_verification_execution_summary_for_session"),
     "get_verification_task_results_for_session": (".service", "get_verification_task_results_for_session"),
-    "mark_execution_failure": (".service", "mark_execution_failure"),
-    "persist_execution_artifacts": (".service", "persist_execution_artifacts"),
 }
 
 
@@ -65,13 +62,10 @@ __all__ = [
     "VerificationTaskResult",
     "VerificationTaskResultCollection",
     "VerifierRegistry",
-    "build_and_persist_execution_artifacts",
     "build_default_verifier_registry",
     "build_execution_artifacts",
     "get_credential_bundles_for_session",
     "get_verification_execution_status_for_session",
     "get_verification_execution_summary_for_session",
     "get_verification_task_results_for_session",
-    "mark_execution_failure",
-    "persist_execution_artifacts",
 ]

@@ -26,6 +26,10 @@ class Session(Base):
     trust_outcome = Column(String, nullable=True)
     reason_codes = Column(JSON, default=list, nullable=False)
     connector_ids = Column(JSON, default=list, nullable=False)
+    # DEPRECATED SENSITIVE PAYLOAD COLUMNS:
+    # Retained for migration/backward compatibility only. The worker pipeline
+    # must not write extracted text, OCR output, connector payloads, agent
+    # output, or verifier evidence into these columns.
     extraction_payload = Column(JSON, nullable=True)
     connector_payload = Column(JSON, nullable=True)
     document_profile_payload = Column(JSON, nullable=True)
@@ -38,6 +42,7 @@ class Session(Base):
     verification_summary_payload = Column(JSON, nullable=True)
     generalized_analysis_status = Column(String, nullable=True, default="NOT_STARTED")
     generalized_analysis_error = Column(Text, nullable=True)
+    # DEPRECATED: agent outputs are processing-only and must not be persisted.
     agent_document_understanding_payload = Column(JSON, nullable=True)
     agent_credential_candidates_payload = Column(JSON, nullable=True)
     agent_route_recommendations_payload = Column(JSON, nullable=True)
@@ -45,6 +50,7 @@ class Session(Base):
     agent_run_summary_payload = Column(JSON, nullable=True)
     agent_run_status = Column(String, nullable=True, default="NOT_STARTED")
     agent_run_error = Column(Text, nullable=True)
+    # DEPRECATED: provider traces may contain response summaries/evidence.
     provider_execution_traces_payload = Column(JSON, nullable=True)
     provider_execution_status = Column(String, nullable=True, default="NOT_STARTED")
     provider_execution_error = Column(Text, nullable=True)

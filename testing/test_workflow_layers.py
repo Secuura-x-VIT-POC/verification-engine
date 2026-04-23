@@ -438,7 +438,7 @@ class WorkflowRuntimeFailureTests(unittest.TestCase):
         self.temp_dir.cleanup()
         self.engine.dispose()
 
-    def test_run_verification_marks_retriable_failure_for_extraction_crash(self):
+    def test_run_verification_direct_path_is_disabled(self):
         db = self.SessionLocal()
         session = self._create_session(
             db,
@@ -446,141 +446,13 @@ class WorkflowRuntimeFailureTests(unittest.TestCase):
             status=SessionState.UPLOADED_PENDING_REVIEW,
         )
 
-        with patch(
-            "backend.app.workflow.runtime.extract_document_payload",
-            side_effect=RuntimeError("boom"),
-        ), self.assertLogs("backend.app.workflow.service", level="ERROR") as logs:
-            result = run_verification(db, session, "worker-1")
+        with self.assertRaisesRegex(RuntimeError, "worker-driven run_worker_pipeline"):
+            run_verification(db, session, "worker-1")
 
         db.refresh(session)
-        self.assertEqual(result.status, SessionState.FAILED_RETRIABLE)
-        self.assertEqual(session.status, SessionState.FAILED_RETRIABLE)
-        self.assertEqual(session.reason_codes, ["EXTRACTION_CRASH"])
-        self.assertIsNone(session.lease_id)
-        self.assertIsNone(session.lease_acquired_at)
-        self.assertTrue(any("PROCESSING_FAILED" in entry for entry in logs.output))
-        db.close()
-
-    def test_run_verification_marks_failed_purged_for_required_connector_timeout(self):
-        db = self.SessionLocal()
-        session = self._create_session(
-            db,
-            session_id="runtime-failure-2",
-            status=SessionState.UPLOADED_PENDING_REVIEW,
-        )
-
-        with patch(
-            "backend.app.workflow.runtime.extract_document_payload",
-            return_value=self._successful_extraction_payload(),
-        ), patch(
-            "backend.app.workflow.runtime.build_connector_responses",
-            return_value=[
-                {
-                    "connector_id": "vit_registry",
-                    "status": "TIMEOUT",
-                    "reason_codes": ["CONNECTOR_TIMEOUT"],
-                    "assurance_class": "HIGH",
-                }
-            ],
-        ):
-            result = run_verification(db, session, "worker-1")
-
-        db.refresh(session)
-        self.assertEqual(result.status, SessionState.FAILED_PURGED)
-        self.assertEqual(session.status, SessionState.FAILED_PURGED)
-        self.assertEqual(session.reason_codes, ["CONNECTOR_TIMEOUT_REQUIRED"])
-        self.assertIsNone(session.lease_id)
-        self.assertEqual(session.connector_payload[0]["status"], "TIMEOUT")
-        self.assertEqual(session.generalized_analysis_status, "READY")
-        self.assertIsNotNone(session.document_profile_payload)
-        self.assertIsNotNone(session.generalized_credentials_payload)
-        self.assertIsNotNone(session.verification_plan_payload)
-        self.assertEqual(session.agent_run_status, "READY")
-        self.assertIsNotNone(session.agent_document_understanding_payload)
-        self.assertIsNotNone(session.agent_credential_candidates_payload)
-        self.assertIsNotNone(session.agent_route_recommendations_payload)
-        self.assertIsNotNone(session.agent_explanations_payload)
-        self.assertIsNotNone(session.agent_run_summary_payload)
-        self.assertIsNotNone(session.verification_task_results_payload)
-        self.assertIsNotNone(session.credential_verification_bundles_payload)
-        self.assertIsNotNone(session.verification_execution_summary_payload)
-        self.assertIsNotNone(session.provider_execution_traces_payload)
-        self.assertEqual(session.provider_execution_status, "READY")
-        self.assertEqual(session.verification_execution_status, "READY")
-        self.assertIsNotNone(session.credential_audits_payload)
-        self.assertIsNotNone(session.verification_summary_payload)
-        db.close()
-
-    def test_run_verification_retries_from_failed_retriable_and_completes(self):
-        db = self.SessionLocal()
-        session = self._create_session(
-            db,
-            session_id="runtime-retry-1",
-            status=SessionState.FAILED_RETRIABLE,
-        )
-
-        with patch(
-            "backend.app.workflow.runtime.extract_document_payload",
-            return_value=self._successful_extraction_payload(),
-        ), patch(
-            "backend.app.workflow.runtime.build_connector_responses",
-            return_value=[
-                {
-                    "connector_id": "vit_registry",
-                    "status": "VERIFIED",
-                    "reason_codes": ["REGISTRY_MATCH"],
-                    "assurance_class": "HIGH",
-                }
-            ],
-        ), patch(
-            "backend.app.workflow.runtime.evaluate_trust",
-            return_value={
-                "outcome": "GREEN",
-                "reason_codes": ["CONNECTOR_VERIFIED"],
-                "connector_ids": ["vit_registry"],
-            },
-        ), patch(
-            "backend.app.workflow.runtime.generate_nonce",
-            return_value="nonce-1",
-        ), patch(
-            "backend.app.workflow.runtime.generate_commitment",
-            return_value="commitment-1",
-        ), patch(
-            "backend.app.workflow.runtime.generate_receipt",
-            return_value={"audit_event_id": "audit-1"},
-        ), patch(
-            "backend.app.workflow.runtime.store_audit_bundle",
-        ) as store_mock:
-            result = run_verification(db, session, "worker-1")
-
-        db.refresh(session)
-        self.assertEqual(result.status, SessionState.VERIFIED_GREEN)
-        self.assertEqual(session.status, SessionState.VERIFIED_GREEN)
-        self.assertEqual(session.trust_outcome, "GREEN")
-        self.assertEqual(session.reason_codes, ["CONNECTOR_VERIFIED"])
-        self.assertEqual(session.connector_ids, ["vit_registry"])
-        self.assertEqual(session.audit_receipt_id, "audit-1")
-        self.assertIsNone(session.lease_id)
-        self.assertIsNone(session.lease_holder_id)
-        self.assertEqual(session.generalized_analysis_status, "READY")
-        self.assertIsNotNone(session.document_profile_payload)
-        self.assertIsNotNone(session.generalized_credentials_payload)
-        self.assertIsNotNone(session.verification_plan_payload)
-        self.assertEqual(session.agent_run_status, "READY")
-        self.assertIsNotNone(session.agent_document_understanding_payload)
-        self.assertIsNotNone(session.agent_credential_candidates_payload)
-        self.assertIsNotNone(session.agent_route_recommendations_payload)
-        self.assertIsNotNone(session.agent_explanations_payload)
-        self.assertIsNotNone(session.agent_run_summary_payload)
-        self.assertIsNotNone(session.verification_task_results_payload)
-        self.assertIsNotNone(session.credential_verification_bundles_payload)
-        self.assertIsNotNone(session.verification_execution_summary_payload)
-        self.assertIsNotNone(session.provider_execution_traces_payload)
-        self.assertEqual(session.provider_execution_status, "READY")
-        self.assertEqual(session.verification_execution_status, "READY")
-        self.assertIsNotNone(session.credential_audits_payload)
-        self.assertIsNotNone(session.verification_summary_payload)
-        store_mock.assert_called_once()
+        self.assertEqual(session.status, SessionState.UPLOADED_PENDING_REVIEW)
+        self.assertIsNone(session.extraction_payload)
+        self.assertIsNone(session.connector_payload)
         db.close()
 
     def _create_session(self, db, *, session_id: str, status: str) -> SessionModel:

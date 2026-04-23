@@ -341,7 +341,7 @@ def _default_extraction_stage(conn, session_id: str, worker_id: str) -> dict:
     from pathlib import Path
 
     from ..sessions.models import Session as SessionModel
-    from .runtime import _run_generalized_pass_a, extract_document_payload
+    from .runtime import extract_document_payload
 
     del worker_id
 
@@ -354,11 +354,8 @@ def _default_extraction_stage(conn, session_id: str, worker_id: str) -> dict:
         )
 
     extraction_payload = extract_document_payload(file_path)
-    session.extraction_payload = extraction_payload["view"]
-    _run_generalized_pass_a(session)
     session.heartbeat_at = datetime.utcnow()
     conn.commit()
-    conn.refresh(session)
     return extraction_payload
 
 
@@ -378,28 +375,11 @@ def _default_connector_stage(
     grounded_data: dict,
     policy: dict | None = None,
 ) -> list[dict]:
-    from ..sessions.models import Session as SessionModel
-    from .runtime import (
-        _raise_on_processing_connector_failure,
-        _run_verification_execution,
-        build_connector_responses,
-    )
+    from .runtime import _raise_on_processing_connector_failure, build_connector_responses
 
-    del worker_id
-
-    session = conn.query(SessionModel).filter(SessionModel.id == session_id).first()
-    if session is None:
-        raise WorkflowProcessingError(
-            "document_missing",
-            message=f"Session not found: {session_id}",
-        )
+    del session_id, worker_id
 
     connector_responses = build_connector_responses(grounded_data, policy)
-    session.connector_payload = connector_responses
-    session.heartbeat_at = datetime.utcnow()
-    conn.commit()
-    conn.refresh(session)
-    _run_verification_execution(conn, session)
     _raise_on_processing_connector_failure(connector_responses)
     return connector_responses
 
@@ -464,12 +444,11 @@ def _build_completion_values(
 
 
 def _run_final_analysis(conn, session_id: str) -> None:
-    from ..sessions.models import Session as SessionModel
-    from .runtime import _run_generalized_pass_b
-
-    session = conn.query(SessionModel).filter(SessionModel.id == session_id).first()
-    if session is not None:
-        _run_generalized_pass_b(conn, session)
+    # DEPRECATED PERSISTENCE HOOK:
+    # Final generalized/agent/verifier artifacts are no longer persisted.
+    # Worker execution keeps extraction, connector, and agent/verifier data in
+    # memory only; this hook remains as a no-op during migration.
+    del conn, session_id
 
 
 class _HeartbeatRunner:

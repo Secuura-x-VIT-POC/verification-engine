@@ -61,6 +61,13 @@ router = APIRouter(tags=["workflow"])
 LOGGER = logging.getLogger(__name__)
 
 
+def _sensitive_artifact_gone() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail="Detailed verification artifacts are processing-only and are not persisted.",
+    )
+
+
 def _get_owned_session(db: Session, session_id: str, user: str) -> SessionModel:
     session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     if session is None:
@@ -132,10 +139,8 @@ def get_session_agent_document_understanding_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> AgentDocumentUnderstanding:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_agent_document_understanding_for_session(session)
-    LOGGER.info("AGENT_DOCUMENT_UNDERSTANDING_FETCHED session_id=%s type=%s", session.id, payload.document_type_guess)
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/agent-credential-candidates", response_model=SessionAgentCredentialCandidateCollection)
@@ -144,10 +149,8 @@ def get_session_agent_credential_candidates_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> SessionAgentCredentialCandidateCollection:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_agent_credential_candidates_for_session(session)
-    LOGGER.info("AGENT_CREDENTIAL_CANDIDATES_FETCHED session_id=%s count=%s", session.id, len(payload.candidates))
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/agent-route-recommendations", response_model=SessionAgentRouteRecommendationCollection)
@@ -156,10 +159,8 @@ def get_session_agent_route_recommendations_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> SessionAgentRouteRecommendationCollection:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_agent_route_recommendations_for_session(session)
-    LOGGER.info("AGENT_ROUTE_RECOMMENDATIONS_FETCHED session_id=%s count=%s", session.id, len(payload.recommendations))
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/agent-run-status", response_model=SessionAgentRunStatus)
@@ -168,10 +169,8 @@ def get_session_agent_run_status_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> SessionAgentRunStatus:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_agent_run_status_for_session(session)
-    LOGGER.info("AGENT_RUN_STATUS_FETCHED session_id=%s status=%s", session.id, payload.agent_run_status)
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/provider-execution-traces", response_model=ProviderExecutionTraceCollection)
@@ -180,10 +179,8 @@ def get_session_provider_execution_traces_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> ProviderExecutionTraceCollection:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_provider_execution_traces_for_session(session)
-    LOGGER.info("PROVIDER_EXECUTION_TRACES_FETCHED session_id=%s count=%s", session.id, len(payload.traces))
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/provider-execution-status", response_model=SessionProviderExecutionStatus)
@@ -192,10 +189,8 @@ def get_session_provider_execution_status_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> SessionProviderExecutionStatus:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_provider_execution_status_for_session(session)
-    LOGGER.info("PROVIDER_EXECUTION_STATUS_FETCHED session_id=%s status=%s", session.id, payload.provider_execution_status)
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/provider-operating-mode", response_model=SessionProviderOperatingMode)
@@ -204,14 +199,8 @@ def get_session_provider_operating_mode_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> SessionProviderOperatingMode:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_provider_operating_mode_for_session(session)
-    LOGGER.info(
-        "PROVIDER_OPERATING_MODE_FETCHED session_id=%s mode=%s",
-        session.id,
-        payload.provider_operating_mode,
-    )
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/demo-profile", response_model=DemoProfileSummary)
@@ -220,10 +209,8 @@ def get_session_demo_profile_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> DemoProfileSummary:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_demo_profile_for_session(session)
-    LOGGER.info("DEMO_PROFILE_FETCHED session_id=%s key=%s", session.id, payload.profile_key)
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/provider-capabilities", response_model=ProviderCapabilityCollection)
@@ -244,10 +231,8 @@ def get_session_verification_task_results_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> VerificationTaskResultCollection:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_verification_task_results_for_session(session)
-    LOGGER.info("GENERALIZED_TASK_RESULTS_FETCHED session_id=%s results=%s", session.id, len(payload.results))
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/credential-bundles", response_model=CredentialVerificationBundleCollection)
@@ -256,10 +241,8 @@ def get_session_credential_bundles_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> CredentialVerificationBundleCollection:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_credential_bundles_for_session(session)
-    LOGGER.info("GENERALIZED_BUNDLES_FETCHED session_id=%s bundles=%s", session.id, len(payload.bundles))
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/verification-execution-status", response_model=SessionVerificationExecutionStatus)
@@ -268,14 +251,8 @@ def get_session_verification_execution_status_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> SessionVerificationExecutionStatus:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_verification_execution_status_for_session(session)
-    LOGGER.info(
-        "GENERALIZED_EXECUTION_STATUS_FETCHED session_id=%s execution_status=%s",
-        session.id,
-        payload.verification_execution_status,
-    )
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/credentials", response_model=SessionCredentialCollection)
@@ -284,10 +261,8 @@ def get_session_credentials_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> SessionCredentialCollection:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_credentials_for_session(session)
-    LOGGER.info("GENERALIZED_CREDENTIALS_FETCHED session_id=%s count=%s", session.id, len(payload.credentials))
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/verification-plan", response_model=SessionVerificationPlan)
@@ -296,10 +271,8 @@ def get_session_verification_plan_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> SessionVerificationPlan:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_verification_plan_for_session(session)
-    LOGGER.info("GENERALIZED_PLAN_FETCHED session_id=%s tasks=%s", session.id, len(payload.tasks))
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/credential-audits", response_model=CredentialAuditCollection)
@@ -308,10 +281,8 @@ def get_session_credential_audits_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> CredentialAuditCollection:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_credential_audits_for_session(session)
-    LOGGER.info("GENERALIZED_AUDITS_FETCHED session_id=%s audits=%s", session.id, len(payload.audits))
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/verification-summary", response_model=DocumentVerificationSummary)
@@ -320,10 +291,8 @@ def get_session_verification_summary_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> DocumentVerificationSummary:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_verification_summary_for_session(session)
-    LOGGER.info("GENERALIZED_SUMMARY_FETCHED session_id=%s outcome=%s", session.id, payload.overall_outcome)
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/document-profile", response_model=DocumentProfile)
@@ -332,10 +301,8 @@ def get_session_document_profile_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> DocumentProfile:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_document_profile_for_session(session)
-    LOGGER.info("GENERALIZED_PROFILE_FETCHED session_id=%s family=%s", session.id, payload.document_family)
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()
 
 
 @router.get("/session/{session_id}/analysis-status", response_model=SessionAnalysisStatus)
@@ -344,11 +311,5 @@ def get_session_analysis_status_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> SessionAnalysisStatus:
-    session = _get_owned_session(db, session_id, user)
-    payload = get_analysis_status_for_session(session)
-    LOGGER.info(
-        "GENERALIZED_STATUS_FETCHED session_id=%s analysis_status=%s",
-        session.id,
-        payload.generalized_analysis_status,
-    )
-    return payload
+    del session_id, db, user
+    _sensitive_artifact_gone()

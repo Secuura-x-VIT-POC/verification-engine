@@ -66,124 +66,10 @@ def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) ->
     # This bypasses workflow.service.start_verification(), orchestrator lease
     # acquisition, and run_worker_pipeline(). Keep temporarily for tests and
     # migration only; API routes must not call this function.
-    file_path = Path(session.file_path or "")
-
-    now = datetime.utcnow()
-    repository.transition_state(
-        db,
-        session.id,
-        SessionState.VERIFYING,
-        extra_values={
-            "worker_phase": "EXTRACTING",
-            "lease_id": reviewer_ref,
-            "lease_holder_id": reviewer_ref,
-            "lease_acquired_at": now,
-            "heartbeat_at": now,
-            "verify_started_at": session.verify_started_at or now,
-            "version": SessionModel.version + 1,
-        },
+    del db, session, reviewer_ref
+    raise RuntimeError(
+        "run_verification is disabled; use the worker-driven run_worker_pipeline path"
     )
-    db.commit()
-    db.refresh(session)
-
-    try:
-        if not session.file_path or not file_path.exists():
-            raise WorkflowProcessingError(
-                "document_missing",
-                message=f"Document not found for session {session.id}",
-            )
-
-        extraction_payload = extract_document_payload(file_path)
-        session.extraction_payload = extraction_payload["view"]
-        _run_generalized_pass_a(session)
-        session.worker_phase = "CONNECTOR_EVAL"
-        session.heartbeat_at = datetime.utcnow()
-        db.commit()
-
-        policy = build_policy(extraction_payload)
-        connector_responses = build_connector_responses(extraction_payload, policy)
-        session.connector_payload = connector_responses
-        session.heartbeat_at = datetime.utcnow()
-        db.commit()
-        db.refresh(session)
-        _run_verification_execution(db, session)
-
-        session.worker_phase = "TRUST_SCORING"
-        session.heartbeat_at = datetime.utcnow()
-        db.commit()
-        _raise_on_processing_connector_failure(connector_responses)
-
-        trust_result = evaluate_trust(extraction_payload["trust_input"], connector_responses, policy)
-
-        try:
-            with file_path.open("rb") as source_file:
-                document_bytes = source_file.read()
-
-            nonce = generate_nonce()
-            commitment = generate_commitment(document_bytes, nonce, "secuura-session")
-            receipt = generate_receipt(session.id, reviewer_ref, commitment, trust_result)
-            store_audit_bundle(db, receipt, nonce)
-        except Exception as exc:
-            raise WorkflowProcessingError(
-                "audit_store_failure",
-                message=str(exc),
-            ) from exc
-
-        repository.transition_state(
-            db,
-            session.id,
-            STATUS_BY_OUTCOME[trust_result["outcome"]],
-            extra_values={
-                "worker_phase": "COMPLETED",
-                "lease_id": None,
-                "lease_holder_id": None,
-                "lease_acquired_at": None,
-                "heartbeat_at": None,
-                "trust_outcome": trust_result["outcome"],
-                "reason_codes": trust_result["reason_codes"],
-                "connector_ids": trust_result["connector_ids"],
-                "document_commitment": commitment,
-                "audit_receipt_id": receipt["audit_event_id"],
-                "verified_at": datetime.utcnow(),
-            },
-        )
-        db.commit()
-        db.refresh(session)
-        _run_generalized_pass_b(db, session)
-        return session
-    except Exception as exc:
-        failure_error = exc
-        if not isinstance(exc, WorkflowProcessingError):
-            failure_error = WorkflowProcessingError(
-                "extraction_crash",
-                message=str(exc),
-            )
-
-        failure_values = {}
-        if session.extraction_payload is None:
-            failure_values["extraction_payload"] = {
-                "document_type": "academic_credential",
-                "used_ocr": False,
-                "fields": {},
-                "confidence": {},
-                "bounding_boxes": {},
-                "field_details": [],
-                "field_candidates": [],
-                "generalized_analysis": None,
-                "ocr_metadata": None,
-                "enrichment_metadata": None,
-                "error_message": str(exc),
-            }
-
-        handle_processing_failure(
-            db,
-            session.id,
-            failure_error,
-            extra_values=failure_values,
-        )
-        db.refresh(session)
-        _run_generalized_pass_b(db, session)
-        return session
 
 
 def close_session(db: DbSession, session: SessionModel) -> SessionModel:
@@ -270,7 +156,6 @@ def close_session(db: DbSession, session: SessionModel) -> SessionModel:
 
 def serialize_session(db: DbSession, session: SessionModel) -> dict[str, Any]:
     audit_receipt = get_latest_audit_receipt(db, session.id)
-    extraction = session.extraction_payload or {}
     trust = None
     if session.trust_outcome:
         trust = {
@@ -301,26 +186,12 @@ def serialize_session(db: DbSession, session: SessionModel) -> dict[str, Any]:
         "trust_outcome": session.trust_outcome,
         "reason_codes": session.reason_codes or [],
         "connector_ids": session.connector_ids or [],
-        "generalized_analysis_status": session.generalized_analysis_status,
-        "generalized_analysis_error": session.generalized_analysis_error,
-        "agent_run_status": getattr(session, "agent_run_status", None),
-        "agent_run_error": getattr(session, "agent_run_error", None),
-        "provider_execution_status": getattr(session, "provider_execution_status", None),
-        "provider_execution_error": getattr(session, "provider_execution_error", None),
-        "provider_operating_mode": getattr(session, "provider_operating_mode", None),
-        "demo_profile_key": getattr(session, "demo_profile_key", None),
-        "execution_environment_label": getattr(session, "execution_environment_label", None),
-        "provider_transition_notes": getattr(session, "provider_transition_notes", None),
-        "verification_execution_status": session.verification_execution_status,
-        "verification_execution_error": session.verification_execution_error,
         "purge_status": session.purge_status,
         "purge_error": session.purge_error,
         "created_at": _serialize_dt(session.created_at),
         "uploaded_at": _serialize_dt(session.uploaded_at),
         "verified_at": _serialize_dt(session.verified_at),
         "closed_at": _serialize_dt(session.closed_at),
-        "extraction": extraction if extraction else None,
-        "connectors": session.connector_payload or [],
         "trust": trust,
         "audit": audit,
         "is_terminal": session.status in VERIFIED_STATES

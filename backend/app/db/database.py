@@ -78,6 +78,7 @@ def get_db() -> Generator[Session, None, None]:
 def init_db() -> None:
     from ..auth import models as _auth_models  # noqa: F401
     from ..sessions import models as _session_models  # noqa: F401
+    from ..workflow import job_queue as _workflow_job_queue  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     sync_existing_schema(engine)

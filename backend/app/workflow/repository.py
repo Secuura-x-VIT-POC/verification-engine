@@ -12,6 +12,10 @@ LOGGER = logging.getLogger(__name__)
 
 PENDING_REVIEW_STATE = "UPLOADED_PENDING_REVIEW"
 VERIFYING_STATE = "VERIFYING"
+LEASE_ACQUIRABLE_STATES = {
+    PENDING_REVIEW_STATE,
+    "FAILED_RETRIABLE",
+}
 
 
 class StateTransitionConflictError(RuntimeError):
@@ -95,7 +99,7 @@ def transition_state(
 
 def acquire_lease(conn, session_id: str, worker_id: str) -> bool:
     session = get_session_state_and_version(conn, session_id)
-    if session is None or session["state"] != PENDING_REVIEW_STATE:
+    if session is None or session["state"] not in LEASE_ACQUIRABLE_STATES:
         return False
 
     try:
@@ -181,20 +185,27 @@ def complete_processing(
     outcome: str,
     reason_codes: list[str],
     connector_ids: list[str],
+    *,
+    extra_values: dict | None = None,
 ) -> None:
+    values = {
+        "trust_outcome": outcome,
+        "reason_codes": reason_codes,
+        "connector_ids": connector_ids,
+        "worker_phase": "COMPLETED",
+        "lease_id": None,
+        "lease_holder_id": None,
+        "lease_acquired_at": None,
+        "heartbeat_at": None,
+    }
+    if extra_values:
+        values.update(extra_values)
+
     transition_state(
         conn,
         session_id,
         outcome_state,
-        extra_values={
-            "trust_outcome": outcome,
-            "reason_codes": reason_codes,
-            "connector_ids": connector_ids,
-            "worker_phase": "COMPLETED",
-            "lease_id": None,
-            "lease_holder_id": None,
-            "lease_acquired_at": None,
-        },
+        extra_values=values,
     )
 
 

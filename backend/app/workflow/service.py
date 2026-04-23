@@ -105,11 +105,49 @@ def start_verification(
     if result != "STARTED":
         return result
 
+    if any((extraction_stage, grounding_stage, connector_stage, policy_loader)):
+        # Compatibility path for tests/internal callers that inject pipeline
+        # stages directly. The production HTTP path only enqueues work here;
+        # backend.app.worker.worker owns execution.
+        try:
+            run_worker_pipeline(
+                conn,
+                session_id,
+                current_worker_id,
+                extraction_stage=extraction_stage,
+                grounding_stage=grounding_stage,
+                connector_stage=connector_stage,
+                policy_loader=policy_loader,
+                heartbeat_interval_seconds=heartbeat_interval_seconds,
+            )
+        except Exception:
+            return "FAILED"
+
+    return result
+
+
+def _run_worker_pipeline_in_new_session(
+    session_id: str,
+    worker_id: str,
+    *,
+    extraction_stage: Callable | None = None,
+    grounding_stage: Callable | None = None,
+    connector_stage: Callable | None = None,
+    policy_loader: Callable | None = None,
+    heartbeat_interval_seconds: int = 10,
+) -> None:
+    # OBSOLETE BACKGROUNDTASKS EXECUTION HELPER:
+    # Verification execution is now owned by backend.app.worker.worker after a
+    # queue dequeue and explicit lease acquisition. Keep temporarily for any
+    # external imports during migration; do not call from API/orchestrator.
+    from ..db.database import SessionLocal
+
+    db = SessionLocal()
     try:
         run_worker_pipeline(
-            conn,
+            db,
             session_id,
-            current_worker_id,
+            worker_id,
             extraction_stage=extraction_stage,
             grounding_stage=grounding_stage,
             connector_stage=connector_stage,
@@ -117,9 +155,13 @@ def start_verification(
             heartbeat_interval_seconds=heartbeat_interval_seconds,
         )
     except Exception:
-        return "FAILED"
-
-    return result
+        LOGGER.exception(
+            "BACKGROUND_WORKER_PIPELINE_FAILED session_id=%s worker_id=%s",
+            session_id,
+            worker_id,
+        )
+    finally:
+        db.close()
 
 
 def run_worker_pipeline(
@@ -133,6 +175,12 @@ def run_worker_pipeline(
     policy_loader: Callable | None = None,
     heartbeat_interval_seconds: int = 10,
 ) -> dict:
+    uses_default_runtime = (
+        extraction_stage is None
+        and grounding_stage is None
+        and connector_stage is None
+        and policy_loader is None
+    )
     extraction = extraction_stage or _default_extraction_stage
     grounding = grounding_stage or _default_grounding_stage
     connector_eval = connector_stage or _default_connector_stage
@@ -169,14 +217,28 @@ def run_worker_pipeline(
 
             update_worker_phase(conn, session_id, worker_id, WORKER_PHASE_TRUST_SCORING)
             failure_type = "unknown_processing_error"
-            trust_result = evaluate_trust(grounded_data, connector_responses, policy)
+            trust_input = _resolve_trust_input(grounded_data)
+            trust_result = evaluate_trust(trust_input, connector_responses, policy)
+            completion_values = (
+                _build_completion_values(
+                    conn,
+                    session_id,
+                    worker_id,
+                    trust_result,
+                )
+                if uses_default_runtime
+                else None
+            )
             complete_processing(
                 conn,
                 session_id,
                 trust_result["outcome"],
                 trust_result["reason_codes"],
                 trust_result["connector_ids"],
+                extra_values=completion_values,
             )
+            if uses_default_runtime:
+                _run_final_analysis(conn, session_id)
             return trust_result
     except Exception as exc:
         workflow_error = exc
@@ -221,6 +283,8 @@ def complete_processing(
     outcome: str,
     reason_codes: list[str],
     connector_ids: list[str],
+    *,
+    extra_values: dict | None = None,
 ) -> None:
     repository.complete_processing(
         conn,
@@ -229,6 +293,7 @@ def complete_processing(
         outcome,
         reason_codes,
         connector_ids,
+        extra_values=extra_values,
     )
     conn.commit()
 
@@ -273,7 +338,28 @@ def _safe_rollback(conn) -> None:
 
 
 def _default_extraction_stage(conn, session_id: str, worker_id: str) -> dict:
-    return {}
+    from pathlib import Path
+
+    from ..sessions.models import Session as SessionModel
+    from .runtime import _run_generalized_pass_a, extract_document_payload
+
+    del worker_id
+
+    session = conn.query(SessionModel).filter(SessionModel.id == session_id).first()
+    file_path = Path(session.file_path or "") if session is not None else Path("")
+    if session is None or not session.file_path or not file_path.exists():
+        raise WorkflowProcessingError(
+            "document_missing",
+            message=f"Document not found for session {session_id}",
+        )
+
+    extraction_payload = extract_document_payload(file_path)
+    session.extraction_payload = extraction_payload["view"]
+    _run_generalized_pass_a(session)
+    session.heartbeat_at = datetime.utcnow()
+    conn.commit()
+    conn.refresh(session)
+    return extraction_payload
 
 
 def _default_grounding_stage(
@@ -292,7 +378,30 @@ def _default_connector_stage(
     grounded_data: dict,
     policy: dict | None = None,
 ) -> list[dict]:
-    return []
+    from ..sessions.models import Session as SessionModel
+    from .runtime import (
+        _raise_on_processing_connector_failure,
+        _run_verification_execution,
+        build_connector_responses,
+    )
+
+    del worker_id
+
+    session = conn.query(SessionModel).filter(SessionModel.id == session_id).first()
+    if session is None:
+        raise WorkflowProcessingError(
+            "document_missing",
+            message=f"Session not found: {session_id}",
+        )
+
+    connector_responses = build_connector_responses(grounded_data, policy)
+    session.connector_payload = connector_responses
+    session.heartbeat_at = datetime.utcnow()
+    conn.commit()
+    conn.refresh(session)
+    _run_verification_execution(conn, session)
+    _raise_on_processing_connector_failure(connector_responses)
+    return connector_responses
 
 
 def _default_policy_loader(
@@ -301,7 +410,66 @@ def _default_policy_loader(
     worker_id: str,
     grounded_data: dict,
 ) -> dict:
-    return {}
+    from .runtime import build_policy
+
+    del conn, session_id, worker_id
+    return build_policy(grounded_data)
+
+
+def _resolve_trust_input(grounded_data: dict) -> dict:
+    if isinstance(grounded_data, dict) and isinstance(grounded_data.get("trust_input"), dict):
+        return grounded_data["trust_input"]
+    return grounded_data
+
+
+def _build_completion_values(
+    conn,
+    session_id: str,
+    worker_id: str,
+    trust_result: dict,
+) -> dict:
+    from pathlib import Path
+
+    from ..audit.hmac_utils import generate_commitment, generate_nonce
+    from ..audit.receipt_generator import generate_receipt
+    from ..audit.service import store_audit_bundle
+    from ..sessions.models import Session as SessionModel
+
+    session = conn.query(SessionModel).filter(SessionModel.id == session_id).first()
+    file_path = Path(session.file_path or "") if session is not None else Path("")
+    if session is None or not session.file_path or not file_path.exists():
+        raise WorkflowProcessingError(
+            "document_missing",
+            message=f"Document not found for session {session_id}",
+        )
+
+    try:
+        with file_path.open("rb") as source_file:
+            document_bytes = source_file.read()
+        nonce = generate_nonce()
+        commitment = generate_commitment(document_bytes, nonce, "secuura-session")
+        receipt = generate_receipt(session_id, worker_id, commitment, trust_result)
+        store_audit_bundle(conn, receipt, nonce)
+    except Exception as exc:
+        raise WorkflowProcessingError(
+            "audit_store_failure",
+            message=str(exc),
+        ) from exc
+
+    return {
+        "document_commitment": commitment,
+        "audit_receipt_id": receipt["audit_event_id"],
+        "verified_at": datetime.utcnow(),
+    }
+
+
+def _run_final_analysis(conn, session_id: str) -> None:
+    from ..sessions.models import Session as SessionModel
+    from .runtime import _run_generalized_pass_b
+
+    session = conn.query(SessionModel).filter(SessionModel.id == session_id).first()
+    if session is not None:
+        _run_generalized_pass_b(conn, session)
 
 
 class _HeartbeatRunner:

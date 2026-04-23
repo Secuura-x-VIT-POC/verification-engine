@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-from ..workflow import service
+from ..workflow.job_queue import enqueue_job
 
 
 def trigger_processing(conn, session_id: str, worker_id: str, max_retries=3):
     """
-    Attempts to acquire a strict single-worker lease before processing.
+    Enqueues verification work. A separate worker must acquire the strict
+    single-session lease before processing.
     Returns:
-        - "STARTED" -> this worker owns execution
-        - "NO_OP" -> another worker already owns the lease
+        - "STARTED" -> work is queued or already pending
+        - "NO_OP" -> reserved for future queue rejection semantics
         - "FAILED" -> unexpected issue
     """
 
+    del worker_id
     del max_retries
 
     try:
-        if service.acquire_lease(conn, session_id, worker_id):
-            return "STARTED"
-        return "NO_OP"
+        enqueue_job(conn, session_id)
+        return "STARTED"
     except Exception:
         _safe_rollback(conn)
         return "FAILED"

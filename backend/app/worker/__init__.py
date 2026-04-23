@@ -1,0 +1,1 @@
+"""Verification worker process package."""

@@ -55,44 +55,43 @@ class StateMachineTests(unittest.TestCase):
 
 
 class TriggerProcessingTests(unittest.TestCase):
-    def test_trigger_processing_starts_when_lease_is_acquired(self):
+    def test_trigger_processing_enqueues_job(self):
         conn = MagicMock()
 
         with patch(
-            "backend.app.orchestrator.orchestrator.service.acquire_lease",
-            return_value=True,
-        ) as acquire_mock:
+            "backend.app.orchestrator.orchestrator.enqueue_job",
+        ) as enqueue_mock:
             result = trigger_processing(conn, "session-1", "worker-1")
 
         self.assertEqual(result, "STARTED")
-        acquire_mock.assert_called_once_with(conn, "session-1", "worker-1")
+        enqueue_mock.assert_called_once_with(conn, "session-1")
         conn.rollback.assert_not_called()
 
-    def test_trigger_processing_returns_no_op_when_lease_is_rejected(self):
+    def test_trigger_processing_returns_failed_when_enqueue_fails(self):
         conn = MagicMock()
 
         with patch(
-            "backend.app.orchestrator.orchestrator.service.acquire_lease",
-            return_value=False,
-        ) as acquire_mock:
+            "backend.app.orchestrator.orchestrator.enqueue_job",
+            side_effect=RuntimeError("queue unavailable"),
+        ) as enqueue_mock:
             result = trigger_processing(conn, "session-1", "worker-1")
 
-        self.assertEqual(result, "NO_OP")
-        acquire_mock.assert_called_once_with(conn, "session-1", "worker-1")
-        conn.rollback.assert_not_called()
+        self.assertEqual(result, "FAILED")
+        enqueue_mock.assert_called_once_with(conn, "session-1")
+        conn.rollback.assert_called_once()
 
-    def test_trigger_processing_does_not_retry_after_rejected_lease(self):
+    def test_trigger_processing_does_not_retry_after_enqueue_failure(self):
         conn = MagicMock()
 
         with patch(
-            "backend.app.orchestrator.orchestrator.service.acquire_lease",
-            return_value=False,
-        ) as acquire_mock:
+            "backend.app.orchestrator.orchestrator.enqueue_job",
+            side_effect=RuntimeError("queue unavailable"),
+        ) as enqueue_mock:
             result = trigger_processing(conn, "session-1", "worker-1", max_retries=2)
 
-        self.assertEqual(result, "NO_OP")
-        acquire_mock.assert_called_once_with(conn, "session-1", "worker-1")
-        conn.rollback.assert_not_called()
+        self.assertEqual(result, "FAILED")
+        enqueue_mock.assert_called_once_with(conn, "session-1")
+        conn.rollback.assert_called_once()
 
 
 class LeaseServiceTests(unittest.TestCase):
@@ -212,7 +211,7 @@ class WorkflowServiceTests(unittest.TestCase):
         self.assertEqual(connector_fn.call_count, 2)
         sleep_mock.assert_called_once_with(0.3)
 
-    def test_start_verification_runs_pipeline_after_start(self):
+    def test_start_verification_enqueues_without_running_pipeline(self):
         conn = MagicMock()
 
         with patch(
@@ -235,7 +234,7 @@ class WorkflowServiceTests(unittest.TestCase):
             "worker-1",
             max_retries=3,
         )
-        pipeline_mock.assert_called_once()
+        pipeline_mock.assert_not_called()
 
     def test_run_worker_pipeline_advances_all_phases_and_completes(self):
         conn = MagicMock()

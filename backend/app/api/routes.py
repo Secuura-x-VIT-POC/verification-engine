@@ -53,7 +53,8 @@ from ..verification_domain import (
     get_verification_plan_for_session,
     get_verification_summary_for_session,
 )
-from ..workflow.runtime import get_result_response, get_status_response, run_verification, serialize_session
+from ..workflow.runtime import get_result_response, get_status_response, serialize_session
+from ..workflow.service import start_verification
 
 
 router = APIRouter(tags=["workflow"])
@@ -83,21 +84,21 @@ def verify_session_route(
 
     if session.status not in {
         SessionState.UPLOADED_PENDING_REVIEW,
-        SessionState.VERIFYING,
         SessionState.FAILED_RETRIABLE,
-        SessionState.VERIFIED_GREEN,
-        SessionState.VERIFIED_AMBER,
-        SessionState.VERIFIED_RED,
     }:
         raise HTTPException(status_code=409, detail="Session is not ready for verification")
 
-    if session.status not in {
-        SessionState.VERIFIED_GREEN,
-        SessionState.VERIFIED_AMBER,
-        SessionState.VERIFIED_RED,
-    }:
-        session = run_verification(db, session, user)
+    start_result = start_verification(
+        db,
+        session.id,
+        worker_id=user,
+    )
+    if start_result == "NO_OP":
+        raise HTTPException(status_code=409, detail="Verification is already in progress")
+    if start_result == "FAILED":
+        raise HTTPException(status_code=500, detail="Verification could not be started")
 
+    db.refresh(session)
     return serialize_session(db, session)
 
 

@@ -62,6 +62,10 @@ CLEANUP_READY_STATES = VERIFIED_STATES | {
 
 
 def run_verification(db: DbSession, session: SessionModel, reviewer_ref: str) -> SessionModel:
+    # OBSOLETE DIRECT EXECUTION PATH:
+    # This bypasses workflow.service.start_verification(), orchestrator lease
+    # acquisition, and run_worker_pipeline(). Keep temporarily for tests and
+    # migration only; API routes must not call this function.
     file_path = Path(session.file_path or "")
 
     now = datetime.utcnow()

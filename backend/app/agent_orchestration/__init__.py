@@ -22,6 +22,7 @@ from .contracts import (
 
 _LAZY_IMPORTS = {
     "build_agent_graph": (".graph", "build_agent_graph"),
+    "build_gemini_normalization_graph": (".graph", "build_gemini_normalization_graph"),
     "build_agent_pass_a_artifacts": (".service", "build_agent_pass_a_artifacts"),
     "build_agent_pass_b_artifacts": (".service", "build_agent_pass_b_artifacts"),
     "build_and_persist_agent_pass_a": (".service", "build_and_persist_agent_pass_a"),
@@ -36,6 +37,7 @@ _LAZY_IMPORTS = {
     "get_agent_run_summary_for_session": (".service", "get_agent_run_summary_for_session"),
     "load_agent_runtime_policy": (".policies", "load_agent_runtime_policy"),
     "mark_agent_failure": (".service", "mark_agent_failure"),
+    "normalize_extraction_payload": (".service", "normalize_extraction_payload"),
     "persist_agent_artifacts": (".service", "persist_agent_artifacts"),
 }
 
@@ -67,6 +69,7 @@ __all__ = [
     "SessionAgentRouteRecommendationCollection",
     "SessionAgentRunStatus",
     "build_agent_graph",
+    "build_gemini_normalization_graph",
     "build_agent_pass_a_artifacts",
     "build_agent_pass_b_artifacts",
     "build_and_persist_agent_pass_a",
@@ -81,5 +84,6 @@ __all__ = [
     "get_agent_run_summary_for_session",
     "load_agent_runtime_policy",
     "mark_agent_failure",
+    "normalize_extraction_payload",
     "persist_agent_artifacts",
 ]

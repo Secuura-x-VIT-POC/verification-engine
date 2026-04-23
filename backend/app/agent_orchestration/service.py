@@ -34,7 +34,7 @@ from .contracts import (
     SessionAgentRouteRecommendationCollection,
     SessionAgentRunStatus,
 )
-from .graph import build_agent_graph
+from .graph import build_agent_graph, build_gemini_normalization_graph
 from .policies import load_agent_runtime_policy, minimize_extraction_payload
 from .prompts import load_prompt_bundle
 from .providers import AgentProviderUnavailable, DeterministicProvider, NvidiaProvider
@@ -42,6 +42,27 @@ from .providers import AgentProviderUnavailable, DeterministicProvider, NvidiaPr
 
 LOGGER = logging.getLogger(__name__)
 _UNSET = object()
+
+
+def normalize_extraction_payload(extraction_payload: dict[str, Any]) -> dict[str, Any]:
+    """Return Gemini-normalized extraction data without persisting AI output."""
+    try:
+        graph = build_gemini_normalization_graph()
+        result = graph.invoke({"raw_extraction": extraction_payload})
+    except Exception as exc:
+        LOGGER.warning("AGENT_NORMALIZATION_FALLBACK error=%s", exc)
+        return extraction_payload
+
+    normalized = result.get("normalized_extraction") if isinstance(result, dict) else None
+    if not isinstance(normalized, dict):
+        LOGGER.warning("AGENT_NORMALIZATION_FALLBACK error=missing_normalized_extraction")
+        return extraction_payload
+    if result.get("fallback_used"):
+        LOGGER.warning(
+            "AGENT_NORMALIZATION_FALLBACK validation_errors=%s",
+            result.get("validation_errors") or [],
+        )
+    return normalized
 
 
 def build_agent_pass_a_artifacts(
@@ -105,6 +126,10 @@ def persist_agent_artifacts(
     agent_run_status=_UNSET,
     agent_run_error=_UNSET,
 ) -> None:
+    # DEPRECATED PERSISTENCE PATH:
+    # Agent outputs are processing-only in the worker architecture. Keep this
+    # legacy writer temporarily for old imports/tests; do not call from the
+    # verification worker.
     if document_understanding is not _UNSET:
         session.agent_document_understanding_payload = _dump_model(document_understanding)
     if credential_candidates is not _UNSET:
@@ -128,6 +153,9 @@ def build_and_persist_agent_pass_a(
     credentials,
     verification_plan,
 ) -> dict[str, Any]:
+    # DEPRECATED PERSISTENCE PATH:
+    # Replaced in the worker pipeline by normalize_extraction_payload(), which
+    # runs LangGraph/Gemini in memory and writes nothing to the session row.
     persist_agent_artifacts(
         session,
         agent_run_status=AGENT_RUN_STATUS_RUNNING,
@@ -163,6 +191,8 @@ def build_and_persist_agent_pass_b(
     credential_bundles,
     credential_audits,
 ) -> dict[str, Any]:
+    # DEPRECATED PERSISTENCE PATH:
+    # Final agent artifacts are no longer part of core verification execution.
     persist_agent_artifacts(
         session,
         agent_run_status=AGENT_RUN_STATUS_RUNNING,

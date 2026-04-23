@@ -43,3 +43,11 @@ class AgentGraphState(TypedDict, total=False):
     route_recommendations: SessionAgentRouteRecommendationCollection
     explanations: AgentExplanationArtifactCollection
     run_summary: AgentRunSummary
+
+
+class GeminiNormalizationState(TypedDict, total=False):
+    raw_extraction: dict[str, Any]
+    gemini_output: dict[str, Any]
+    normalized_extraction: dict[str, Any]
+    validation_errors: list[str]
+    fallback_used: bool

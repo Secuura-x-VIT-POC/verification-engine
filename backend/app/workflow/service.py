@@ -365,7 +365,10 @@ def _default_grounding_stage(
     worker_id: str,
     extraction_data: dict,
 ) -> dict:
-    return extraction_data
+    from ..agent_orchestration.service import normalize_extraction_payload
+
+    del conn, session_id, worker_id
+    return normalize_extraction_payload(extraction_data)
 
 
 def _default_connector_stage(

@@ -23,11 +23,7 @@ except ImportError:  # pragma: no cover - optional until dependencies are instal
 
 app = FastAPI()
 
-if SLOWAPI_AVAILABLE and SlowAPIMiddleware is not None:
-    app.state.limiter = limiter
-    app.add_middleware(SlowAPIMiddleware)
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
+# CORS middleware must be added first (last in add_middleware chain)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -36,9 +32,16 @@ app.add_middleware(
         "http://127.0.0.1:5173",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
+
+if SLOWAPI_AVAILABLE and SlowAPIMiddleware is not None:
+    app.state.limiter = limiter
+    app.add_middleware(SlowAPIMiddleware)
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 if api_router is not None:
     app.include_router(api_router)

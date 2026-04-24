@@ -1,37 +1,36 @@
 import React from "react";
-import AuditDetailCard from "./AuditDetailCard";
-import DocumentHighlightViewer from "./DocumentHighlightViewer";
 
 export default function DocumentTab({
-  documentUrl,
-  highlightItems,
-  selectedAuditDetail,
-  onSelectCredential,
-  selectedCredentialId,
-  documentMessage,
+	documentUrl,
+	highlightItems,
+	selectedAuditDetail,
+	onSelectCredential,
+	selectedCredentialId,
+	documentMessage,
 }) {
-  return (
-    <div className="gv-tab-panel">
-      <div className="gv-panel-head">
-        <div>
-          <p className="eyebrow">Document review</p>
-          <h2>PDF with verification overlays</h2>
-        </div>
-        {documentMessage ? <p className="muted">{documentMessage}</p> : null}
-      </div>
+	return (
+		<div className="gv-tab-panel">
+			<div className="gv-panel-head">
+				<div>
+					<p className="eyebrow">Document review</p>
+					<h2>Session document</h2>
+				</div>
+				{documentMessage ? <p className="muted">{documentMessage}</p> : null}
+			</div>
 
-      <div className="gv-document-layout">
-        <div className="panel">
-          <DocumentHighlightViewer
-            documentUrl={documentUrl}
-            highlightItems={highlightItems}
-            activeCredentialId={selectedCredentialId}
-            onSelectCredential={onSelectCredential}
-          />
-        </div>
-
-        <AuditDetailCard detail={selectedAuditDetail} compact />
-      </div>
-    </div>
-  );
+			<div className="gv-document-layout">
+				<div className="panel">
+					{documentUrl ? (
+						<iframe
+							src={documentUrl}
+							style={{ width: "100%", height: "600px", border: "none" }}
+							title="Document Viewer"
+						/>
+					) : (
+						<p className="muted">No document available for this session.</p>
+					)}
+				</div>
+			</div>
+		</div>
+	);
 }

@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from ..auth.routes import get_current_user
@@ -181,6 +181,19 @@ def upload_file(
     }
 
 
+@router.options("/sessions/{session_id}/document")
+def options_session_document(session_id: str):
+    """Handle CORS preflight requests for document endpoint"""
+    headers = {
+        "Access-Control-Allow-Origin": "http://localhost:5173",
+        "Access-Control-Allow-Methods": "GET, OPTIONS, HEAD",
+        "Access-Control-Allow-Headers": "content-type, authorization",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Max-Age": "3600",
+    }
+    return Response(status_code=200, headers=headers)
+
+
 @router.get("/sessions/{session_id}/document")
 def get_session_document(
     session_id: str,
@@ -195,10 +208,20 @@ def get_session_document(
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Document not found on disk")
 
-    return FileResponse(
-        path=file_path,
+    def iterfile():
+        with open(file_path, mode="rb") as file_like:
+            yield from file_like
+
+    headers = {
+        "Access-Control-Allow-Origin": "http://localhost:5173",
+        "Access-Control-Allow-Credentials": "true",
+        "Content-Disposition": f'attachment; filename="{session.filename or file_path.name}"',
+    }
+    
+    return StreamingResponse(
+        iterfile(),
         media_type="application/pdf",
-        filename=session.filename or file_path.name,
+        headers=headers,
     )
 
 

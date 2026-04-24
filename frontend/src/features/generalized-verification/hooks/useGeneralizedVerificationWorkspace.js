@@ -1,324 +1,158 @@
 import { useEffect, useState } from "react";
 import {
-  getAgentCredentialCandidates,
-  getAgentDocumentUnderstanding,
-  getAgentRouteRecommendations,
-  getAgentRunStatus,
-  getAnalysisStatus,
-  getCredentialBundles,
-  getCredentialAudits,
-  getCredentials,
-  getDemoProfile,
-  getDocumentProfile,
-  getProviderCapabilities,
-  getProviderExecutionStatus,
-  getProviderOperatingMode,
-  getProviderExecutionTraces,
-  getSessionDocumentBlob,
-  getSessionOverview,
-  getVerificationExecutionStatus,
-  getVerificationPlan,
-  getVerificationTaskResults,
-  getVerificationSummary,
+	getSessionDocumentBlob,
+	getSessionOverview,
 } from "../api/generalizedVerificationApi.js";
 import {
-  createEmptyAgentCredentialCandidateCollection,
-  createEmptyAgentDocumentUnderstanding,
-  createEmptyAgentRouteRecommendationCollection,
-  createEmptyAgentRunStatus,
-  createEmptyAnalysisStatus,
-  createEmptyCredentialBundleCollection,
-  createEmptyCredentialAuditCollection,
-  createEmptyCredentialCollection,
-  createEmptyDocumentProfile,
-  createEmptyDemoProfile,
-  createEmptyProviderCapabilityCollection,
-  createEmptyProviderExecutionStatus,
-  createEmptyProviderOperatingMode,
-  createEmptyProviderExecutionTraceCollection,
-  createEmptySessionOverview,
-  createEmptyVerificationExecutionStatus,
-  createEmptyVerificationPlan,
-  createEmptyVerificationTaskResultCollection,
-  createEmptyVerificationSummary,
+	createEmptyAgentCredentialCandidateCollection,
+	createEmptyAgentDocumentUnderstanding,
+	createEmptyAgentRouteRecommendationCollection,
+	createEmptyAgentRunStatus,
+	createEmptyAnalysisStatus,
+	createEmptyCredentialBundleCollection,
+	createEmptyCredentialAuditCollection,
+	createEmptyCredentialCollection,
+	createEmptyDocumentProfile,
+	createEmptyDemoProfile,
+	createEmptyProviderCapabilityCollection,
+	createEmptyProviderExecutionStatus,
+	createEmptyProviderOperatingMode,
+	createEmptyProviderExecutionTraceCollection,
+	createEmptySessionOverview,
+	createEmptyVerificationExecutionStatus,
+	createEmptyVerificationPlan,
+	createEmptyVerificationTaskResultCollection,
+	createEmptyVerificationSummary,
 } from "../types/contracts.js";
 
 function createEmptyWorkspaceData(sessionId) {
-  return {
-    session: createEmptySessionOverview(sessionId),
-    documentProfile: createEmptyDocumentProfile(sessionId),
-    credentials: createEmptyCredentialCollection(sessionId),
-    verificationPlan: createEmptyVerificationPlan(sessionId),
-    verificationTaskResults: createEmptyVerificationTaskResultCollection(sessionId),
-    credentialBundles: createEmptyCredentialBundleCollection(sessionId),
-    credentialAudits: createEmptyCredentialAuditCollection(sessionId),
-    verificationSummary: createEmptyVerificationSummary(sessionId),
-    analysisStatus: createEmptyAnalysisStatus(sessionId),
-    executionStatus: createEmptyVerificationExecutionStatus(sessionId),
-    providerExecutionTraces: createEmptyProviderExecutionTraceCollection(sessionId),
-    providerExecutionStatus: createEmptyProviderExecutionStatus(sessionId),
-    providerOperatingMode: createEmptyProviderOperatingMode(sessionId),
-    providerCapabilities: createEmptyProviderCapabilityCollection(sessionId),
-    demoProfile: createEmptyDemoProfile(sessionId),
-    agentDocumentUnderstanding: createEmptyAgentDocumentUnderstanding(sessionId),
-    agentCredentialCandidates: createEmptyAgentCredentialCandidateCollection(sessionId),
-    agentRouteRecommendations: createEmptyAgentRouteRecommendationCollection(sessionId),
-    agentRunStatus: createEmptyAgentRunStatus(sessionId),
-  };
-}
-
-function readSettledValue(result, fallbackValue, label, warnings) {
-  if (result.status === "fulfilled") {
-    return result.value;
-  }
-
-  warnings.push(`${label}: ${result.reason?.message || "Request failed"}`);
-  return fallbackValue;
+	return {
+		session: createEmptySessionOverview(sessionId),
+		documentProfile: createEmptyDocumentProfile(sessionId),
+		credentials: createEmptyCredentialCollection(sessionId),
+		verificationPlan: createEmptyVerificationPlan(sessionId),
+		verificationTaskResults:
+			createEmptyVerificationTaskResultCollection(sessionId),
+		credentialBundles: createEmptyCredentialBundleCollection(sessionId),
+		credentialAudits: createEmptyCredentialAuditCollection(sessionId),
+		verificationSummary: createEmptyVerificationSummary(sessionId),
+		analysisStatus: createEmptyAnalysisStatus(sessionId),
+		executionStatus: createEmptyVerificationExecutionStatus(sessionId),
+		providerExecutionTraces:
+			createEmptyProviderExecutionTraceCollection(sessionId),
+		providerExecutionStatus: createEmptyProviderExecutionStatus(sessionId),
+		providerOperatingMode: createEmptyProviderOperatingMode(sessionId),
+		providerCapabilities: createEmptyProviderCapabilityCollection(sessionId),
+		demoProfile: createEmptyDemoProfile(sessionId),
+		agentDocumentUnderstanding:
+			createEmptyAgentDocumentUnderstanding(sessionId),
+		agentCredentialCandidates:
+			createEmptyAgentCredentialCandidateCollection(sessionId),
+		agentRouteRecommendations:
+			createEmptyAgentRouteRecommendationCollection(sessionId),
+		agentRunStatus: createEmptyAgentRunStatus(sessionId),
+	};
 }
 
 export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
-  const [state, setState] = useState(() => ({
-    isLoading: true,
-    error: "",
-    warnings: [],
-    documentUrl: "",
-    data: createEmptyWorkspaceData(sessionId),
-  }));
+	const [session, setSession] = useState(null);
+	const [documentUrl, setDocumentUrl] = useState("");
+	const [error, setError] = useState("");
+	const [isLoading, setIsLoading] = useState(true);
+	const [warnings, setWarnings] = useState([]);
 
-  useEffect(() => {
-    let isActive = true;
-    let nextObjectUrl = "";
+	const pollSession = async (currentSessionId) => {
+		try {
+			const res = await fetch(
+				`http://localhost:8000/sessions/${currentSessionId}`,
+				{
+					headers: {
+						Authorization: `Bearer ${token}`,
+						"Content-Type": "application/json",
+					},
+				},
+			);
+			const data = await res.json();
 
-    async function loadWorkspace() {
-      setState({
-        isLoading: true,
-        error: "",
-        warnings: [],
-        documentUrl: "",
-        data: createEmptyWorkspaceData(sessionId),
-      });
+			setSession(data);
 
-      try {
-        const session = await getSessionOverview(sessionId, token);
-        if (!isActive) {
-          return;
-        }
+			if (
+				data.status !== "VERIFIED_GREEN" &&
+				data.status !== "VERIFIED_AMBER" &&
+				data.status !== "VERIFIED_RED" &&
+				data.status !== "FAILED_RETRIABLE"
+			) {
+				setTimeout(() => pollSession(currentSessionId), 2000);
+			}
+		} catch (err) {
+			setError(err.message);
+		}
+	};
 
-        const artifactRequests = [
-          getAgentDocumentUnderstanding(sessionId, token),
-          getAgentCredentialCandidates(sessionId, token),
-          getAgentRouteRecommendations(sessionId, token),
-          getAgentRunStatus(sessionId, token),
-          getDocumentProfile(sessionId, token),
-          getCredentials(sessionId, token),
-          getVerificationPlan(sessionId, token),
-          getVerificationTaskResults(sessionId, token),
-          getCredentialBundles(sessionId, token),
-          getCredentialAudits(sessionId, token),
-          getVerificationSummary(sessionId, token),
-          getAnalysisStatus(sessionId, token),
-          getVerificationExecutionStatus(sessionId, token),
-          getProviderExecutionTraces(sessionId, token),
-          getProviderExecutionStatus(sessionId, token),
-          getProviderOperatingMode(sessionId, token),
-          getProviderCapabilities(sessionId, token),
-          getDemoProfile(sessionId, token),
-          session.document_available ? getSessionDocumentBlob(sessionId, token) : Promise.resolve(null),
-        ];
+	useEffect(() => {
+		let isActive = true;
+		let nextObjectUrl = "";
 
-        const [
-          agentDocumentUnderstandingResult,
-          agentCredentialCandidatesResult,
-          agentRouteRecommendationsResult,
-          agentRunStatusResult,
-          documentProfileResult,
-          credentialsResult,
-          verificationPlanResult,
-          verificationTaskResultsResult,
-          credentialBundlesResult,
-          credentialAuditsResult,
-          verificationSummaryResult,
-          analysisStatusResult,
-          executionStatusResult,
-          providerExecutionTracesResult,
-          providerExecutionStatusResult,
-          providerOperatingModeResult,
-          providerCapabilitiesResult,
-          demoProfileResult,
-          documentBlobResult,
-        ] = await Promise.allSettled(artifactRequests);
+		async function loadWorkspace() {
+			setIsLoading(true);
+			setError("");
+			setWarnings([]);
 
-        if (!isActive) {
-          return;
-        }
+			try {
+				// Load session data and start polling
+				await pollSession(sessionId);
 
-        const warnings = [];
-        const agentDocumentUnderstanding = readSettledValue(
-          agentDocumentUnderstandingResult,
-          createEmptyAgentDocumentUnderstanding(sessionId),
-          "Agent document understanding",
-          warnings
-        );
-        const agentCredentialCandidates = readSettledValue(
-          agentCredentialCandidatesResult,
-          createEmptyAgentCredentialCandidateCollection(sessionId),
-          "Agent credential candidates",
-          warnings
-        );
-        const agentRouteRecommendations = readSettledValue(
-          agentRouteRecommendationsResult,
-          createEmptyAgentRouteRecommendationCollection(sessionId),
-          "Agent route recommendations",
-          warnings
-        );
-        const agentRunStatus = readSettledValue(
-          agentRunStatusResult,
-          createEmptyAgentRunStatus(sessionId),
-          "Agent run status",
-          warnings
-        );
-        const documentProfile = readSettledValue(
-          documentProfileResult,
-          createEmptyDocumentProfile(sessionId),
-          "Document profile",
-          warnings
-        );
-        const credentials = readSettledValue(
-          credentialsResult,
-          createEmptyCredentialCollection(sessionId),
-          "Credentials",
-          warnings
-        );
-        const verificationPlan = readSettledValue(
-          verificationPlanResult,
-          createEmptyVerificationPlan(sessionId),
-          "Verification plan",
-          warnings
-        );
-        const verificationTaskResults = readSettledValue(
-          verificationTaskResultsResult,
-          createEmptyVerificationTaskResultCollection(sessionId),
-          "Verification task results",
-          warnings
-        );
-        const credentialBundles = readSettledValue(
-          credentialBundlesResult,
-          createEmptyCredentialBundleCollection(sessionId),
-          "Credential bundles",
-          warnings
-        );
-        const credentialAudits = readSettledValue(
-          credentialAuditsResult,
-          createEmptyCredentialAuditCollection(sessionId),
-          "Credential audits",
-          warnings
-        );
-        const verificationSummary = readSettledValue(
-          verificationSummaryResult,
-          createEmptyVerificationSummary(sessionId),
-          "Verification summary",
-          warnings
-        );
-        const analysisStatus = readSettledValue(
-          analysisStatusResult,
-          createEmptyAnalysisStatus(sessionId),
-          "Analysis status",
-          warnings
-        );
-        const executionStatus = readSettledValue(
-          executionStatusResult,
-          createEmptyVerificationExecutionStatus(sessionId),
-          "Execution status",
-          warnings
-        );
-        const providerExecutionTraces = readSettledValue(
-          providerExecutionTracesResult,
-          createEmptyProviderExecutionTraceCollection(sessionId),
-          "Provider execution traces",
-          warnings
-        );
-        const providerExecutionStatus = readSettledValue(
-          providerExecutionStatusResult,
-          createEmptyProviderExecutionStatus(sessionId),
-          "Provider execution status",
-          warnings
-        );
-        const providerOperatingMode = readSettledValue(
-          providerOperatingModeResult,
-          createEmptyProviderOperatingMode(sessionId),
-          "Provider operating mode",
-          warnings
-        );
-        const providerCapabilities = readSettledValue(
-          providerCapabilitiesResult,
-          createEmptyProviderCapabilityCollection(sessionId),
-          "Provider capabilities",
-          warnings
-        );
-        const demoProfile = readSettledValue(
-          demoProfileResult,
-          createEmptyDemoProfile(sessionId),
-          "Demo profile",
-          warnings
-        );
+				// Load document if available
+				const sessionData = await getSessionOverview(sessionId, token);
+				if (!isActive) return;
 
-        if (documentBlobResult.status === "fulfilled" && documentBlobResult.value) {
-          nextObjectUrl = URL.createObjectURL(documentBlobResult.value);
-        } else if (documentBlobResult.status === "rejected") {
-          warnings.push(`Document preview: ${documentBlobResult.reason?.message || "Request failed"}`);
-        }
+				if (sessionData.document_available) {
+					const documentBlobResult = await getSessionDocumentBlob(
+						sessionId,
+						token,
+					);
+					if (documentBlobResult) {
+						nextObjectUrl = URL.createObjectURL(documentBlobResult);
+					}
+				}
 
-        setState({
-          isLoading: false,
-          error: "",
-          warnings,
-          documentUrl: nextObjectUrl,
-          data: {
-            session,
-            agentDocumentUnderstanding,
-            agentCredentialCandidates,
-            agentRouteRecommendations,
-            agentRunStatus,
-            documentProfile,
-            credentials,
-            verificationPlan,
-            verificationTaskResults,
-            credentialBundles,
-            credentialAudits,
-            verificationSummary,
-            analysisStatus,
-            executionStatus,
-            providerExecutionTraces,
-            providerExecutionStatus,
-            providerOperatingMode,
-            providerCapabilities,
-            demoProfile,
-          },
-        });
-      } catch (requestError) {
-        if (!isActive) {
-          return;
-        }
+				if (isActive) {
+					setDocumentUrl(nextObjectUrl);
+					setIsLoading(false);
+				}
+			} catch (requestError) {
+				if (isActive) {
+					setError(requestError.message);
+					setIsLoading(false);
+				}
+			}
+		}
 
-        setState({
-          isLoading: false,
-          error: requestError.message,
-          warnings: [],
-          documentUrl: "",
-          data: createEmptyWorkspaceData(sessionId),
-        });
-      }
-    }
+		loadWorkspace();
 
-    loadWorkspace();
+		return () => {
+			isActive = false;
+			if (nextObjectUrl) {
+				URL.revokeObjectURL(nextObjectUrl);
+			}
+		};
+	}, [sessionId, token]);
 
-    return () => {
-      isActive = false;
-      if (nextObjectUrl) {
-        URL.revokeObjectURL(nextObjectUrl);
-      }
-    };
-  }, [sessionId, token]);
+	// Create legacy data structure for UI compatibility
+	const data = createEmptyWorkspaceData(sessionId);
+	if (session) {
+		data.session = {
+			...data.session,
+			...session,
+			session_id: sessionId,
+		};
+	}
 
-  return state;
+	return {
+		isLoading,
+		error,
+		warnings,
+		documentUrl,
+		data,
+	};
 }

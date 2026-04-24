@@ -36,6 +36,11 @@ from ..verification_domain.contracts import (
     SessionCredentialCollection,
     SessionVerificationPlan,
 )
+from ..agent_orchestration.schemas import WorkspacePayload
+from ..agent_orchestration.workspace import (
+    get_workspace_payload_for_session,
+    run_generalized_verification_session,
+)
 from ..workflow.runtime import get_result_response, get_status_response, serialize_session
 from ..workflow.service import start_verification
 
@@ -296,3 +301,33 @@ def get_session_analysis_status_route(
 ) -> SessionAnalysisStatus:
     del session_id, db, user
     _sensitive_artifact_gone()
+
+
+@router.post("/api/v1/verification-sessions/{session_id}/run", response_model=WorkspacePayload)
+def run_generalized_verification_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> WorkspacePayload:
+    session = _get_owned_session(db, session_id, user)
+    if not session.file_path:
+        raise HTTPException(status_code=409, detail="Upload a PDF before verification")
+    if session.status in {SessionState.PENDING_CLEANUP, SessionState.PURGE_COMPLETE, SessionState.FAILED_PURGED}:
+        raise HTTPException(status_code=409, detail="Session is already closed")
+    if session.status not in {
+        SessionState.UPLOADED_PENDING_REVIEW,
+        SessionState.FAILED_RETRIABLE,
+    }:
+        raise HTTPException(status_code=409, detail="Session is not ready for generalized verification")
+
+    return run_generalized_verification_session(db, session, reviewer_ref=user)
+
+
+@router.get("/api/v1/verification-sessions/{session_id}/workspace", response_model=WorkspacePayload)
+def get_generalized_workspace_route(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> WorkspacePayload:
+    session = _get_owned_session(db, session_id, user)
+    return get_workspace_payload_for_session(session)

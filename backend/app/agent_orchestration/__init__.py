@@ -21,6 +21,7 @@ from .contracts import (
 
 
 _LAZY_IMPORTS = {
+    "build_generalized_verification_graph": (".graph", "build_generalized_verification_graph"),
     "build_gemini_normalization_graph": (".graph", "build_gemini_normalization_graph"),
     "load_agent_runtime_policy": (".policies", "load_agent_runtime_policy"),
     "normalize_extraction_payload": (".service", "normalize_extraction_payload"),
@@ -53,6 +54,7 @@ __all__ = [
     "SessionAgentCredentialCandidateCollection",
     "SessionAgentRouteRecommendationCollection",
     "SessionAgentRunStatus",
+    "build_generalized_verification_graph",
     "build_gemini_normalization_graph",
     "load_agent_runtime_policy",
     "normalize_extraction_payload",

@@ -2,6 +2,7 @@ backend/app/verifier_providers/fixtures
 
 venv
 __pycache__
+*.pyc
 tmp
 uploads
 *.db

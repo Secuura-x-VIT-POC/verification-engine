@@ -4,8 +4,6 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from ..inference import load_nvidia_inference_config
-
 
 def _read_bool(name: str, default: bool) -> bool:
     raw_value = os.getenv(name)
@@ -37,42 +35,49 @@ def _read_float(name: str, default: float) -> float:
 @dataclass(frozen=True)
 class AgentRuntimePolicy:
     orchestration_enabled: bool = True
-    provider_key: str = "deterministic"
+    provider_key: str = "gemini"
     external_provider_enabled: bool = False
     timeout_ms: int = 2500
     route_override_confidence: float = 0.74
     classification_override_confidence: float = 0.74
     max_fields_for_provider: int = 18
     max_value_chars: int = 160
-    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nvidia_reasoning_model: str = "minimaxai/minimax-m2.5"
-    nvidia_pii_model: str = "nvidia/gliner-pii"
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_demo_raw_text_enabled: bool = True
+    gemini_max_input_chars: int = 12000
+    nvidia_base_url: str = ""
+    nvidia_reasoning_model: str = ""
+    nvidia_pii_model: str = ""
     nvidia_api_key: str | None = None
     nvidia_retry_budget: int = 0
-    nvidia_max_input_chars: int = 4000
-    nvidia_reasoning_enabled: bool = True
-    nvidia_gliner_enabled: bool = True
+    nvidia_max_input_chars: int = 0
+    nvidia_reasoning_enabled: bool = False
+    nvidia_gliner_enabled: bool = False
 
 
 def load_agent_runtime_policy() -> AgentRuntimePolicy:
-    nvidia = load_nvidia_inference_config()
     return AgentRuntimePolicy(
         orchestration_enabled=_read_bool("AGENT_ORCHESTRATION_ENABLED", True),
-        provider_key=os.getenv("AGENT_PROVIDER", "deterministic").strip().lower() or "deterministic",
+        provider_key=os.getenv("AGENT_PROVIDER", "gemini").strip().lower() or "gemini",
         external_provider_enabled=_read_bool("AGENT_EXTERNAL_PROVIDER_ENABLED", False),
         timeout_ms=_read_int("AGENT_TIMEOUT_MS", 2500),
         route_override_confidence=_read_float("AGENT_ROUTE_OVERRIDE_CONFIDENCE", 0.74),
         classification_override_confidence=_read_float("AGENT_CLASSIFICATION_OVERRIDE_CONFIDENCE", 0.74),
         max_fields_for_provider=_read_int("AGENT_MAX_FIELDS_FOR_PROVIDER", 18),
         max_value_chars=_read_int("AGENT_MAX_VALUE_CHARS", 160),
-        nvidia_base_url=nvidia.base_url,
-        nvidia_reasoning_model=nvidia.reasoning_model,
-        nvidia_pii_model=nvidia.pii_model,
-        nvidia_api_key=nvidia.api_key,
-        nvidia_retry_budget=nvidia.retry_budget,
-        nvidia_max_input_chars=nvidia.max_input_chars,
-        nvidia_reasoning_enabled=nvidia.reasoning_enabled,
-        nvidia_gliner_enabled=nvidia.pii_enrichment_enabled,
+        gemini_api_key=(os.getenv("GEMINI_API_KEY") or "").strip() or None,
+        gemini_model=(os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip() or "gemini-2.5-flash",
+        gemini_demo_raw_text_enabled=_read_bool("GEMINI_DEMO_RAW_TEXT_ENABLED", True),
+        gemini_max_input_chars=_read_int("GEMINI_MAX_INPUT_CHARS", 12000),
+        nvidia_base_url=(os.getenv("NVIDIA_BASE_URL") or "").strip(),
+        nvidia_reasoning_model=(os.getenv("NVIDIA_REASONING_MODEL") or "").strip(),
+        nvidia_pii_model=(os.getenv("NVIDIA_PII_MODEL") or "").strip(),
+        nvidia_api_key=(os.getenv("NVIDIA_API_KEY") or "").strip() or None,
+        nvidia_retry_budget=_read_int("NVIDIA_RETRY_BUDGET", 0),
+        nvidia_max_input_chars=_read_int("NVIDIA_MAX_TEXT_LENGTH", 0),
+        nvidia_reasoning_enabled=_read_bool("NVIDIA_REASONING_ENABLED", False),
+        nvidia_gliner_enabled=_read_bool("NVIDIA_GLINER_PREPROCESSING_ENABLED", False),
     )
 
 

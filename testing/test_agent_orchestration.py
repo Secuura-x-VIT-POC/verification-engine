@@ -4,10 +4,17 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from backend.app.agent_orchestration.graph import build_gemini_normalization_graph
+from backend.app.agent_orchestration.graph import (
+    build_generalized_verification_graph,
+    build_gemini_normalization_graph,
+)
+from backend.app.agent_orchestration.policies import AgentRuntimePolicy
+from backend.app.agent_orchestration.schemas import FieldDecision, WorkspacePayload
 from backend.app.agent_orchestration.service import normalize_extraction_payload
 
 
@@ -117,6 +124,47 @@ class GeminiNormalizationTests(unittest.TestCase):
             result = normalize_extraction_payload(raw_payload)
 
         self.assertEqual(result, raw_payload)
+
+    def test_generalized_graph_falls_back_when_api_key_is_missing(self):
+        policy = AgentRuntimePolicy(
+            orchestration_enabled=True,
+            provider_key="gemini",
+            gemini_api_key=None,
+            gemini_model="gemini-2.5-flash",
+            gemini_demo_raw_text_enabled=True,
+        )
+        graph = build_generalized_verification_graph(policy=policy)
+        state = graph.invoke(
+            {
+                "session_id": "session-1",
+                "filename": "demo.pdf",
+                "file_path": "",
+                "extraction_payload": _runtime_payload() | {"view": {"document_type": "academic_credential", "page_count": 1, "used_ocr": False, "warnings": [], "field_details": []}},
+            }
+        )
+
+        self.assertTrue(state["gemini_fallback_used"])
+        workspace = WorkspacePayload.model_validate(state["workspace_payload"])
+        self.assertEqual(workspace.session_id, "session-1")
+
+    def test_workspace_schema_validation_rejects_invalid_status(self):
+        with self.assertRaises(ValidationError):
+            FieldDecision(
+                field_id="name",
+                label="Name",
+                extracted_value="Alice",
+                normalized_value="Alice",
+                status="BLUE",
+                ai_confidence=0.8,
+                extraction_confidence=0.8,
+                verification_confidence=0.8,
+                grounding_confidence=0.8,
+                final_confidence=0.8,
+                reason_codes=[],
+                source_api=None,
+                audit_message="invalid",
+                bounding_boxes=[],
+            )
 
 
 if __name__ == "__main__":

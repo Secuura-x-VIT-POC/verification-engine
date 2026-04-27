@@ -96,7 +96,7 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
         raw_text = _normalize_text(str(selected_result.get("raw_text", "")))
         spatial_text_map = _coerce_spatial_text_map(selected_result.get("spatial_text_map", []))
         extraction_method = strategy if strategy != "auto" else ("hybrid" if used_ocr else "native_text")
-        evidence_lines, field_candidates, generalized_analysis, enrichment_metadata = build_generalized_analysis(
+        evidence_lines, field_candidates = build_generalized_analysis(
             raw_text=raw_text,
             spatial_text_map=spatial_text_map,
             extraction_method=extraction_method,
@@ -126,10 +126,10 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
             spatial_text_map=spatial_text_map,
             evidence_lines=evidence_lines,
             field_candidates=field_candidates,
-            generalized_analysis=generalized_analysis,
+            generalized_analysis=None,
             metadata=metadata,
             ocr_metadata=ocr_metadata,
-            enrichment_metadata=enrichment_metadata,
+            enrichment_metadata=None,
             safety_report=safety_report,
             warnings=warnings,
         )

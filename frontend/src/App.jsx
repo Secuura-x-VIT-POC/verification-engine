@@ -1,6 +1,5 @@
 import React, { useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
-import { GeneralizedVerifyPage } from "./features/generalized-verification";
 import LoginPage from "./pages/LoginPage";
 import UploadPage from "./pages/UploadPage";
 import VerifyPage from "./pages/VerifyPage";
@@ -49,18 +48,10 @@ export default function App() {
         }
       />
       <Route
-        path={APP_ROUTE_PATHS.legacyVerify}
+        path={APP_ROUTE_PATHS.verify}
         element={
           <ProtectedRoute isAuthenticated={Boolean(auth?.token)}>
             <VerifyPage auth={auth} onLogout={handleLogout} />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path={APP_ROUTE_PATHS.generalizedVerify}
-        element={
-          <ProtectedRoute isAuthenticated={Boolean(auth?.token)}>
-            <GeneralizedVerifyPage auth={auth} onLogout={handleLogout} />
           </ProtectedRoute>
         }
       />

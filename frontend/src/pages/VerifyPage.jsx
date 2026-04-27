@@ -1,147 +1,132 @@
-import React, { startTransition, useEffect, useState } from "react";
+import React, { startTransition, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import AuditReceiptPanel from "../audit_receipt/AuditReceiptPanel";
-import StatusBadge from "../components/StatusBadge";
 import { apiRequest } from "../lib/api";
-import PdfViewer from "../pdf_viewer/PdfViewer";
-import { getGeneralizedVerifyPath } from "../routes/paths";
-import TrustPanel from "../trust_panel/TrustPanel";
+import DocumentTab from "../features/generalized-verification/components/DocumentTab";
+import WorkspaceTabNav from "../features/generalized-verification/components/WorkspaceTabNav";
+import { useGeneralizedVerificationWorkspace } from "../features/generalized-verification/hooks/useGeneralizedVerificationWorkspace";
+import "../features/generalized-verification/generalizedVerification.css";
+
+function VerdictBadge({ outcome }) {
+	if (outcome === "GREEN") {
+		return <span className="badge badge-green">GREEN</span>;
+	}
+	if (outcome === "RED") {
+		return <span className="badge badge-red">RED</span>;
+	}
+	if (outcome === "AMBER") {
+		return <span className="badge badge-amber">AMBER</span>;
+	}
+	return <span className="gv-status-badge gv-status-neutral">Pending</span>;
+}
+
+function formatPercent(value) {
+	return `${Math.round(Number(value || 0) * 100)}%`;
+}
+
+function FieldList({ fields }) {
+	if (!fields.length) {
+		return <p className="muted">No fields were returned by the workspace graph.</p>;
+	}
+
+	return (
+		<div className="field-list">
+			{fields.map((field) => (
+				<div key={field.field_id} className="field-row">
+					<div className="action-row">
+						<p>
+							<strong>{field.label || field.field_id}:</strong>{" "}
+							{field.extracted_value || "Not extracted"}
+						</p>
+						<VerdictBadge outcome={field.status} />
+					</div>
+					<p className="muted">
+						Confidence {formatPercent(field.final_confidence)} | AI{" "}
+						{formatPercent(field.ai_confidence)} | Grounding{" "}
+						{formatPercent(field.grounding_confidence)}
+					</p>
+					{field.reason_codes?.length ? (
+						<p className="muted">{field.reason_codes.join(", ")}</p>
+					) : null}
+				</div>
+			))}
+		</div>
+	);
+}
+
+function VerifierList({ verifiers }) {
+	if (!verifiers.length) {
+		return <p className="muted">No external verifier was required for this workspace.</p>;
+	}
+
+	return (
+		<div className="field-list">
+			{verifiers.map((verifier) => (
+				<div key={`${verifier.connector_id}-${verifier.field_ids?.join("-")}`} className="field-row">
+					<p>
+						<strong>{verifier.connector_id}</strong> {verifier.status}
+					</p>
+					<p className="muted">
+						Confidence {formatPercent(verifier.confidence)} |{" "}
+						{verifier.high_assurance ? "High assurance" : "Optional"}
+					</p>
+					{verifier.reason_codes?.length ? (
+						<p className="muted">{verifier.reason_codes.join(", ")}</p>
+					) : null}
+				</div>
+			))}
+		</div>
+	);
+}
+
+function AuditList({ audit }) {
+	if (!audit.length) {
+		return <p className="muted">No audit entries are available.</p>;
+	}
+
+	return (
+		<div className="field-list">
+			{audit.map((entry, index) => (
+				<div key={`${entry.stage}-${entry.timestamp}-${index}`} className="field-row">
+					<p>
+						<strong>{entry.stage}</strong> {entry.level || "INFO"}
+					</p>
+					<p>{entry.message}</p>
+					<p className="muted">{entry.timestamp}</p>
+				</div>
+			))}
+		</div>
+	);
+}
 
 export default function VerifyPage({ auth, onLogout }) {
 	const { sessionId } = useParams();
 	const navigate = useNavigate();
-
-	const [sessionData, setSessionData] = useState(null);
-	const [documentUrl, setDocumentUrl] = useState("");
-	const [error, setError] = useState("");
-	const [isLoading, setIsLoading] = useState(true);
+	const [activeTab, setActiveTab] = useState("document");
+	const [closeError, setCloseError] = useState("");
 	const [isClosing, setIsClosing] = useState(false);
+	const { documentUrl, error, isLoading, warnings, workspace } =
+		useGeneralizedVerificationWorkspace({
+			sessionId,
+			token: auth.token,
+		});
 
-	useEffect(() => {
-		let isActive = true;
-		let objectUrl = "";
-
-		const pollSession = async (currentSessionId) => {
-			try {
-				const res = await fetch(
-					`http://localhost:8000/sessions/${currentSessionId}`,
-					{
-						headers: {
-							Authorization: `Bearer ${auth.token}`,
-							"Content-Type": "application/json",
-						},
-					},
-				);
-				const data = await res.json();
-
-				if (isActive) {
-					setSessionData(data);
-				}
-
-				if (
-					data.status !== "VERIFIED_GREEN" &&
-					data.status !== "VERIFIED_AMBER" &&
-					data.status !== "VERIFIED_RED" &&
-					data.status !== "FAILED_RETRIABLE"
-				) {
-					setTimeout(() => pollSession(currentSessionId), 2000);
-				}
-			} catch (err) {
-				if (isActive) {
-					setError(err.message);
-				}
-			}
-		};
-
-		async function loadWorkflow() {
-			setIsLoading(true);
-			setError("");
-
-			try {
-				// Start polling for session status
-				await pollSession(sessionId);
-
-				// Load document if available
-				const currentSession = await apiRequest(`/sessions/${sessionId}`, {
-					token: auth.token,
-				});
-
-				if (!isActive) {
-					return;
-				}
-
-				setSessionData(currentSession);
-
-				if (currentSession.document_available) {
-					const pdfBlob = await apiRequest(`/sessions/${sessionId}/document`, {
-						token: auth.token,
-					});
-					objectUrl = URL.createObjectURL(pdfBlob);
-
-					if (isActive) {
-						setDocumentUrl(objectUrl);
-					}
-				}
-
-				if (
-					currentSession.status === "UPLOADED_PENDING_REVIEW" ||
-					currentSession.status === "FAILED_RETRIABLE"
-				) {
-					const verifiedSession = await apiRequest(
-						`/session/${sessionId}/verify`,
-						{
-							method: "POST",
-							token: auth.token,
-						},
-					);
-
-					if (isActive) {
-						setSessionData(verifiedSession);
-						// Start polling after verification
-						pollSession(sessionId);
-					}
-				}
-			} catch (requestError) {
-				if (isActive) {
-					setError(requestError.message);
-				}
-			} finally {
-				if (isActive) {
-					setIsLoading(false);
-				}
-			}
+	const summaryStats = useMemo(() => {
+		if (!workspace) {
+			return [];
 		}
-
-		loadWorkflow();
-
-		return () => {
-			isActive = false;
-			if (objectUrl) {
-				URL.revokeObjectURL(objectUrl);
-			}
-		};
-	}, [auth.token, sessionId]);
-
-	async function handleRetryVerification() {
-		setIsLoading(true);
-		setError("");
-
-		try {
-			const verifiedSession = await apiRequest(`/session/${sessionId}/verify`, {
-				method: "POST",
-				token: auth.token,
-			});
-			setSessionData(verifiedSession);
-		} catch (requestError) {
-			setError(requestError.message);
-		} finally {
-			setIsLoading(false);
-		}
-	}
+		return [
+			{ label: "Fields", value: workspace.summary.totalFields },
+			{ label: "Green", value: workspace.summary.greenCount },
+			{ label: "Amber", value: workspace.summary.amberCount },
+			{ label: "Red", value: workspace.summary.redCount },
+			{ label: "Risk", value: workspace.summary.riskLevel },
+			{ label: "Match", value: formatPercent(workspace.summary.matchingScore) },
+		];
+	}, [workspace]);
 
 	async function handleCloseSession() {
+		setCloseError("");
 		setIsClosing(true);
-		setError("");
 
 		try {
 			await apiRequest(`/sessions/${sessionId}/close`, {
@@ -150,34 +135,25 @@ export default function VerifyPage({ auth, onLogout }) {
 			});
 			startTransition(() => navigate("/upload"));
 		} catch (requestError) {
-			setError(requestError.message);
+			setCloseError(requestError.message);
 		} finally {
 			setIsClosing(false);
 		}
 	}
 
-	const extraction = sessionData?.extraction;
-
 	return (
-		<div className="page">
+		<div className="page gv-page">
 			<div className="app-header">
 				<div>
-					<p className="eyebrow">Verification view</p>
-					<h1>Session review</h1>
+					<p className="eyebrow">Verification workspace</p>
+					<h1>Session {workspace?.sessionId || sessionId}</h1>
 					<p className="muted">Signed in as {auth.username}</p>
 				</div>
 				<div className="header-actions">
 					<button
 						type="button"
 						className="secondary-btn"
-						onClick={() => navigate(getGeneralizedVerifyPath(sessionId))}
-					>
-						Generalized Workspace
-					</button>
-					<button
-						type="button"
-						className="secondary-btn"
-						onClick={() => navigate("/upload")}
+						onClick={() => startTransition(() => navigate("/upload"))}
 					>
 						New Upload
 					</button>
@@ -187,93 +163,156 @@ export default function VerifyPage({ auth, onLogout }) {
 				</div>
 			</div>
 
+			{isLoading ? <p className="muted">Loading verification workspace...</p> : null}
 			{error ? <p className="error-text">{error}</p> : null}
+			{closeError ? <p className="error-text">{closeError}</p> : null}
 
-			<div className="verify-layout">
-				<div className="left-column">
-					<div className="panel">
-						<h2>PDF Viewer</h2>
-						<PdfViewer
-							fileUrl={documentUrl}
-							boxes={extraction?.bounding_boxes}
-						/>
-					</div>
-				</div>
+			{workspace ? (
+				<div className="gv-workspace-layout">
+					<aside className="gv-sidebar">
+						<div className="panel">
+							<p className="eyebrow">Verdict</p>
+							<div className="gv-meta-stack">
+								<span>
+									<strong>Status:</strong> {workspace.status}
+								</span>
+								<span>
+									<strong>UI:</strong> {workspace.uiStatus}
+								</span>
+								<span>
+									<strong>Outcome:</strong>{" "}
+									<VerdictBadge outcome={workspace.finalVerdict.outcome} />
+								</span>
+								<span>
+									<strong>Risk:</strong> {workspace.finalVerdict.riskLevel}
+								</span>
+							</div>
+						</div>
 
-				<div className="right-column">
-					<div className="panel">
-						<h2>Session</h2>
-						<p>
-							<strong>Session ID:</strong> {sessionId}
-						</p>
-						<p>
-							<strong>Status:</strong>{" "}
-							{sessionData ? (
-								<StatusBadge status={sessionData.status} />
-							) : (
-								"Loading..."
-							)}
-						</p>
-						<p>
-							<strong>Worker Phase:</strong>{" "}
-							{sessionData?.worker_phase || "Waiting"}
-						</p>
-					</div>
+						<div className="panel">
+							<p className="eyebrow">Document</p>
+							<div className="gv-meta-stack">
+								<span>
+									<strong>File:</strong> {workspace.document.filename || "N/A"}
+								</span>
+								<span>
+									<strong>Type:</strong> {workspace.document.documentType}
+								</span>
+								<span>
+									<strong>Pages:</strong> {workspace.document.pageCount || "N/A"}
+								</span>
+								<span>
+									<strong>OCR:</strong> {workspace.document.usedOcr ? "Yes" : "No"}
+								</span>
+							</div>
+						</div>
 
-					<div className="panel">
-						<h2>Extraction</h2>
-						{isLoading && !sessionData ? (
-							<p className="muted">Loading workflow...</p>
-						) : null}
-						{!isLoading && !extraction ? (
-							<p className="muted">No extraction payload is available yet.</p>
-						) : null}
-						{extraction?.field_details?.length ? (
-							<div className="field-list">
-								{extraction.field_details.map((field) => (
-									<div key={field.key} className="field-row">
-										<p>
-											<strong>{field.label}:</strong>{" "}
-											{field.value || "Not extracted"}
-										</p>
-										<p className="muted">
-											Confidence {field.confidence} |{" "}
-											{field.is_grounded ? "Grounded" : "Not grounded"}
-										</p>
+						<div className="panel">
+							<p className="eyebrow">Summary</p>
+							<div className="gv-stat-grid">
+								{summaryStats.map((stat) => (
+									<div key={stat.label} className="gv-stat-card">
+										<span className="gv-stat-value">{stat.value}</span>
+										<span className="gv-stat-label">{stat.label}</span>
 									</div>
 								))}
 							</div>
-						) : null}
-						{extraction?.error_message ? (
-							<p className="error-text">{extraction.error_message}</p>
-						) : null}
-					</div>
-
-					<TrustPanel trust={sessionData?.trust} />
-					<AuditReceiptPanel audit={sessionData?.audit} />
-
-					<div className="panel">
-						<div className="action-row">
-							<button
-								type="button"
-								className="secondary-btn"
-								onClick={handleRetryVerification}
-								disabled={isLoading}
-							>
-								Retry Verification
-							</button>
-							<button
-								type="button"
-								className="primary-btn"
-								onClick={handleCloseSession}
-								disabled={isClosing}
-							>
-								{isClosing ? "Closing..." : "Close Session"}
-							</button>
 						</div>
-					</div>
+					</aside>
+
+					<main className="gv-main-column">
+						<div className="panel">
+							<p className="eyebrow">Final verdict</p>
+							<h2>{workspace.finalVerdict.explanation || "Workspace graph completed."}</h2>
+							{workspace.finalVerdict.reasonCodes.length ? (
+								<p className="muted">
+									{workspace.finalVerdict.reasonCodes.join(", ")}
+								</p>
+							) : null}
+						</div>
+
+						<WorkspaceTabNav activeTab={activeTab} onChange={setActiveTab} />
+
+						{activeTab === "document" ? (
+							<DocumentTab
+								documentUrl={documentUrl}
+								documentMessage={
+									documentUrl ? null : "No PDF is currently stored for this session."
+								}
+							/>
+						) : null}
+
+						{activeTab === "analysis" ? (
+							<div className="gv-tab-panel">
+								<div className="gv-panel-head">
+									<div>
+										<p className="eyebrow">Fields</p>
+										<h2>Graph field decisions</h2>
+									</div>
+								</div>
+								<div className="panel">
+									<FieldList fields={workspace.fields} />
+								</div>
+								<div className="panel">
+									<p className="eyebrow">Verifiers</p>
+									<VerifierList verifiers={workspace.verifiers} />
+								</div>
+							</div>
+						) : null}
+
+						{activeTab === "audit" ? (
+							<div className="gv-tab-panel">
+								<div className="gv-panel-head">
+									<div>
+										<p className="eyebrow">Audit</p>
+										<h2>Graph execution trail</h2>
+									</div>
+								</div>
+								<div className="panel">
+									<AuditList audit={workspace.audit} />
+								</div>
+							</div>
+						) : null}
+					</main>
+
+					<aside className="gv-sidebar">
+						<div className="panel">
+							<p className="eyebrow">Actions</p>
+							<div className="action-row">
+								<button
+									type="button"
+									className="primary-btn"
+									onClick={handleCloseSession}
+									disabled={isClosing}
+								>
+									{isClosing ? "Closing..." : "Close Session"}
+								</button>
+							</div>
+							{workspace.actions.length ? (
+								<p className="muted">
+									{workspace.actions
+										.filter((action) => action.enabled !== false)
+										.map((action) => action.label)
+										.join(", ")}
+								</p>
+							) : null}
+						</div>
+
+						{warnings.length ? (
+							<div className="panel">
+								<p className="eyebrow">Notices</p>
+								<div className="gv-warning-list">
+									{warnings.map((warning) => (
+										<p key={warning} className="muted">
+											{warning}
+										</p>
+									))}
+								</div>
+							</div>
+						) : null}
+					</aside>
 				</div>
-			</div>
+			) : null}
 		</div>
 	);
 }

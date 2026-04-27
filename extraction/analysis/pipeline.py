@@ -15,12 +15,10 @@ from extraction.grounding.spatial_locator import (
     resolve_source_type,
     tokens_for_line,
 )
-from extraction.analysis.nvidia_enrichment import enrich_field_candidates_with_nvidia
 from extraction.schema.models import (
     BoundingBox,
     CredentialAudit,
     DocumentProfile,
-    EnrichmentMetadata,
     EvidenceLine,
     ExtractedCredential,
     ExtractionWarning,
@@ -174,31 +172,10 @@ def build_generalized_analysis(
     spatial_text_map: Sequence[SpatialTextToken],
     extraction_method: str,
     warnings: List[ExtractionWarning],
-) -> tuple[List[EvidenceLine], List[FieldCandidate], GeneralizedAnalysisPayload, EnrichmentMetadata]:
+) -> tuple[List[EvidenceLine], List[FieldCandidate]]:
     evidence_lines = build_evidence_lines(spatial_text_map)
     field_candidates = extract_field_candidates(raw_text, evidence_lines, spatial_text_map, extraction_method, warnings)
-    field_candidates, enrichment_metadata = enrich_field_candidates_with_nvidia(
-        raw_text=raw_text,
-        evidence_lines=evidence_lines,
-        spatial_text_map=spatial_text_map,
-        extraction_method=extraction_method,
-        warnings=warnings,
-        base_candidates=field_candidates,
-    )
-    document_profile = build_document_profile(raw_text, evidence_lines, extraction_method)
-    credentials = build_credentials(field_candidates)
-    verification_plan = build_verification_plan(credentials, document_profile)
-    audits = build_credential_audits(credentials)
-    summary = build_verification_summary(document_profile, field_candidates, credentials, verification_plan)
-    payload = GeneralizedAnalysisPayload(
-        document_profile_payload=document_profile,
-        generalized_credentials_payload=credentials,
-        verification_plan_payload=verification_plan,
-        credential_audits_payload=audits,
-        verification_summary_payload=summary,
-        generalized_analysis_status="completed",
-    )
-    return evidence_lines, field_candidates, payload, enrichment_metadata
+    return evidence_lines, field_candidates
 
 
 def build_evidence_lines(spatial_text_map: Sequence[SpatialTextToken]) -> List[EvidenceLine]:

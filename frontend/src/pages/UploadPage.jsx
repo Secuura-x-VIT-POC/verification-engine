@@ -2,6 +2,7 @@ import React, { startTransition, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import StatusBadge from "../components/StatusBadge";
 import { apiRequest } from "../lib/api";
+import { getVerifyPath } from "../routes/paths";
 
 export default function UploadPage({ auth, onLogout }) {
   const navigate = useNavigate();
@@ -86,7 +87,7 @@ export default function UploadPage({ auth, onLogout }) {
       });
 
       setStatus(uploadResponse.status);
-      startTransition(() => navigate(`/verify/${uploadResponse.session_id}`));
+      startTransition(() => navigate(getVerifyPath(uploadResponse.session_id)));
     } catch (requestError) {
       setError(requestError.message);
     } finally {

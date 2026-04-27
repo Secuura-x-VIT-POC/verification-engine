@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -36,11 +38,9 @@ from ..verification_domain.contracts import (
     SessionCredentialCollection,
     SessionVerificationPlan,
 )
+from ..agent_orchestration.graph import build_generalized_verification_graph
 from ..agent_orchestration.schemas import WorkspacePayload
-from ..agent_orchestration.workspace import (
-    get_workspace_payload_for_session,
-    run_generalized_verification_session,
-)
+from ..workflow.runtime import extract_document_payload
 from ..workflow.runtime import get_result_response, get_status_response, serialize_session
 from ..workflow.service import start_verification
 
@@ -63,6 +63,51 @@ def _get_owned_session(db: Session, session_id: str, user: str) -> SessionModel:
     if session.user_id != user:
         raise HTTPException(status_code=403, detail="Not authorized")
     return session
+
+
+def _get_session_extraction_payload(session: SessionModel) -> dict[str, Any]:
+    if (
+        isinstance(session.extraction_payload, dict)
+        and isinstance(session.extraction_payload.get("view"), dict)
+        and isinstance(session.extraction_payload.get("connector_input"), dict)
+    ):
+        return session.extraction_payload
+
+    if not session.file_path:
+        raise HTTPException(status_code=409, detail="Upload a PDF before opening the workspace")
+
+    file_path = Path(session.file_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Document not found on disk")
+
+    try:
+        return extract_document_payload(file_path)
+    except Exception as exc:
+        LOGGER.exception("WORKSPACE_EXTRACTION_FAILED session_id=%s", session.id)
+        raise HTTPException(status_code=500, detail="Extraction payload could not be loaded") from exc
+
+
+def _build_workspace_payload(session: SessionModel) -> WorkspacePayload:
+    extraction_payload = _get_session_extraction_payload(session)
+    graph = build_generalized_verification_graph()
+    initial_state = {
+        "session_id": session.id,
+        "filename": session.filename,
+        "file_path": session.file_path,
+        "extraction_payload": extraction_payload,
+    }
+
+    try:
+        final_state = graph.invoke(initial_state)
+    except Exception as exc:
+        LOGGER.exception("WORKSPACE_GRAPH_FAILED session_id=%s", session.id)
+        raise HTTPException(status_code=500, detail="Workspace graph execution failed") from exc
+
+    workspace_payload = final_state.get("workspace_payload") if isinstance(final_state, dict) else None
+    if not isinstance(workspace_payload, dict):
+        raise HTTPException(status_code=500, detail="Workspace graph did not produce a workspace payload")
+
+    return WorkspacePayload.model_validate(workspace_payload)
 
 
 @router.post("/session/{session_id}/verify")
@@ -309,18 +354,11 @@ def run_generalized_verification_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> WorkspacePayload:
-    session = _get_owned_session(db, session_id, user)
-    if not session.file_path:
-        raise HTTPException(status_code=409, detail="Upload a PDF before verification")
-    if session.status in {SessionState.PENDING_CLEANUP, SessionState.PURGE_COMPLETE, SessionState.FAILED_PURGED}:
-        raise HTTPException(status_code=409, detail="Session is already closed")
-    if session.status not in {
-        SessionState.UPLOADED_PENDING_REVIEW,
-        SessionState.FAILED_RETRIABLE,
-    }:
-        raise HTTPException(status_code=409, detail="Session is not ready for generalized verification")
-
-    return run_generalized_verification_session(db, session, reviewer_ref=user)
+    del session_id, db, user
+    raise HTTPException(
+        status_code=410,
+        detail="Deprecated. Use GET /api/v1/verification-sessions/{session_id}/workspace.",
+    )
 
 
 @router.get("/api/v1/verification-sessions/{session_id}/workspace", response_model=WorkspacePayload)
@@ -330,4 +368,6 @@ def get_generalized_workspace_route(
     user: str = Depends(get_current_user),
 ) -> WorkspacePayload:
     session = _get_owned_session(db, session_id, user)
-    return get_workspace_payload_for_session(session)
+    if session.status in {SessionState.PENDING_CLEANUP, SessionState.PURGE_COMPLETE, SessionState.FAILED_PURGED}:
+        raise HTTPException(status_code=409, detail="Session is already closed")
+    return _build_workspace_payload(session)

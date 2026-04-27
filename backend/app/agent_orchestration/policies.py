@@ -46,14 +46,6 @@ class AgentRuntimePolicy:
     gemini_model: str = "gemini-2.5-flash"
     gemini_demo_raw_text_enabled: bool = True
     gemini_max_input_chars: int = 12000
-    nvidia_base_url: str = ""
-    nvidia_reasoning_model: str = ""
-    nvidia_pii_model: str = ""
-    nvidia_api_key: str | None = None
-    nvidia_retry_budget: int = 0
-    nvidia_max_input_chars: int = 0
-    nvidia_reasoning_enabled: bool = False
-    nvidia_gliner_enabled: bool = False
 
 
 def load_agent_runtime_policy() -> AgentRuntimePolicy:
@@ -70,14 +62,6 @@ def load_agent_runtime_policy() -> AgentRuntimePolicy:
         gemini_model=(os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip() or "gemini-2.5-flash",
         gemini_demo_raw_text_enabled=_read_bool("GEMINI_DEMO_RAW_TEXT_ENABLED", True),
         gemini_max_input_chars=_read_int("GEMINI_MAX_INPUT_CHARS", 12000),
-        nvidia_base_url=(os.getenv("NVIDIA_BASE_URL") or "").strip(),
-        nvidia_reasoning_model=(os.getenv("NVIDIA_REASONING_MODEL") or "").strip(),
-        nvidia_pii_model=(os.getenv("NVIDIA_PII_MODEL") or "").strip(),
-        nvidia_api_key=(os.getenv("NVIDIA_API_KEY") or "").strip() or None,
-        nvidia_retry_budget=_read_int("NVIDIA_RETRY_BUDGET", 0),
-        nvidia_max_input_chars=_read_int("NVIDIA_MAX_TEXT_LENGTH", 0),
-        nvidia_reasoning_enabled=_read_bool("NVIDIA_REASONING_ENABLED", False),
-        nvidia_gliner_enabled=_read_bool("NVIDIA_GLINER_PREPROCESSING_ENABLED", False),
     )
 
 
@@ -91,7 +75,8 @@ def minimize_extraction_payload(
         return None
 
     fields = []
-    generalized_analysis = extraction_payload.get("generalized_analysis") or {}
+    view_payload = extraction_payload.get("view") if isinstance(extraction_payload.get("view"), dict) else extraction_payload
+    generalized_analysis = view_payload.get("generalized_analysis") or {}
     generalized_credentials = generalized_analysis.get("generalized_credentials_payload") or []
     if isinstance(generalized_credentials, list):
         for index, credential in enumerate(generalized_credentials):
@@ -110,7 +95,7 @@ def minimize_extraction_payload(
             )
 
     if not fields:
-        for index, candidate in enumerate(list(extraction_payload.get("field_candidates") or [])[:max_fields]):
+        for index, candidate in enumerate(list(view_payload.get("field_candidates") or [])[:max_fields]):
             if not isinstance(candidate, dict):
                 continue
             value = candidate.get("raw_value")
@@ -126,15 +111,14 @@ def minimize_extraction_payload(
             )
 
     return {
-        "document_type": str(extraction_payload.get("document_type") or "unknown"),
-        "page_count": extraction_payload.get("page_count"),
-        "used_ocr": bool(extraction_payload.get("used_ocr") or extraction_payload.get("ocr_used")),
+        "document_type": str(view_payload.get("document_type") or extraction_payload.get("document_type") or "unknown"),
+        "page_count": view_payload.get("page_count") or extraction_payload.get("page_count"),
+        "used_ocr": bool(view_payload.get("used_ocr") or extraction_payload.get("used_ocr") or extraction_payload.get("ocr_used")),
         "fields": fields,
         "warnings": [
             warning.get("code") if isinstance(warning, dict) else str(warning)
-            for warning in list(extraction_payload.get("warnings") or [])[:8]
+            for warning in list(view_payload.get("warnings") or extraction_payload.get("warnings") or [])[:8]
         ],
-        "enrichment_metadata": extraction_payload.get("enrichment_metadata") or {},
     }
 
 

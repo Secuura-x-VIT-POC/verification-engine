@@ -67,7 +67,6 @@ def build_document_profile(
     notes: list[str] = []
     if has_extraction_payload:
         error_message = (extraction_payload or {}).get("error_message")
-        enrichment_metadata = (extraction_payload or {}).get("enrichment_metadata") or {}
         if error_message:
             notes.append(str(error_message))
         if not credential_collection.credentials:
@@ -76,12 +75,6 @@ def build_document_profile(
             notes.append("Document type could not be confidently inferred from the current extraction payload.")
         if any(decision.manual_review_recommended for decision in plan.route_decisions):
             notes.append("At least one credential is currently routed to manual review.")
-        if enrichment_metadata.get("pii_enrichment_used"):
-            notes.append("NVIDIA GLiNER PII enrichment contributed label or entity typing support.")
-        elif enrichment_metadata.get("warning_codes"):
-            notes.append(
-                "NVIDIA GLiNER PII enrichment was unavailable and deterministic extraction remained the source of record."
-            )
 
     return DocumentProfile(
         session_id=session_id,
@@ -316,10 +309,7 @@ def _collect_extraction_methods(
         for credential in credentials.credentials
         if credential.extraction_method and credential.extraction_method != "unknown"
     ]
-    enrichment_metadata = (extraction_payload or {}).get("enrichment_metadata") or {}
     ocr_metadata = (extraction_payload or {}).get("ocr_metadata") or {}
-    if enrichment_metadata.get("pii_enrichment_used"):
-        methods.append("nvidia_gliner_pii")
     for engine in ocr_metadata.get("engines_used") or []:
         if engine and engine != "native_text":
             methods.append(engine)

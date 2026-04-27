@@ -1,163 +1,232 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
+from ..agent_orchestration.schemas import FieldDecision, VerifierResult, FinalVerdict
 
+def determine_field_decision(
+    field_id: str,
+    label: str,
+    extracted_value: str,
+    normalized_value: str,
+    extraction_confidence: float,
+    ai_confidence: float,
+    grounding_confidence: float,
+    verifier_result: VerifierResult | None,
+    mandatory: bool,
+    unsafe_or_malformed: bool,
+) -> FieldDecision:
+    """
+    Evaluates a single field. Hard policy overrides execute first. 
+    Linear confidence fusion is only applied if no critical failures occur.
+    """
+    reason_codes: list[str] = []
+    source_api = verifier_result.connector_id if verifier_result else None
+    audit_message = verifier_result.audit_message if verifier_result else "No external verifier evidence provided."
+    verification_confidence = verifier_result.verification_confidence if verifier_result else 0.0
 
-LOGGER = logging.getLogger(__name__)
-
-
-def evaluate_trust(extraction_data: dict, connector_result: dict | list[dict] | None, policy: dict) -> dict:
-    resolved_policy = _resolve_policy(extraction_data or {}, policy or {})
-    normalized_fields = _normalize_extraction_fields(extraction_data or {}, resolved_policy)
-    connectors = _normalize_connector_results(connector_result)
-    connector_ids = [connector["connector_id"] for connector in connectors if connector.get("connector_id")]
-
-    mismatch = _find_connector(connectors, status="MISMATCH")
-    if mismatch is not None:
-        return _format_result("RED", ["CONNECTOR_MISMATCH"], connector_ids)
-
-    for field_name in resolved_policy["required_fields"]:
-        field_data = normalized_fields.get(field_name)
-        if not field_data or not field_data["present"]:
-            return _format_result("RED", ["MISSING_REQUIRED_FIELD"], connector_ids)
-
-        if not field_data["has_grounding"]:
-            return _format_result("RED", ["GROUNDING_MISSING"], connector_ids)
-
-        if field_data["confidence"] < resolved_policy["min_confidence_threshold"]:
-            return _format_result("RED", ["LOW_CONFIDENCE"], connector_ids)
-
-    timeout_required = _find_required_timeout(connectors)
-    if timeout_required is not None:
-        return _format_result("RED", ["CONNECTOR_TIMEOUT_REQUIRED"], connector_ids)
-
-    verified_connector = _find_connector(connectors, status="VERIFIED")
-    if verified_connector is not None:
-        return _format_result("GREEN", ["CONNECTOR_VERIFIED"], connector_ids)
-
-    timeout_optional = _find_optional_timeout(connectors)
-    if timeout_optional is not None:
-        return _format_result("AMBER", ["NOT_VERIFIED"], connector_ids)
-
-    error_connector = _find_connector(connectors, status="ERROR")
-    if error_connector is not None:
-        return _format_result("AMBER", ["NOT_VERIFIED"], connector_ids)
-
-    if not resolved_policy["require_connector"]:
-        return _format_result("AMBER", ["OPTIONAL_VERIFICATION_SKIPPED"], connector_ids)
-
-    return _format_result("AMBER", ["NOT_VERIFIED"], connector_ids)
-
-
-def _resolve_policy(extraction_data: dict, policy: dict) -> dict[str, Any]:
-    required_fields = list(policy.get("required_fields") or [])
-    if not required_fields:
-        fields = extraction_data.get("fields") or []
-        if isinstance(fields, list):
-            required_fields = [
-                str(field.get("name"))
-                for field in fields
-                if field.get("is_mandatory") and field.get("name")
-            ]
-
-    require_connector = policy.get("require_connector")
-    if require_connector is None:
-        require_connector = bool(policy.get("required_connectors"))
-
-    return {
-        "required_fields": required_fields,
-        "min_confidence_threshold": float(policy.get("min_confidence_threshold", 0)),
-        "require_connector": bool(require_connector),
-    }
-
-
-def _normalize_extraction_fields(extraction_data: dict, policy: dict) -> dict[str, dict[str, Any]]:
-    fields = extraction_data.get("fields") or {}
-    confidence_map = extraction_data.get("confidence") or {}
-    bounding_boxes = extraction_data.get("bounding_boxes") or {}
-
-    if isinstance(fields, list):
-        normalized: dict[str, dict[str, Any]] = {}
-        for field in fields:
-            name = str(field.get("name"))
-            if not name:
-                continue
-            value = field.get("value")
-            normalized[name] = {
-                "present": value not in (None, "", []) if "value" in field else True,
-                "has_grounding": bool(field.get("is_grounded")),
-                "confidence": float(field.get("confidence", policy["min_confidence_threshold"] or 1.0)),
-            }
-        return normalized
-
-    normalized = {}
-    for field_name, value in fields.items():
-        normalized[field_name] = {
-            "present": value not in (None, "", []),
-            "has_grounding": _has_grounding_entry(bounding_boxes.get(field_name)),
-            "confidence": float(confidence_map.get(field_name, 0)),
-        }
-    return normalized
-
-
-def _normalize_connector_results(connector_result: dict | list[dict] | None) -> list[dict]:
-    if connector_result is None:
-        return []
-
-    raw_connectors = connector_result if isinstance(connector_result, list) else [connector_result]
-    normalized = []
-    for connector in raw_connectors:
-        normalized.append(
-            {
-                "connector_id": str(connector.get("connector_id", "")),
-                "status": str(connector.get("status", "ERROR")).upper(),
-                "reason_codes": list(connector.get("reason_codes") or []),
-                "assurance_class": str(connector.get("assurance_class", "HIGH")).upper(),
-            }
+    # ---------------------------------------------------------
+    # 1. HARD POLICY OVERRIDES (Short-circuit the math)
+    # ---------------------------------------------------------
+    
+    if unsafe_or_malformed:
+        return _build_decision(
+            field_id, label, extracted_value, normalized_value, "RED", 0.0,
+            extraction_confidence, ai_confidence, verification_confidence, grounding_confidence,
+            ["UNSAFE_DOCUMENT"], source_api, "Document flagged as unsafe or malformed."
         )
-    return normalized
 
+    if mandatory and not str(extracted_value or "").strip():
+        return _build_decision(
+            field_id, label, extracted_value, normalized_value, "RED", 0.0,
+            extraction_confidence, ai_confidence, verification_confidence, grounding_confidence,
+            ["MISSING_MANDATORY_FIELD"], source_api, "Mandatory field is missing from extraction."
+        )
 
-def _find_connector(connectors: list[dict], *, status: str) -> dict | None:
-    for connector in connectors:
-        if connector["status"] == status:
-            return connector
-    return None
+    if verifier_result:
+        # Critical mismatch: External evidence contradicts the document
+        if verifier_result.status == "MISMATCH":
+            return _build_decision(
+                field_id, label, extracted_value, normalized_value, "RED", 0.0,
+                extraction_confidence, ai_confidence, verification_confidence, grounding_confidence,
+                verifier_result.reason_codes or ["VERIFIER_MISMATCH"], source_api, audit_message
+            )
+        
+        # Mandatory verifier timeout after retries
+        if verifier_result.status == "TIMEOUT":
+            if verifier_result.high_assurance:
+                return _build_decision(
+                    field_id, label, extracted_value, normalized_value, "RED", 0.0,
+                    extraction_confidence, ai_confidence, verification_confidence, grounding_confidence,
+                    verifier_result.reason_codes or ["MANDATORY_VERIFIER_TIMEOUT"], source_api, audit_message
+                )
+            else:
+                return _build_decision(
+                    field_id, label, extracted_value, normalized_value, "AMBER", verification_confidence,
+                    extraction_confidence, ai_confidence, verification_confidence, grounding_confidence,
+                    verifier_result.reason_codes or ["OPTIONAL_VERIFIER_TIMEOUT"], source_api, audit_message
+                )
+        
+        # API Error (Internal or remote)
+        if verifier_result.status == "ERROR":
+            status = "RED" if verifier_result.high_assurance else "AMBER"
+            return _build_decision(
+                field_id, label, extracted_value, normalized_value, status, verification_confidence,
+                extraction_confidence, ai_confidence, verification_confidence, grounding_confidence,
+                verifier_result.reason_codes or ["VERIFIER_ERROR"], source_api, audit_message
+            )
 
-
-def _find_required_timeout(connectors: list[dict]) -> dict | None:
-    for connector in connectors:
-        if connector["status"] == "TIMEOUT" and connector["assurance_class"] == "HIGH":
-            return connector
-    return None
-
-
-def _find_optional_timeout(connectors: list[dict]) -> dict | None:
-    for connector in connectors:
-        if connector["status"] == "TIMEOUT" and connector["assurance_class"] != "HIGH":
-            return connector
-    return None
-
-
-def _has_grounding_entry(entry: Any) -> bool:
-    if entry is None:
-        return False
-    if isinstance(entry, list):
-        return len(entry) > 0
-    if isinstance(entry, dict):
-        return bool(entry)
-    return False
-
-
-def _format_result(outcome: str, reason_codes: list[str], connector_ids: list[str]) -> dict:
-    LOGGER.info(
-        "TRUST_EVALUATED: outcome=%s, reasons=%s",
-        outcome,
-        reason_codes,
+    # ---------------------------------------------------------
+    # 2. CONFIDENCE FUSION MATH (Demo defaults)
+    # ---------------------------------------------------------
+    
+    final_confidence = (
+        (0.40 * extraction_confidence) +
+        (0.25 * ai_confidence) +
+        (0.25 * verification_confidence) +
+        (0.10 * grounding_confidence)
     )
-    return {
-        "outcome": outcome,
-        "reason_codes": list(dict.fromkeys(reason_codes)),
-        "connector_ids": connector_ids,
-    }
+
+    # ---------------------------------------------------------
+    # 3. SCORE THRESHOLDING
+    # ---------------------------------------------------------
+    
+    if final_confidence >= 0.80:
+        status = "GREEN"
+        if not verifier_result or verifier_result.status == "SKIPPED":
+            reason_codes.append("UNVERIFIED_HIGH_CONFIDENCE")
+    elif final_confidence >= 0.40:
+        status = "AMBER"
+        reason_codes.append("LOW_CONFIDENCE_REVIEW_REQUIRED")
+    else:
+        status = "RED"
+        reason_codes.append("INSUFFICIENT_CONFIDENCE")
+
+    return _build_decision(
+        field_id, label, extracted_value, normalized_value, status, final_confidence,
+        extraction_confidence, ai_confidence, verification_confidence, grounding_confidence,
+        reason_codes, source_api, audit_message
+    )
+
+def _build_decision(
+    field_id: str, label: str, extracted_value: str, normalized_value: str,
+    status: str, final_confidence: float, extraction_confidence: float,
+    ai_confidence: float, verification_confidence: float, grounding_confidence: float,
+    reason_codes: list[str], source_api: str | None, audit_message: str
+) -> FieldDecision:
+    """Helper to instantiate the Pydantic model cleanly."""
+    return FieldDecision(
+        field_id=field_id,
+        label=label,
+        extracted_value=extracted_value,
+        normalized_value=normalized_value,
+        status=status,  # type: ignore
+        final_confidence=final_confidence,
+        extraction_confidence=extraction_confidence,
+        ai_confidence=ai_confidence,
+        verification_confidence=verification_confidence,
+        grounding_confidence=grounding_confidence,
+        reason_codes=reason_codes,
+        source_api=source_api,
+        audit_message=audit_message,
+        bounding_boxes=[] # Bounding boxes are attached back in graph.py
+    )
+
+def build_final_verdict(
+    field_decisions: list[FieldDecision],
+    verifier_results: list[VerifierResult],
+    unsafe_or_malformed: bool,
+    document_reason_codes: list[str],
+) -> FinalVerdict:
+    """
+    Rolls up field-level decisions into a single document-level verdict.
+    A single critical RED field makes the entire document RED.
+    """
+    reasons = list(document_reason_codes)
+    connector_ids = list({v.connector_id for v in verifier_results if v.connector_id})
+    
+    if unsafe_or_malformed:
+        reasons.append("UNSAFE_DOCUMENT")
+        return FinalVerdict(
+            outcome="RED",
+            reason_codes=reasons,
+            connector_ids=connector_ids,
+            explanation="Document cannot be processed safely due to malware or malformed PDF structure.",
+            risk_level="HIGH"
+        )
+
+    has_red = any(f.status == "RED" for f in field_decisions)
+    has_amber = any(f.status == "AMBER" for f in field_decisions)
+    
+    # Accumulate all non-green reason codes for the final audit trail
+    for field in field_decisions:
+        if field.status != "GREEN":
+            reasons.extend(field.reason_codes)
+            
+    # Deduplicate reason codes to keep the UI clean
+    reasons = list(dict.fromkeys(reasons))
+    
+    # Document-level aggregation [cite: 108, 109]
+    if has_red:
+        return FinalVerdict(
+            outcome="RED",
+            reason_codes=reasons,
+            connector_ids=connector_ids,
+            explanation="Critical mismatch found between document fields and verifier sources, or mandatory evidence failed.",
+            risk_level="HIGH"
+        )
+    elif has_amber:
+        return FinalVerdict(
+            outcome="AMBER",
+            reason_codes=reasons,
+            connector_ids=connector_ids,
+            explanation="Document requires manual review due to ambiguous extraction, low AI confidence, or missing optional verifiers.",
+            risk_level="MEDIUM"
+        )
+    else:
+        return FinalVerdict(
+            outcome="GREEN",
+            reason_codes=reasons,
+            connector_ids=connector_ids,
+            explanation="All mandatory claims are grounded, verified, and not contradicted.",
+            risk_level="LOW"
+        )
+
+
+def evaluate_trust(trust_input: dict, connector_result: dict, policy: dict) -> dict:
+    """
+    Evaluates the overall trust for a document based on field extractions, verifier results, and policy.
+    """
+    if connector_result:
+        verifier_result = VerifierResult(
+            task_id="dummy",
+            field_id="dummy",
+            connector_id=connector_result["connector_id"],
+            status=connector_result["status"],
+            verification_confidence=1.0,
+            reason_codes=connector_result["reason_codes"],
+            high_assurance=connector_result.get("assurance_class") == "HIGH",
+        )
+    else:
+        verifier_result = None
+    
+    field_decisions = []
+    
+    for field_id, value in trust_input["fields"].items():
+        confidence = trust_input["confidence"].get(field_id, 0.0)
+        mandatory = field_id in policy.get("required_fields", [])
+        
+        extracted_value = value
+        normalized_value = value
+        extraction_confidence = confidence
+        ai_confidence = confidence
+        grounding_confidence = 1.0  # Placeholder, adjust as needed
+        
+        decision = determine_field_decision(
+            field_id, field_id, extracted_value, normalized_value,
+            extraction_confidence, ai_confidence, grounding_confidence,
+            verifier_result, mandatory, False
+        )
+        field_decisions.append(decision)
+    
+    final_verdict = build_final_verdict(field_decisions, [verifier_result] if verifier_result else [], False, [])
+    return final_verdict.model_dump()

@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,7 +10,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from ..workflow.runtime import build_connector_responses, build_policy, extract_document_payload
-from .confidence import build_final_verdict, determine_field_decision
+from ..trust.trust_engine import build_final_verdict, determine_field_decision
 from .policies import AgentRuntimePolicy, load_agent_runtime_policy, minimize_extraction_payload
 from .schemas import (
     FieldDecision,
@@ -29,298 +28,9 @@ from .schemas import (
     WorkspaceSummary,
     WorkspaceVerifierStatus,
 )
-from .state import GeneralizedVerificationState, GeminiNormalizationState
-
+from .state import GeneralizedVerificationState
 
 LOGGER = logging.getLogger(__name__)
-
-_CANONICAL_FIELDS = ("name", "institution", "credential", "date", "id")
-_MANDATORY_FIELDS = {"name", "institution", "credential", "id"}
-_ALLOWED_DOCUMENT_TYPES = {
-    "academic_credential",
-    "report_card",
-    "identity_document",
-    "certificate_document",
-    "financial_document",
-    "unknown",
-}
-
-
-def build_gemini_normalization_graph(
-    *,
-    model: str = "gemini-2.5-flash",
-    temperature: float = 0.1,
-):
-    graph = StateGraph(GeminiNormalizationState)
-    graph.add_node(
-        "gemini_normalization",
-        lambda state: _run_gemini_normalization(state, model=model, temperature=temperature),
-    )
-    graph.add_node("validate_normalization", _validate_normalization)
-    graph.add_edge(START, "gemini_normalization")
-    graph.add_edge("gemini_normalization", "validate_normalization")
-    graph.add_edge("validate_normalization", END)
-    return graph.compile()
-
-
-def _run_gemini_normalization(
-    state: GeminiNormalizationState,
-    *,
-    model: str,
-    temperature: float,
-) -> dict[str, Any]:
-    raw_extraction = state.get("raw_extraction") or {}
-    if not isinstance(raw_extraction, dict):
-        return _fallback_state({}, ["raw extraction payload is not a dict"])
-
-    try:
-        llm = _build_gemini_llm(model=model, temperature=temperature)
-        LOGGER.info("LLM_NORMALIZATION_STARTED provider=gemini model=%s", model)
-        response = llm.invoke(_build_normalization_prompt(raw_extraction))
-        parsed_output = _parse_json_response(getattr(response, "content", response))
-        LOGGER.info("LLM_NORMALIZATION_COMPLETED provider=gemini model=%s", model)
-        return {
-            "gemini_output": parsed_output,
-            "fallback_used": False,
-            "validation_errors": [],
-        }
-    except Exception as exc:
-        LOGGER.warning("LLM_NORMALIZATION_FALLBACK reason=invoke_or_parse_failed error=%s", exc)
-        return _fallback_state(raw_extraction, [str(exc)])
-
-
-def _validate_normalization(state: GeminiNormalizationState) -> dict[str, Any]:
-    raw_extraction = state.get("raw_extraction") or {}
-    if state.get("fallback_used"):
-        return {
-            "normalized_extraction": copy.deepcopy(raw_extraction),
-            "fallback_used": True,
-            "validation_errors": list(state.get("validation_errors") or []),
-        }
-
-    errors: list[str] = []
-    gemini_output = state.get("gemini_output")
-    if not isinstance(gemini_output, dict):
-        errors.append("Gemini output is not a JSON object")
-        return _fallback_state(raw_extraction, errors)
-
-    errors.extend(_validate_gemini_output(gemini_output))
-
-    if errors:
-        LOGGER.warning(
-            "LLM_NORMALIZATION_VALIDATION_FAILED error_count=%s errors=%s",
-            len(errors),
-            errors,
-        )
-        return _fallback_state(raw_extraction, errors)
-
-    try:
-        normalized = _merge_normalized_output(raw_extraction, gemini_output)
-        return {
-            "normalized_extraction": normalized,
-            "fallback_used": False,
-            "validation_errors": [],
-        }
-    except Exception as exc:
-        LOGGER.warning("LLM_NORMALIZATION_VALIDATION_FAILED error_count=1 errors=%s", [str(exc)])
-        return _fallback_state(raw_extraction, [str(exc)])
-
-
-def _build_gemini_llm(*, model: str, temperature: float):
-    from langchain_google_genai import ChatGoogleGenerativeAI
-
-    return ChatGoogleGenerativeAI(model=model, temperature=temperature)
-
-
-def _build_normalization_prompt(raw_extraction: dict[str, Any]) -> str:
-    return (
-        "You are an in-memory document normalization layer inside a deterministic "
-        "verification system. Classify the document, refine extracted fields, "
-        "normalize values, and resolve ambiguities only. Do not decide trust, "
-        "do not recommend verification outcome, do not choose connectors, and "
-        "do not include prose.\n\n"
-        "Return JSON only with this shape:\n"
-        "{\n"
-        '  "document_type": "academic_credential|report_card|identity_document|certificate_document|financial_document|unknown",\n'
-        '  "fields": {"name": "", "institution": "", "credential": "", "date": "", "id": ""},\n'
-        '  "confidence": {"name": 0.0, "institution": 0.0, "credential": 0.0, "date": 0.0, "id": 0.0},\n'
-        '  "connector_input": {"name": "", "degree": "", "institution": "", "document_id": ""},\n'
-        '  "ambiguities": []\n'
-        "}\n\n"
-        f"Raw extraction payload:\n{json.dumps(raw_extraction, default=str)}"
-    )
-
-
-def _parse_json_response(content: Any) -> dict[str, Any]:
-    if isinstance(content, dict):
-        return content
-    if isinstance(content, list):
-        content = "\n".join(
-            str(part.get("text") if isinstance(part, dict) else part) for part in content
-        )
-    text = str(content or "").strip()
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
-    if fenced:
-        text = fenced.group(1).strip()
-    return json.loads(text)
-
-
-def _merge_normalized_output(
-    raw_extraction: dict[str, Any],
-    gemini_output: dict[str, Any],
-) -> dict[str, Any]:
-    normalized = copy.deepcopy(raw_extraction)
-    field_values = {
-        name: str((gemini_output.get("fields") or {}).get(name) or "").strip()
-        for name in _CANONICAL_FIELDS
-    }
-    confidence_values = {
-        name: _coerce_confidence((gemini_output.get("confidence") or {}).get(name))
-        for name in _CANONICAL_FIELDS
-    }
-    document_type = str(gemini_output.get("document_type") or "").strip() or "unknown"
-
-    view = dict(normalized.get("view") or {})
-    view_fields = dict(view.get("fields") or {})
-    view_confidence = dict(view.get("confidence") or {})
-    for name, value in field_values.items():
-        if value:
-            view_fields[name] = value
-            view_confidence[name] = confidence_values[name]
-    view["fields"] = view_fields
-    view["confidence"] = view_confidence
-    view["document_type"] = document_type
-    normalized["view"] = view
-    normalized["document_type"] = document_type
-
-    normalized["trust_input"] = {
-        "document_type": document_type,
-        "fields": _merge_trust_fields(normalized.get("trust_input"), field_values, confidence_values),
-    }
-
-    existing_connector_input = dict(normalized.get("connector_input") or {})
-    gemini_connector_input = dict(gemini_output.get("connector_input") or {})
-    connector_input = {
-        "name": _first_nonempty(gemini_connector_input.get("name"), field_values["name"], existing_connector_input.get("name")),
-        "degree": _first_nonempty(gemini_connector_input.get("degree"), field_values["credential"], existing_connector_input.get("degree")),
-        "institution": _first_nonempty(
-            gemini_connector_input.get("institution"),
-            field_values["institution"],
-            existing_connector_input.get("institution"),
-        ),
-        "document_id": _first_nonempty(gemini_connector_input.get("document_id"), field_values["id"], existing_connector_input.get("document_id")),
-    }
-    normalized["connector_input"] = connector_input
-    return normalized
-
-
-def _validate_gemini_output(gemini_output: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
-    document_type = gemini_output.get("document_type")
-    fields = gemini_output.get("fields")
-    confidence = gemini_output.get("confidence")
-    connector_input = gemini_output.get("connector_input")
-    ambiguities = gemini_output.get("ambiguities")
-
-    if not isinstance(document_type, str) or not document_type.strip():
-        errors.append("document_type must be a non-empty string")
-    elif document_type.strip() not in _ALLOWED_DOCUMENT_TYPES:
-        errors.append("document_type is not allowed")
-
-    if not isinstance(fields, dict):
-        errors.append("fields must be an object")
-        fields = {}
-    if not isinstance(confidence, dict):
-        errors.append("confidence must be an object")
-        confidence = {}
-    if not isinstance(connector_input, dict):
-        errors.append("connector_input must be an object")
-        connector_input = {}
-    if ambiguities is not None and not isinstance(ambiguities, list):
-        errors.append("ambiguities must be a list when present")
-
-    for name in _CANONICAL_FIELDS:
-        value = fields.get(name)
-        if value is not None and not isinstance(value, str):
-            errors.append(f"fields.{name} must be a string")
-        if name in _MANDATORY_FIELDS and not str(value or "").strip():
-            errors.append(f"fields.{name} is required")
-
-        confidence_value = confidence.get(name)
-        if not isinstance(confidence_value, (int, float)):
-            errors.append(f"confidence.{name} must be numeric")
-        elif confidence_value < 0 or confidence_value > 1:
-            errors.append(f"confidence.{name} must be between 0 and 1")
-
-    for name in ("name", "degree", "institution", "document_id"):
-        value = connector_input.get(name)
-        if value is not None and not isinstance(value, str):
-            errors.append(f"connector_input.{name} must be a string")
-
-    date_value = str(fields.get("date") or "").strip()
-    if date_value:
-        match = re.search(r"(19\d{2}|20\d{2})", date_value)
-        if not match:
-            errors.append("fields.date must contain a four-digit year when present")
-        else:
-            year = int(match.group(1))
-            max_year = datetime.utcnow().year + 1
-            if year < 1900 or year > max_year:
-                errors.append("fields.date year is out of range")
-
-    return errors
-
-
-def _merge_trust_fields(
-    existing_trust_input: Any,
-    field_values: dict[str, str],
-    confidence_values: dict[str, float],
-) -> list[dict[str, Any]]:
-    existing_fields = []
-    if isinstance(existing_trust_input, dict) and isinstance(existing_trust_input.get("fields"), list):
-        existing_fields = [dict(field) for field in existing_trust_input["fields"] if isinstance(field, dict)]
-
-    by_name = {str(field.get("name") or ""): field for field in existing_fields}
-    merged = []
-    for name in _CANONICAL_FIELDS:
-        field = dict(by_name.get(name) or {})
-        value = field_values.get(name) or str(field.get("value") or "").strip()
-        field.update(
-            {
-                "name": name,
-                "is_mandatory": bool(field.get("is_mandatory", name in _MANDATORY_FIELDS)),
-                "is_grounded": bool(value),
-                "value": value,
-                "confidence": confidence_values.get(name, 0.0) if field_values.get(name) else field.get("confidence", 0),
-            }
-        )
-        merged.append(field)
-    return merged
-
-
-def _fallback_state(raw_extraction: dict[str, Any], errors: list[str]) -> dict[str, Any]:
-    return {
-        "normalized_extraction": copy.deepcopy(raw_extraction),
-        "fallback_used": True,
-        "validation_errors": errors,
-    }
-
-
-def _coerce_confidence(value: Any) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, min(1.0, number))
-
-
-def _first_nonempty(*values: Any) -> str:
-    for value in values:
-        normalized = str(value or "").strip()
-        if normalized:
-            return normalized
-    return ""
-
 
 def build_generalized_verification_graph(
     *,
@@ -328,6 +38,7 @@ def build_generalized_verification_graph(
 ):
     runtime_policy = policy or load_agent_runtime_policy()
     graph = StateGraph(GeneralizedVerificationState)
+    
     graph.add_node("load_extraction_state", lambda state: _load_extraction_state(state, runtime_policy))
     graph.add_node("gemini_document_understanding", lambda state: _gemini_document_understanding(state, runtime_policy))
     graph.add_node("gemini_field_normalization", lambda state: _gemini_field_normalization(state, runtime_policy))
@@ -337,6 +48,7 @@ def build_generalized_verification_graph(
     graph.add_node("gemini_confidence_fusion", _gemini_confidence_fusion)
     graph.add_node("policy_verdict", _policy_verdict)
     graph.add_node("build_workspace_payload", _build_workspace_payload)
+    
     graph.add_edge(START, "load_extraction_state")
     graph.add_edge("load_extraction_state", "gemini_document_understanding")
     graph.add_edge("gemini_document_understanding", "gemini_field_normalization")
@@ -347,8 +59,8 @@ def build_generalized_verification_graph(
     graph.add_edge("gemini_confidence_fusion", "policy_verdict")
     graph.add_edge("policy_verdict", "build_workspace_payload")
     graph.add_edge("build_workspace_payload", END)
+    
     return graph.compile()
-
 
 def _load_extraction_state(
     state: GeneralizedVerificationState,
@@ -371,10 +83,7 @@ def _load_extraction_state(
         "sanitized_extraction": sanitized_extraction,
         "raw_text": raw_text,
         "audit_log": [_audit_item("load_extraction_state", "Extraction payload loaded.")],
-        "gemini_errors": [],
-        "gemini_fallback_used": False,
     }
-
 
 def _gemini_document_understanding(
     state: GeneralizedVerificationState,
@@ -382,7 +91,8 @@ def _gemini_document_understanding(
 ) -> dict[str, Any]:
     extraction_payload = state.get("extraction_payload") or {}
     fallback = _fallback_document_understanding(extraction_payload)
-    result = _invoke_gemini_with_fallback(
+    
+    return _invoke_gemini_with_fallback(
         runtime_policy=runtime_policy,
         schema=GeminiDocumentUnderstanding,
         prompt=_build_document_understanding_prompt(
@@ -393,11 +103,6 @@ def _gemini_document_understanding(
         fallback_model=fallback,
         stage_name="gemini_document_understanding",
     )
-    result["audit_log"] = list(state.get("audit_log") or []) + list(result.get("audit_log") or [])
-    result["gemini_errors"] = list(state.get("gemini_errors") or []) + list(result.get("gemini_errors") or [])
-    result["gemini_fallback_used"] = bool(state.get("gemini_fallback_used")) or bool(result.get("gemini_fallback_used"))
-    return result
-
 
 def _gemini_field_normalization(
     state: GeneralizedVerificationState,
@@ -405,7 +110,8 @@ def _gemini_field_normalization(
 ) -> dict[str, Any]:
     extraction_payload = state.get("extraction_payload") or {}
     fallback = GeminiNormalizedFieldCollection(fields=_deterministic_normalized_fields(extraction_payload))
-    result = _invoke_gemini_with_fallback(
+    
+    return _invoke_gemini_with_fallback(
         runtime_policy=runtime_policy,
         schema=GeminiNormalizedFieldCollection,
         prompt=_build_field_normalization_prompt(
@@ -417,11 +123,6 @@ def _gemini_field_normalization(
         stage_name="gemini_field_normalization",
         state_key="normalized_fields",
     )
-    result["audit_log"] = list(state.get("audit_log") or []) + list(result.get("audit_log") or [])
-    result["gemini_errors"] = list(state.get("gemini_errors") or []) + list(result.get("gemini_errors") or [])
-    result["gemini_fallback_used"] = bool(state.get("gemini_fallback_used")) or bool(result.get("gemini_fallback_used"))
-    return result
-
 
 def _gemini_credential_grouping(
     state: GeneralizedVerificationState,
@@ -433,7 +134,8 @@ def _gemini_credential_grouping(
         for item in list(state.get("normalized_fields") or _deterministic_normalized_fields(extraction_payload))
     ]
     fallback = GeminiCredentialGroupCollection(groups=_deterministic_credential_groups(extraction_payload, normalized_fields))
-    result = _invoke_gemini_with_fallback(
+    
+    return _invoke_gemini_with_fallback(
         runtime_policy=runtime_policy,
         schema=GeminiCredentialGroupCollection,
         prompt=_build_credential_grouping_prompt(
@@ -444,16 +146,12 @@ def _gemini_credential_grouping(
         stage_name="gemini_credential_grouping",
         state_key="credential_groups",
     )
-    result["audit_log"] = list(state.get("audit_log") or []) + list(result.get("audit_log") or [])
-    result["gemini_errors"] = list(state.get("gemini_errors") or []) + list(result.get("gemini_errors") or [])
-    result["gemini_fallback_used"] = bool(state.get("gemini_fallback_used")) or bool(result.get("gemini_fallback_used"))
-    return result
-
 
 def _build_verification_tasks(state: GeneralizedVerificationState) -> dict[str, Any]:
     groups = [GeminiCredentialGroup.model_validate(item) for item in list(state.get("credential_groups") or [])]
     extraction_payload = state.get("extraction_payload") or {}
     connector_input = dict(extraction_payload.get("connector_input") or {})
+    
     tasks: list[VerificationTask] = []
     for group in groups:
         connector_id = str(group.connector_id or "").strip()
@@ -473,24 +171,23 @@ def _build_verification_tasks(state: GeneralizedVerificationState) -> dict[str, 
             )
         )
 
-    audit_log = list(state.get("audit_log") or [])
-    audit_log.append(_audit_item("build_verification_tasks", f"Built {len(tasks)} verification task(s)."))
     return {
         "verification_tasks": [task.model_dump(mode="json") for task in tasks],
-        "audit_log": audit_log,
+        "audit_log": [_audit_item("build_verification_tasks", f"Built {len(tasks)} verification task(s).")],
     }
-
 
 def _run_verifier_apis(state: GeneralizedVerificationState) -> dict[str, Any]:
     extraction_payload = state.get("extraction_payload") or {}
     tasks = [VerificationTask.model_validate(item) for item in list(state.get("verification_tasks") or [])]
     policy = state.get("policy") or {}
     connector_responses = build_connector_responses(extraction_payload, policy)
+    
     by_connector = {
         str(item.get("connector_id") or ""): item
         for item in connector_responses
         if isinstance(item, dict)
     }
+    
     verifier_results: list[VerifierResult] = []
     for task in tasks:
         raw_result = by_connector.get(task.connector_id)
@@ -529,19 +226,17 @@ def _run_verifier_apis(state: GeneralizedVerificationState) -> dict[str, Any]:
             )
         )
 
-    audit_log = list(state.get("audit_log") or [])
-    audit_log.append(_audit_item("run_verifier_apis", f"Collected {len(verifier_results)} verifier result(s)."))
     return {
         "verifier_results": [result.model_dump(mode="json") for result in verifier_results],
-        "audit_log": audit_log,
+        "audit_log": [_audit_item("run_verifier_apis", f"Collected {len(verifier_results)} verifier result(s).")],
     }
-
 
 def _gemini_confidence_fusion(state: GeneralizedVerificationState) -> dict[str, Any]:
     extraction_payload = state.get("extraction_payload") or {}
     document_understanding = GeminiDocumentUnderstanding.model_validate(state.get("document_understanding") or {})
     normalized_fields = [GeminiNormalizedField.model_validate(item) for item in list(state.get("normalized_fields") or [])]
     verifier_results = [VerifierResult.model_validate(item) for item in list(state.get("verifier_results") or [])]
+    
     verifier_by_field: dict[str, VerifierResult] = {}
     for verifier in verifier_results:
         for field_id in verifier.field_ids or [verifier.field_id]:
@@ -564,31 +259,27 @@ def _gemini_confidence_fusion(state: GeneralizedVerificationState) -> dict[str, 
         decision.bounding_boxes = list(field.bounding_boxes)
         field_decisions.append(decision)
 
-    audit_log = list(state.get("audit_log") or [])
-    audit_log.append(_audit_item("gemini_confidence_fusion", f"Fused confidence across {len(field_decisions)} field(s)."))
     return {
         "field_decisions": [field.model_dump(mode="json") for field in field_decisions],
-        "audit_log": audit_log,
+        "audit_log": [_audit_item("gemini_confidence_fusion", f"Fused confidence across {len(field_decisions)} field(s).")],
     }
-
 
 def _policy_verdict(state: GeneralizedVerificationState) -> dict[str, Any]:
     document_understanding = GeminiDocumentUnderstanding.model_validate(state.get("document_understanding") or {})
     field_decisions = [FieldDecision.model_validate(item) for item in list(state.get("field_decisions") or [])]
     verifier_results = [VerifierResult.model_validate(item) for item in list(state.get("verifier_results") or [])]
+    
     verdict = build_final_verdict(
         field_decisions=field_decisions,
         verifier_results=verifier_results,
         unsafe_or_malformed=document_understanding.unsafe_or_malformed,
         document_reason_codes=list(document_understanding.risk_flags),
     )
-    audit_log = list(state.get("audit_log") or [])
-    audit_log.append(_audit_item("policy_verdict", f"Final verdict resolved to {verdict.outcome}."))
+    
     return {
         "final_verdict": verdict.model_dump(mode="json"),
-        "audit_log": audit_log,
+        "audit_log": [_audit_item("policy_verdict", f"Final verdict resolved to {verdict.outcome}.")],
     }
-
 
 def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, Any]:
     sanitized_extraction = state.get("sanitized_extraction") or {}
@@ -597,6 +288,7 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
     verifier_results = [VerifierResult.model_validate(item) for item in list(state.get("verifier_results") or [])]
     final_verdict = state.get("final_verdict") or {}
     warnings = list(((sanitized_extraction.get("view") or {}).get("warnings")) or [])
+    
     verifiers = [
         WorkspaceVerifierStatus(
             connector_id=result.connector_id,
@@ -610,10 +302,11 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
         )
         for result in verifier_results
     ]
+    
     workspace = WorkspacePayload(
         session_id=str(state.get("session_id") or ""),
-        status="COMPLETED",
-        ui_status="READY",
+        status=final_verdict.get("outcome", "AMBER"),
+        ui_status="COMPLETED",
         document=WorkspaceDocument(
             filename=state.get("filename"),
             document_type=document_understanding.document_type or str((sanitized_extraction.get("view") or {}).get("document_type") or "unknown"),
@@ -652,7 +345,6 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
     )
     return {"workspace_payload": workspace.model_dump(mode="json")}
 
-
 def _invoke_gemini_with_fallback(
     *,
     runtime_policy: AgentRuntimePolicy,
@@ -669,41 +361,33 @@ def _invoke_gemini_with_fallback(
         llm = _build_structured_gemini_llm(runtime_policy=runtime_policy, schema=schema)
         response = llm.invoke(prompt)
         payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else response.dict()
-        if schema is GeminiDocumentUnderstanding:
-            return {
-                "document_understanding": payload,
-                "gemini_errors": [],
-                "audit_log": [_audit_item(stage_name, "Gemini structured response accepted.")],
-            }
+        
+        result_key = state_key or _state_key_for_collection(schema)
+        result_payload = payload if schema is GeminiDocumentUnderstanding else payload.get(_default_collection_key(schema), [])
+        
         return {
-            state_key or _state_key_for_collection(schema): payload.get(_default_collection_key(schema), []),
-            "gemini_errors": [],
+            result_key: result_payload,
             "audit_log": [_audit_item(stage_name, "Gemini structured response accepted.")],
         }
     except Exception as exc:
+        LOGGER.warning(f"Gemini invocation failed at {stage_name}: {exc}")
         return _fallback_response(stage_name, fallback_model, str(exc), state_key=state_key)
-
 
 def _fallback_response(stage_name: str, fallback_model, error_message: str, *, state_key: str | None = None) -> dict[str, Any]:
     payload = fallback_model.model_dump(mode="json") if hasattr(fallback_model, "model_dump") else fallback_model.dict()
-    response: dict[str, Any] = {
+    
+    result_key = "document_understanding" if isinstance(fallback_model, GeminiDocumentUnderstanding) else (state_key or _state_key_for_collection(type(fallback_model)))
+    result_payload = payload if isinstance(fallback_model, GeminiDocumentUnderstanding) else payload.get(_default_collection_key(type(fallback_model)), [])
+
+    return {
+        result_key: result_payload,
         "gemini_errors": [f"{stage_name}: {error_message}"],
         "gemini_fallback_used": True,
         "audit_log": [_audit_item(stage_name, "Gemini fallback applied.", level="WARNING")],
     }
-    if isinstance(fallback_model, GeminiDocumentUnderstanding):
-        response["document_understanding"] = payload
-    else:
-        response[state_key or _state_key_for_collection(type(fallback_model))] = payload.get(
-            _default_collection_key(type(fallback_model)),
-            [],
-        )
-    return response
-
 
 def _build_structured_gemini_llm(*, runtime_policy: AgentRuntimePolicy, schema):
     from langchain_google_genai import ChatGoogleGenerativeAI
-
     llm = ChatGoogleGenerativeAI(
         model=runtime_policy.gemini_model,
         temperature=0.0,
@@ -711,14 +395,12 @@ def _build_structured_gemini_llm(*, runtime_policy: AgentRuntimePolicy, schema):
     )
     return llm.with_structured_output(schema)
 
-
 def _gemini_enabled(runtime_policy: AgentRuntimePolicy) -> bool:
     return (
         runtime_policy.orchestration_enabled
         and runtime_policy.provider_key == "gemini"
         and bool(runtime_policy.gemini_api_key)
     )
-
 
 def _build_document_understanding_prompt(
     *,
@@ -741,7 +423,6 @@ def _build_document_understanding_prompt(
         f"{raw_text_block}"
     )
 
-
 def _build_field_normalization_prompt(
     *,
     extraction_payload: dict[str, Any],
@@ -757,7 +438,6 @@ def _build_field_normalization_prompt(
         f"{raw_text_block}"
     )
 
-
 def _build_credential_grouping_prompt(
     *,
     document_understanding: dict[str, Any],
@@ -768,7 +448,6 @@ def _build_credential_grouping_prompt(
         f"\nDocument understanding:\n{json.dumps(document_understanding, default=str)}"
         f"\nNormalized fields:\n{json.dumps([field.model_dump(mode='json') for field in normalized_fields], default=str)}"
     )
-
 
 def _fallback_document_understanding(extraction_payload: dict[str, Any]) -> GeminiDocumentUnderstanding:
     view = extraction_payload.get("view") or {}
@@ -784,7 +463,6 @@ def _fallback_document_understanding(extraction_payload: dict[str, Any]) -> Gemi
         visual_match_probability=0.0,
         risk_flags=warnings,
     )
-
 
 def _deterministic_normalized_fields(extraction_payload: dict[str, Any]) -> list[GeminiNormalizedField]:
     trust_input = extraction_payload.get("trust_input") or {}
@@ -816,7 +494,6 @@ def _deterministic_normalized_fields(extraction_payload: dict[str, Any]) -> list
         )
     return normalized_fields
 
-
 def _deterministic_credential_groups(
     extraction_payload: dict[str, Any],
     normalized_fields: list[GeminiNormalizedField],
@@ -838,17 +515,21 @@ def _deterministic_credential_groups(
         )
     ]
 
-
 def _resolve_extraction_confidence(extraction_payload: dict[str, Any], field_id: str, extracted_value: str) -> float:
     trust_input = extraction_payload.get("trust_input") or {}
     for field in list(trust_input.get("fields") or []):
         if str(field.get("name") or "") == field_id:
-            return _coerce_confidence(field.get("confidence"))
+            try:
+                return float(field.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
     confidence_map = (extraction_payload.get("view") or {}).get("confidence") or {}
     if field_id in confidence_map:
-        return _coerce_confidence(confidence_map[field_id])
+        try:
+            return float(confidence_map[field_id])
+        except (TypeError, ValueError):
+            return 0.0
     return 1.0 if extracted_value else 0.0
-
 
 def _verification_confidence_from_status(status: str) -> float:
     normalized = str(status or "").upper()
@@ -862,7 +543,6 @@ def _verification_confidence_from_status(status: str) -> float:
         return 0.1
     return 0.0
 
-
 def _verifier_audit_message(connector_id: str, status: str, raw_result: dict[str, Any]) -> str:
     normalized = str(status or "").upper()
     if normalized == "VERIFIED":
@@ -873,7 +553,6 @@ def _verifier_audit_message(connector_id: str, status: str, raw_result: dict[str
         return f"{connector_id} timed out after retries."
     return str(raw_result.get("message") or f"{connector_id} could not verify the claim.")
 
-
 def _audit_item(stage: str, message: str, *, level: str = "INFO") -> dict[str, Any]:
     return WorkspaceAuditEntry(
         stage=stage,
@@ -882,14 +561,12 @@ def _audit_item(stage: str, message: str, *, level: str = "INFO") -> dict[str, A
         timestamp=datetime.now(timezone.utc).isoformat(),
     ).model_dump(mode="json")
 
-
 def _state_key_for_collection(schema) -> str:
     if schema is GeminiNormalizedFieldCollection:
         return "normalized_fields"
     if schema is GeminiCredentialGroupCollection:
         return "credential_groups"
     return "document_understanding"
-
 
 def _default_collection_key(schema) -> str:
     if schema is GeminiNormalizedFieldCollection:

@@ -10,6 +10,10 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from ..workflow.runtime import build_connector_responses, build_policy, extract_document_payload
+from ..verification_domain.adapters import build_session_credentials, build_session_verification_plan
+from ..verification_domain.contracts import SessionCredentialCollection, SessionVerificationPlan
+from ..verifier_execution.contracts import VerificationTaskResult
+from ..verifier_execution.service import build_execution_artifacts
 from ..trust.trust_engine import build_final_verdict, determine_field_decision
 from .policies import AgentRuntimePolicy, load_agent_runtime_policy, minimize_extraction_payload
 from .schemas import (
@@ -148,83 +152,59 @@ def _gemini_credential_grouping(
     )
 
 def _build_verification_tasks(state: GeneralizedVerificationState) -> dict[str, Any]:
-    groups = [GeminiCredentialGroup.model_validate(item) for item in list(state.get("credential_groups") or [])]
     extraction_payload = state.get("extraction_payload") or {}
-    connector_input = dict(extraction_payload.get("connector_input") or {})
-    
-    tasks: list[VerificationTask] = []
-    for group in groups:
-        connector_id = str(group.connector_id or "").strip()
-        if not connector_id:
-            continue
-        tasks.append(
+    session_id = str(state.get("session_id") or "")
+    credentials = build_session_credentials(session_id, extraction_payload)
+    plan = build_session_verification_plan(
+        session_id,
+        extraction_payload,
+        credentials=credentials,
+    )
+
+    workspace_tasks: list[VerificationTask] = []
+    for task in plan.tasks:
+        workspace_tasks.append(
             VerificationTask(
-                task_id=f"task-{group.group_id}",
-                field_id=group.group_id,
-                label=group.label,
-                connector_id=connector_id,
-                claim_type=group.claim_type,
-                optional=group.optional,
-                high_assurance=group.high_assurance,
-                input_payload=connector_input,
-                field_ids=list(group.field_ids),
+                task_id=task.task_id,
+                field_id=task.credential_id,
+                label=str(task.input_payload.get("label") or task.credential_id),
+                connector_id=task.selected_provider or task.planned_provider_key or task.verifier_key,
+                claim_type=task.claim_type or task.verification_type,
+                provider_candidates=list(task.provider_candidates or []),
+                required_fields=list(task.required_fields or []),
+                assurance_required=task.assurance_required,
+                optional=not task.required,
+                high_assurance=task.assurance_required == "HIGH",
+                input_payload=_safe_task_payload(task.input_payload),
+                field_ids=[task.credential_id],
             )
         )
 
     return {
-        "verification_tasks": [task.model_dump(mode="json") for task in tasks],
-        "audit_log": [_audit_item("build_verification_tasks", f"Built {len(tasks)} verification task(s).")],
+        "domain_credentials": credentials.model_dump(mode="json"),
+        "domain_verification_plan": plan.model_dump(mode="json"),
+        "verification_tasks": [task.model_dump(mode="json") for task in workspace_tasks],
+        "audit_log": [_audit_item("build_verification_tasks", f"Built {len(workspace_tasks)} verification task(s).")],
     }
 
 def _run_verifier_apis(state: GeneralizedVerificationState) -> dict[str, Any]:
     extraction_payload = state.get("extraction_payload") or {}
-    tasks = [VerificationTask.model_validate(item) for item in list(state.get("verification_tasks") or [])]
-    policy = state.get("policy") or {}
-    connector_responses = build_connector_responses(extraction_payload, policy)
-    
-    by_connector = {
-        str(item.get("connector_id") or ""): item
-        for item in connector_responses
-        if isinstance(item, dict)
-    }
-    
-    verifier_results: list[VerifierResult] = []
-    for task in tasks:
-        raw_result = by_connector.get(task.connector_id)
-        if raw_result is None:
-            verifier_results.append(
-                VerifierResult(
-                    task_id=task.task_id,
-                    field_id=task.field_id,
-                    connector_id=task.connector_id,
-                    status="SKIPPED" if task.optional else "NOT_APPLICABLE",
-                    verification_confidence=0.35 if task.optional else 0.0,
-                    reason_codes=["OPTIONAL_VERIFIER_UNAVAILABLE"] if task.optional else ["NO_VERIFIER_APPLICABLE"],
-                    source_api=task.connector_id,
-                    audit_message="No verifier response was available for this task.",
-                    optional=task.optional,
-                    high_assurance=task.high_assurance,
-                    field_ids=task.field_ids,
-                )
-            )
-            continue
+    session_id = str(state.get("session_id") or "")
+    credentials_payload = state.get("domain_credentials") or {}
+    plan_payload = state.get("domain_verification_plan") or {}
+    credentials = SessionCredentialCollection.model_validate(credentials_payload)
+    plan = SessionVerificationPlan.model_validate(plan_payload)
+    artifacts = build_execution_artifacts(
+        session_id,
+        extraction_payload,
+        credentials=credentials,
+        verification_plan=plan,
+    )
 
-        status = str(raw_result.get("status") or "ERROR").upper()
-        verifier_results.append(
-            VerifierResult(
-                task_id=task.task_id,
-                field_id=task.field_id,
-                connector_id=task.connector_id,
-                status=status if status in {"VERIFIED", "MISMATCH", "TIMEOUT", "ERROR"} else "ERROR",
-                verification_confidence=_verification_confidence_from_status(status),
-                reason_codes=list(raw_result.get("reason_codes") or []),
-                source_api=task.connector_id,
-                audit_message=_verifier_audit_message(task.connector_id, status, raw_result),
-                optional=task.optional,
-                high_assurance=task.high_assurance,
-                field_ids=task.field_ids,
-            )
-        )
+    verifier_results: list[VerifierResult] = []
+    task_results = artifacts["task_results"].results
+    for result in task_results:
+        verifier_results.append(_workspace_verifier_result(result))
 
     return {
         "verifier_results": [result.model_dump(mode="json") for result in verifier_results],
@@ -359,6 +339,67 @@ def _workspace_actions_for_status(session_status: str) -> list[WorkspaceAction]:
         WorkspaceAction(action_id="can_reject", label="Reject", enabled=pending_human_review),
         WorkspaceAction(action_id="can_manual_review", label="Manual Review", enabled=pending_human_review),
     ]
+
+
+def _workspace_verifier_result(result: VerificationTaskResult) -> VerifierResult:
+    status = _verifier_status_from_task_result(result)
+    provider_key = result.executed_provider_key or result.planned_provider_key or result.verifier_key
+    return VerifierResult(
+        task_id=result.task_id,
+        field_id=result.credential_id,
+        connector_id=provider_key,
+        status=status,
+        verification_confidence=_verification_confidence_from_task_result(result),
+        reason_codes=list(result.reason_codes or []),
+        source_api=provider_key,
+        audit_message=result.explanation,
+        optional=False,
+        high_assurance=result.planned_provider_key == "entra_verified_id",
+        field_ids=[result.credential_id],
+    )
+
+
+def _verifier_status_from_task_result(result: VerificationTaskResult) -> str:
+    if result.audit_status == "VERIFIED":
+        return "VERIFIED"
+    if result.audit_status == "MISMATCH":
+        return "MISMATCH"
+    if result.task_status == "SKIPPED":
+        return "SKIPPED"
+    if "TIMEOUT" in set(result.reason_codes or []):
+        return "TIMEOUT"
+    return "ERROR"
+
+
+def _verification_confidence_from_task_result(result: VerificationTaskResult) -> float:
+    if result.confidence is not None:
+        return float(result.confidence)
+    if result.audit_status == "VERIFIED":
+        return 0.95
+    if result.audit_status == "MISMATCH":
+        return 0.0
+    if result.audit_status in {"MANUAL_REVIEW", "PARTIAL", "UNVERIFIED"}:
+        return 0.35
+    return 0.0
+
+
+def _safe_task_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    safe_keys = {
+        "credential_id",
+        "label",
+        "category",
+        "page",
+        "is_pii",
+        "claim_type",
+        "required_fields",
+        "assurance_required",
+        "provider_candidates",
+        "preferred_provider_key",
+        "planned_provider_key",
+        "planned_provider_label",
+        "fallback_reason",
+    }
+    return {key: value for key, value in dict(payload or {}).items() if key in safe_keys}
 
 def _invoke_gemini_with_fallback(
     *,
@@ -503,7 +544,7 @@ def _deterministic_normalized_fields(extraction_payload: dict[str, Any]) -> list
                 ai_confidence=float(field.get("confidence") or 0.0),
                 grounding_confidence=1.0 if boxes or field.get("is_grounded") else 0.0,
                 mandatory=bool(field.get("is_mandatory")),
-                verifier_hint="vit_registry" if field_name in {"name", "institution", "credential", "id"} else None,
+                verifier_hint=None,
                 bounding_boxes=boxes,
             )
         )
@@ -513,19 +554,16 @@ def _deterministic_credential_groups(
     extraction_payload: dict[str, Any],
     normalized_fields: list[GeminiNormalizedField],
 ) -> list[GeminiCredentialGroup]:
-    connector_input = extraction_payload.get("connector_input") or {}
-    institution = str(connector_input.get("institution") or "").lower()
-    connector_id = "vit_registry" if "vit" in institution else None
     field_ids = [field.field_id for field in normalized_fields if field.mandatory] or [field.field_id for field in normalized_fields]
     return [
         GeminiCredentialGroup(
             group_id="primary-credential",
             label="Primary Credential Verification",
             field_ids=field_ids,
-            connector_id=connector_id,
+            connector_id=None,
             claim_type="credential",
-            optional=connector_id is None,
-            high_assurance=connector_id is not None,
+            optional=False,
+            high_assurance=True,
             explanation="Deterministic grouping based on extracted connector input.",
         )
     ]

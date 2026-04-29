@@ -90,11 +90,20 @@ class ExtractedCredential(ContractModel):
 class VerificationTask(ContractModel):
     task_id: str
     credential_id: str
-    verifier_key: str
-    verifier_label: str
-    verification_type: str
-    required: bool
-    status: str
+    verifier_key: str = "manual_review"
+    verifier_label: str = "Manual Review"
+    verification_type: str = "unknown"
+    required: bool = True
+    status: str = "PLANNED"
+    claim_type: str | None = None
+    provider_candidates: list[str] = Field(default_factory=list)
+    required_fields: list[str] = Field(default_factory=list)
+    assurance_required: str = "MEDIUM"
+    selected_provider: str | None = None
+    executed_provider: str | None = None
+    executed_provider_key: str | None = None
+    planned_provider_key: str | None = None
+    preferred_provider_key: str | None = None
     reason_codes: list[str] = Field(default_factory=list)
     input_payload: dict[str, Any] = Field(default_factory=dict)
 

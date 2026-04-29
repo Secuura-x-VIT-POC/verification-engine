@@ -180,7 +180,14 @@ def run_worker_pipeline(
             update_worker_phase(conn, session_id, worker_id, WORKER_PHASE_TRUST_SCORING)
             failure_type = "unknown_processing_error"
             trust_input = _resolve_trust_input(grounded_data)
-            trust_result = evaluate_trust(trust_input, connector_responses, policy)
+            verifier_results = connector_responses
+            if uses_default_runtime:
+                verifier_results = _build_default_verifier_results(
+                    session_id=session_id,
+                    grounded_data=grounded_data,
+                    connector_responses=connector_responses,
+                )
+            trust_result = evaluate_trust(trust_input, verifier_results, policy)
             LOGGER.info(
                 "TRUST_DECISION session_id=%s outcome=%s reason_count=%s connector_count=%s",
                 session_id,
@@ -372,6 +379,25 @@ def _resolve_trust_input(grounded_data: dict) -> dict:
     if isinstance(grounded_data, dict) and isinstance(grounded_data.get("trust_input"), dict):
         return grounded_data["trust_input"]
     return grounded_data
+
+
+def _build_default_verifier_results(
+    *,
+    session_id: str,
+    grounded_data: dict,
+    connector_responses: list[dict],
+) -> list[dict]:
+    from ..verifier_execution.service import build_execution_artifacts
+
+    artifacts = build_execution_artifacts(
+        session_id,
+        grounded_data,
+        connector_payload=connector_responses,
+    )
+    return [
+        result.model_dump(mode="json")
+        for result in artifacts["task_results"].results
+    ]
 
 
 def _build_completion_values(

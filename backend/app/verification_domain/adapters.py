@@ -27,6 +27,7 @@ from .contracts import (
 )
 from .planner import build_planned_credentials
 from .routing import RuleBasedVerifierRouter, VerifierRouter
+from ..workflow.task_planner import build_verification_tasks
 
 
 def build_session_credentials(
@@ -49,15 +50,22 @@ def build_session_verification_plan(
     router: VerifierRouter | None = None,
     credentials: SessionCredentialCollection | None = None,
 ) -> SessionVerificationPlan:
-    active_router = router or RuleBasedVerifierRouter()
     credential_collection = credentials or build_session_credentials(session_id, extraction_payload)
-    route_decisions = [active_router.route(credential) for credential in credential_collection.credentials]
-    route_map = {decision.credential_id: decision for decision in route_decisions}
-    tasks = [
-        _build_task(credential, route_map[credential.credential_id])
-        for credential in credential_collection.credentials
-        if credential.requires_verification
-    ]
+    tasks = build_verification_tasks(
+        credential_collection.credentials,
+        context={
+            "document_type": credential_collection.document_type,
+            "extraction_payload": extraction_payload or {},
+        },
+    )
+    task_map = {task.credential_id: task for task in tasks}
+    if router is not None:
+        route_decisions = [router.route(credential) for credential in credential_collection.credentials]
+    else:
+        route_decisions = [
+            _route_decision_from_task(credential, task_map.get(credential.credential_id))
+            for credential in credential_collection.credentials
+        ]
     return SessionVerificationPlan(
         session_id=session_id,
         document_type=credential_collection.document_type,
@@ -284,6 +292,45 @@ def adapt_session_to_verification_summary(
         trust_outcome=session.trust_outcome,
         reason_codes=list(session.reason_codes or []),
         credentials=credentials,
+)
+
+
+def _route_decision_from_task(
+    credential: ExtractedCredential,
+    task: VerificationTask | None,
+) -> VerifierRouteDecision:
+    if task is None:
+        return VerifierRouteDecision(
+            credential_id=credential.credential_id,
+            selected_verifier_key="not_required",
+            selected_verifier_label="No Verification Needed",
+            route_reason=credential.verification_reason or "The deterministic planner marked this field as out of scope for direct verification.",
+            planned_execution_mode=None,
+            manual_review_recommended=False,
+        )
+
+    provider_key = task.planned_provider_key or task.selected_provider
+    provider_label = task.input_payload.get("planned_provider_label") if isinstance(task.input_payload, dict) else None
+    fallback_reason = task.input_payload.get("fallback_reason") if isinstance(task.input_payload, dict) else None
+    return VerifierRouteDecision(
+        credential_id=credential.credential_id,
+        selected_verifier_key=task.verifier_key,
+        selected_verifier_label=task.verifier_label,
+        route_reason=(
+            f"Claim type '{task.claim_type or task.verification_type}' maps to verifier '{task.verifier_key}' "
+            "through provider capability metadata."
+        ),
+        preferred_provider_key=task.preferred_provider_key,
+        preferred_provider_label=None,
+        planned_provider_key=provider_key,
+        planned_provider_label=provider_label,
+        planned_execution_mode="MANUAL_REVIEW" if provider_key == "manual_review" else "PROVIDER",
+        planned_is_live_result=False,
+        planned_is_mock_result=provider_key == "local_mock",
+        planned_is_demo_result=False,
+        fallback_reason=fallback_reason,
+        fallback_verifiers=["manual_review"],
+        manual_review_recommended=provider_key == "manual_review",
     )
 
 

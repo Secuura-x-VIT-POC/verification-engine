@@ -196,21 +196,14 @@ def evaluate_trust(trust_input: dict, connector_result: dict | list[dict] | None
     """
     Evaluates the overall trust for a document based on field extractions, verifier results, and policy.
     """
-    connector_results = _normalize_connector_results(connector_result)
-    primary_connector_result = connector_results[0] if connector_results else None
-    if primary_connector_result:
-        verifier_result = VerifierResult(
-            task_id="dummy",
-            field_id="dummy",
-            connector_id=primary_connector_result["connector_id"],
-            status=primary_connector_result["status"],
-            verification_confidence=1.0,
-            reason_codes=list(primary_connector_result.get("reason_codes") or []),
-            high_assurance=primary_connector_result.get("assurance_class") == "HIGH",
-        )
-    else:
-        verifier_result = None
-    
+    normalized_verifier_results = _normalize_verifier_results(connector_result)
+    verifier_by_field = {
+        result.field_id: result
+        for result in normalized_verifier_results
+        if result.field_id and result.field_id != "dummy"
+    }
+    primary_verifier_result = normalized_verifier_results[0] if normalized_verifier_results else None
+
     field_decisions = []
     fields = _normalize_trust_fields(trust_input, policy)
 
@@ -228,12 +221,70 @@ def evaluate_trust(trust_input: dict, connector_result: dict | list[dict] | None
         decision = determine_field_decision(
             field_id, field_id, extracted_value, normalized_value,
             extraction_confidence, ai_confidence, grounding_confidence,
-            verifier_result, mandatory, False
+            verifier_by_field.get(field_id) or primary_verifier_result, mandatory, False
         )
         field_decisions.append(decision)
     
-    final_verdict = build_final_verdict(field_decisions, [verifier_result] if verifier_result else [], False, [])
+    final_verdict = build_final_verdict(field_decisions, normalized_verifier_results, False, [])
     return final_verdict.model_dump()
+
+
+def _normalize_verifier_results(connector_result: dict | list[dict] | None) -> list[VerifierResult]:
+    verifier_results: list[VerifierResult] = []
+    for item in _normalize_connector_results(connector_result):
+        if "task_status" in item or "audit_status" in item or "executed_provider_key" in item:
+            verifier_results.append(_verifier_result_from_task_result(item))
+            continue
+        verifier_results.append(
+            VerifierResult(
+                task_id=str(item.get("task_id") or "connector"),
+                field_id=str(item.get("field_id") or "dummy"),
+                connector_id=str(item.get("connector_id") or item.get("provider_key") or "provider"),
+                status=str(item.get("status") or "ERROR").upper(),
+                verification_confidence=float(item.get("verification_confidence") or 1.0),
+                reason_codes=list(item.get("reason_codes") or []),
+                high_assurance=item.get("assurance_class") == "HIGH",
+            )
+        )
+    return verifier_results
+
+
+def _verifier_result_from_task_result(item: dict[str, Any]) -> VerifierResult:
+    audit_status = str(item.get("audit_status") or "").upper()
+    task_status = str(item.get("task_status") or "").upper()
+    if audit_status == "VERIFIED":
+        status = "VERIFIED"
+        confidence = item.get("confidence", 0.95)
+    elif audit_status == "MISMATCH":
+        status = "MISMATCH"
+        confidence = item.get("confidence", 0.0)
+    elif task_status == "SKIPPED":
+        status = "SKIPPED"
+        confidence = item.get("confidence", 0.0)
+    elif "TIMEOUT" in set(item.get("reason_codes") or []):
+        status = "TIMEOUT"
+        confidence = item.get("confidence", 0.2)
+    else:
+        status = "ERROR"
+        confidence = item.get("confidence", 0.35)
+
+    connector_id = (
+        item.get("executed_provider_key")
+        or item.get("planned_provider_key")
+        or item.get("verifier_key")
+        or "provider"
+    )
+    return VerifierResult(
+        task_id=str(item.get("task_id") or ""),
+        field_id=str(item.get("credential_id") or item.get("field_id") or "dummy"),
+        connector_id=str(connector_id),
+        status=status,
+        verification_confidence=float(confidence or 0.0),
+        reason_codes=list(item.get("reason_codes") or []),
+        source_api=str(connector_id),
+        audit_message=str(item.get("explanation") or ""),
+        high_assurance=item.get("planned_provider_key") == "entra_verified_id",
+    )
 
 
 def _normalize_connector_results(connector_result: dict | list[dict] | None) -> list[dict]:

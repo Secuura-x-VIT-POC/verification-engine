@@ -26,6 +26,8 @@ class GeneralizedVerificationState(TypedDict, total=False):
     normalized_fields: list[dict[str, Any]]
     credential_groups: list[dict[str, Any]]
     verification_tasks: list[dict[str, Any]]
+    domain_credentials: dict[str, Any]
+    domain_verification_plan: dict[str, Any]
     verifier_results: list[dict[str, Any]]
     field_decisions: list[dict[str, Any]]
     final_verdict: dict[str, Any]

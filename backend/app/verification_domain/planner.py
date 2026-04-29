@@ -993,6 +993,8 @@ def _display_label_for_semantic_key(semantic_key: str) -> str:
 
 def _iter_generalized_entries(extraction_payload: dict[str, Any]) -> list[dict[str, Any]]:
     generalized_analysis = extraction_payload.get("generalized_analysis") or {}
+    if not generalized_analysis and isinstance(extraction_payload.get("view"), dict):
+        generalized_analysis = (extraction_payload.get("view") or {}).get("generalized_analysis") or {}
     generalized_credentials = generalized_analysis.get("generalized_credentials_payload")
     if isinstance(generalized_credentials, list) and generalized_credentials:
         entries = []
@@ -1022,6 +1024,8 @@ def _iter_generalized_entries(extraction_payload: dict[str, Any]) -> list[dict[s
         return entries
 
     field_candidates = extraction_payload.get("field_candidates")
+    if not field_candidates and isinstance(extraction_payload.get("view"), dict):
+        field_candidates = (extraction_payload.get("view") or {}).get("field_candidates")
     if isinstance(field_candidates, list) and field_candidates:
         entries = []
         for index, candidate in enumerate(field_candidates, start=1):
@@ -1093,11 +1097,17 @@ def _resolve_extraction_method(extraction_payload: dict[str, Any]) -> str:
 
 def _resolve_document_type(extraction_payload: dict[str, Any]) -> str:
     generalized_analysis = extraction_payload.get("generalized_analysis") or {}
+    if not generalized_analysis and isinstance(extraction_payload.get("view"), dict):
+        generalized_analysis = (extraction_payload.get("view") or {}).get("generalized_analysis") or {}
     summary_payload = generalized_analysis.get("verification_summary_payload") or {}
     summary_document_type = normalize_value(summary_payload.get("document_type"))
     if summary_document_type:
         return summary_document_type
-    return str(extraction_payload.get("document_type") or "unknown")
+    if extraction_payload.get("document_type"):
+        return str(extraction_payload.get("document_type"))
+    if isinstance(extraction_payload.get("view"), dict):
+        return str((extraction_payload.get("view") or {}).get("document_type") or "unknown")
+    return "unknown"
 
 
 def _resolve_document_family(extraction_payload: dict[str, Any]) -> str:

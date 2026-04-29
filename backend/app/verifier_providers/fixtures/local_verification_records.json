@@ -1,0 +1,62 @@
+{
+  "records": [
+    {
+      "record_id": "demo-identity-001",
+      "verifier_keys": ["identity_db"],
+      "categories": ["identity"],
+      "document_types": ["academic_credential", "identity_document"],
+      "confidence": 0.99,
+      "fields": [
+        {
+          "field_key": "name",
+          "label": "Candidate Name",
+          "label_aliases": ["name", "candidate-name", "holder_name"],
+          "value": "Demo Student",
+          "normalized_value": "Demo Student",
+          "confidence": 0.99
+        }
+      ]
+    },
+    {
+      "record_id": "demo-academic-001",
+      "verifier_keys": ["academic_registry"],
+      "categories": ["academic"],
+      "document_types": ["academic_credential"],
+      "confidence": 0.98,
+      "fields": [
+        {
+          "field_key": "student_name",
+          "label": "Student Name",
+          "label_aliases": ["Candidate Name", "name", "candidate-name", "holder_name"],
+          "value": "Demo Student",
+          "normalized_value": "Demo Student",
+          "confidence": 0.98
+        },
+        {
+          "field_key": "institution",
+          "label": "Institution",
+          "label_aliases": ["Institution Name", "issuer", "institution_name"],
+          "value": "Demo University",
+          "normalized_value": "Demo University",
+          "confidence": 0.98
+        },
+        {
+          "field_key": "credential",
+          "label": "Credential",
+          "label_aliases": ["degree", "credential_title"],
+          "value": "Bachelor of Technology",
+          "normalized_value": "Bachelor of Technology",
+          "confidence": 0.98
+        },
+        {
+          "field_key": "document_id",
+          "label": "Document ID",
+          "label_aliases": ["Roll Number", "id", "registration_number"],
+          "value": "DEMO-2024-001",
+          "normalized_value": "DEMO-2024-001",
+          "confidence": 0.98
+        }
+      ]
+    }
+  ]
+}

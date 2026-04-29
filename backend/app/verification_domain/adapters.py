@@ -312,6 +312,11 @@ def _route_decision_from_task(
     provider_key = task.planned_provider_key or task.selected_provider
     provider_label = task.input_payload.get("planned_provider_label") if isinstance(task.input_payload, dict) else None
     fallback_reason = task.input_payload.get("fallback_reason") if isinstance(task.input_payload, dict) else None
+    planned_execution_mode = (
+        task.input_payload.get("planned_execution_mode")
+        if isinstance(task.input_payload, dict)
+        else None
+    )
     return VerifierRouteDecision(
         credential_id=credential.credential_id,
         selected_verifier_key=task.verifier_key,
@@ -324,7 +329,7 @@ def _route_decision_from_task(
         preferred_provider_label=None,
         planned_provider_key=provider_key,
         planned_provider_label=provider_label,
-        planned_execution_mode="MANUAL_REVIEW" if provider_key == "manual_review" else "PROVIDER",
+        planned_execution_mode=planned_execution_mode or ("MANUAL_REVIEW" if provider_key == "manual_review" else "PROVIDER"),
         planned_is_live_result=False,
         planned_is_mock_result=provider_key == "local_mock",
         planned_is_demo_result=False,
@@ -795,7 +800,11 @@ def _dedupe_reason_codes(reason_codes: list[str]) -> list[str]:
 def _resolve_document_type(extraction_payload: dict[str, Any] | None) -> str:
     if not extraction_payload:
         return "unknown"
-    return str(extraction_payload.get("document_type") or "unknown")
+    if extraction_payload.get("document_type"):
+        return str(extraction_payload.get("document_type"))
+    if isinstance(extraction_payload.get("view"), dict):
+        return str((extraction_payload.get("view") or {}).get("document_type") or "unknown")
+    return "unknown"
 
 
 def _maybe_dump_model(value: Any) -> Any:

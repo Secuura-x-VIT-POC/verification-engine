@@ -6,7 +6,9 @@ from typing import Any, Protocol
 from ..verifier_providers import (
     PROVIDER_OPERATING_MODE_DEMO_MOCK,
     PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED,
+    PROVIDER_OPERATING_MODE_MANUAL_ONLY,
     build_default_provider_registry,
+    load_provider_runtime_policy,
 )
 from .verifiers import (
     AcademicRegistryVerifier,
@@ -88,6 +90,7 @@ class VerifierRegistry:
         context: dict[str, Any] | None = None,
     ) -> list[ProviderCandidate]:
         del required_fields
+        provider_policy = load_provider_runtime_policy()
         provider_registry = build_default_provider_registry()
         normalized_claim_type = str(claim_type or "").strip().lower()
         verifier_key = self.verifier_key_for_claim_type(normalized_claim_type)
@@ -97,6 +100,18 @@ class VerifierRegistry:
             verifier_key=verifier_key,
         )
         candidates: list[ProviderCandidate] = []
+
+        if provider_policy.transition_config.provider_operating_mode == PROVIDER_OPERATING_MODE_MANUAL_ONLY:
+            manual = self.get("manual_review")
+            return [
+                ProviderCandidate(
+                    provider_key="manual_review",
+                    provider_label=getattr(manual, "verifier_label", "Manual Review"),
+                    verifier_key="manual_review",
+                    reason_codes=["MANUAL_REVIEW_ONLY", "MANUAL_REVIEW_FALLBACK"],
+                    fallback_reason="MANUAL_REVIEW_ONLY",
+                )
+            ]
 
         if verifier_key != "manual_review":
             ordered_capabilities = provider_registry.all_capabilities()

@@ -54,6 +54,17 @@ def build_verification_tasks(
             },
         )
         primary_candidate = provider_candidates[0]
+        preferred_provider_key = _preferred_provider_for_claim(
+            claim_type=claim_type,
+            verifier_key=primary_candidate.verifier_key,
+            assurance_required=assurance_required,
+        )
+        fallback_reason = primary_candidate.fallback_reason
+        if (
+            preferred_provider_key == "entra_verified_id"
+            and primary_candidate.provider_key == "local_mock"
+        ):
+            fallback_reason = "ENTRA_NOT_CONFIGURED"
         verifier = active_registry.get(primary_candidate.verifier_key)
 
         reason_codes = _dedupe(
@@ -69,7 +80,6 @@ def build_verification_tasks(
                 ],
             ]
         )
-        fallback_reason = primary_candidate.fallback_reason
         if fallback_reason:
             reason_codes.append(fallback_reason)
 
@@ -87,7 +97,7 @@ def build_verification_tasks(
             assurance_required=assurance_required,
             selected_provider=primary_candidate.provider_key,
             planned_provider_key=primary_candidate.provider_key,
-            preferred_provider_key=_preferred_provider(provider_candidates),
+            preferred_provider_key=preferred_provider_key,
             reason_codes=reason_codes,
             input_payload={
                 "credential_id": credential.credential_id,
@@ -101,9 +111,10 @@ def build_verification_tasks(
                 "required_fields": required_fields,
                 "assurance_required": assurance_required,
                 "provider_candidates": [candidate.provider_key for candidate in provider_candidates],
-                "preferred_provider_key": _preferred_provider(provider_candidates),
+                "preferred_provider_key": preferred_provider_key,
                 "planned_provider_key": primary_candidate.provider_key,
                 "planned_provider_label": primary_candidate.provider_label,
+                "planned_execution_mode": _planned_execution_mode(primary_candidate.provider_key),
                 "fallback_reason": fallback_reason,
             },
         )
@@ -156,11 +167,29 @@ def infer_assurance_required(claim_type: str, credential: ExtractedCredential) -
     return "LOW"
 
 
-def _preferred_provider(candidates) -> str | None:
-    for candidate in candidates:
-        if candidate.provider_key == "entra_verified_id":
-            return candidate.provider_key
-    return candidates[0].provider_key if candidates else None
+def _preferred_provider_for_claim(
+    *,
+    claim_type: str,
+    verifier_key: str,
+    assurance_required: str,
+) -> str | None:
+    if verifier_key in {"identity_db", "academic_registry", "certificate_registry"}:
+        return "entra_verified_id"
+    if str(assurance_required or "").upper() == "HIGH":
+        return "entra_verified_id"
+    if claim_type in {"identity", "academic_degree", "certificate"}:
+        return "entra_verified_id"
+    return None
+
+
+def _planned_execution_mode(provider_key: str) -> str:
+    if provider_key == "manual_review":
+        return "MANUAL_REVIEW"
+    if provider_key == "local_mock":
+        return "LOCAL_MOCK"
+    if provider_key == "entra_verified_id":
+        return "LIVE_PROVIDER"
+    return "PROVIDER"
 
 
 def _dedupe(values: list[str]) -> list[str]:

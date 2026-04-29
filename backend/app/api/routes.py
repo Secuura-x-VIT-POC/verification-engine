@@ -42,6 +42,7 @@ from ..verification_domain.contracts import (
     SessionVerificationPlan,
 )
 from ..agent_orchestration.graph import build_generalized_verification_graph
+from ..agent_orchestration.sanitization import sanitize_workspace_payload
 from ..agent_orchestration.schemas import WorkspacePayload
 from ..workflow.runtime import extract_document_payload
 from ..workflow.runtime import get_result_response, get_status_response, serialize_session
@@ -133,7 +134,7 @@ def _build_workspace_payload(session: SessionModel) -> WorkspacePayload:
     if not isinstance(workspace_payload, dict):
         raise HTTPException(status_code=500, detail="Workspace graph did not produce a workspace payload")
 
-    return WorkspacePayload.model_validate(workspace_payload)
+    return sanitize_workspace_payload(WorkspacePayload.model_validate(workspace_payload))
 
 
 def _review_status_for_decision(decision: ReviewDecisionValue) -> tuple[str, str]:

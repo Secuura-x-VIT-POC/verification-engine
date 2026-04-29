@@ -10,6 +10,7 @@ from ..workflow import repository
 from ..workflow.service import _build_completion_values
 from .graph import build_generalized_verification_graph
 from .policies import load_agent_runtime_policy
+from .sanitization import sanitize_workspace_payload
 from .schemas import (
     FinalVerdict,
     WorkspaceAction,
@@ -104,6 +105,7 @@ def run_generalized_verification_session(
                 ),
             }
         )
+        workspace = sanitize_workspace_payload(workspace)
 
         repository.complete_processing(
             db,
@@ -154,11 +156,11 @@ def get_workspace_payload_for_session(session: SessionModel) -> WorkspacePayload
     persisted = session.verification_execution_summary_payload
     if isinstance(persisted, dict):
         try:
-            return WorkspacePayload.model_validate(persisted)
+            return sanitize_workspace_payload(WorkspacePayload.model_validate(persisted))
         except Exception:
             LOGGER.warning("WORKSPACE_PAYLOAD_INVALID session_id=%s", session.id)
 
-    return _build_placeholder_workspace(session)
+    return sanitize_workspace_payload(_build_placeholder_workspace(session))
 
 
 def _build_placeholder_workspace(session: SessionModel) -> WorkspacePayload:

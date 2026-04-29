@@ -2,6 +2,8 @@ import os
 import sys
 import tempfile
 import unittest
+import copy
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -228,6 +230,83 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         self.assertIsInstance(payload["verifiers"], list)
         action_ids = {item["action_id"] for item in payload["actions"]}
         self.assertTrue({"can_rerun", "can_manual_override", "can_export_report", "can_close"}.issubset(action_ids))
+
+    def test_run_and_workspace_responses_are_sanitized(self):
+        session_id, file_path = self._create_uploaded_session("session-sanitized")
+        self.addCleanup(lambda: os.path.exists(file_path) and os.remove(file_path))
+        extraction_payload = copy.deepcopy(_runtime_extraction_payload())
+        extraction_payload["view"].update(
+            {
+                "raw_text": "RAW PDF OCR TEXT Alice Rao 22BCE1001",
+                "full_ocr_text": "FULL OCR TEXT Alice Rao",
+                "spatial_text_map": ["Alice Rao at x1"],
+                "evidence_lines": ["Candidate Name: Alice Rao"],
+                "field_candidates": [
+                    {
+                        "label": "Name",
+                        "raw_value": "Alice Rao",
+                        "normalized_value": "Alice Rao",
+                        "source_text": "Candidate Name: Alice Rao",
+                    }
+                ],
+                "generalized_analysis": {"agent_raw_output": "raw Gemini output"},
+            }
+        )
+        extraction_payload["agent_private_notes"] = "private planner notes"
+        extraction_payload["provider_raw_response"] = {"response_body": "raw provider response"}
+
+        with patch("backend.app.api.routes.start_verification", return_value="STARTED"), patch(
+            "backend.app.agent_orchestration.graph.extract_document_payload",
+            return_value=extraction_payload,
+        ), patch(
+            "backend.app.agent_orchestration.workspace._build_completion_values",
+            return_value={},
+        ):
+            run_response = self.client.post(f"/api/v1/verification-sessions/{session_id}/run")
+            workspace_response = self.client.get(f"/api/v1/verification-sessions/{session_id}/workspace")
+
+        self.assertEqual(run_response.status_code, 200)
+        self.assertEqual(workspace_response.status_code, 200)
+        for payload in (run_response.json(), workspace_response.json()):
+            serialized = json.dumps(payload, sort_keys=True)
+            for forbidden in {
+                "raw_text",
+                "full_ocr_text",
+                "source_text",
+                "spatial_text_map",
+                "evidence_lines",
+                "field_candidates",
+                "generalized_analysis",
+                "agent_private_notes",
+                "agent_raw_output",
+                "provider_raw_response",
+                "response_body",
+            }:
+                self.assertNotIn(f'"{forbidden}"', serialized)
+            for raw_value in {
+                "RAW PDF OCR TEXT",
+                "FULL OCR TEXT",
+                "Candidate Name: Alice Rao",
+                "raw Gemini output",
+                "raw provider response",
+                "Alice Rao",
+                "22BCE1001",
+            }:
+                self.assertNotIn(raw_value, serialized)
+
+            self.assertTrue(payload["fields"])
+            field = payload["fields"][0]
+            self.assertIn("label", field)
+            self.assertIn("extraction_confidence", field)
+            self.assertIn("bounding_boxes", field)
+            self.assertIn("status", field)
+            self.assertIn("reason_codes", field)
+            self.assertIn("audit_message", field)
+            for item in payload["fields"]:
+                if item.get("extracted_value"):
+                    self.assertIn("***", item["extracted_value"])
+                if item.get("normalized_value"):
+                    self.assertIn("***", item["normalized_value"])
 
     def test_fallback_mode_smoke_without_gemini_key(self):
         session_id, file_path = self._create_uploaded_session("session-fallback")

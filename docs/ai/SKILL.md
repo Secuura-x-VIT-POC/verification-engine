@@ -86,10 +86,8 @@ All of these are additive, nullable, and must remain backward compatible with ol
 
 - External agent providers must be disabled by default unless explicitly enabled through config.
 - The deterministic local provider is the default safe path for normal repo use and for tests.
-- Optional NVIDIA-hosted inference is available behind config only:
-  - `minimaxai/minimax-m2.5` for bounded agent reasoning
-  - `nvidia/gliner-pii` for bounded PII and field-candidate enrichment
-- NVIDIA output must never bypass deterministic verification or final trust.
+- Gemini is the active external LLM path when configured with `AGENT_PROVIDER=gemini` and `GEMINI_API_KEY`.
+- Gemini output must never bypass deterministic verification or final trust.
 - Any future real provider integration must sit behind `backend/app/agent_orchestration/providers/`.
 - No provider-specific business logic should leak into workflow, planning, execution, or frontend code.
 - No provider lock-in.
@@ -111,7 +109,7 @@ All of these are additive, nullable, and must remain backward compatible with ol
 - OCR remains local and privacy-preserving by default.
 - Prefer `native PDF text -> PaddleOCR -> Tesseract fallback`.
 - PaddleOCR is optional and must fail safely into Tesseract or native text when unavailable.
-- Do not send page images to NVIDIA or any third-party OCR service.
+- Do not send page images to Gemini or any third-party OCR service.
 - Preserve OCR geometry so grounding and overlay logic continue to work.
 
 ## Backend Conventions
@@ -122,7 +120,7 @@ All of these are additive, nullable, and must remain backward compatible with ol
 - Reuse `backend/app/agent_orchestration/contracts.py` for agent artifacts and bounded run statuses.
 - Treat `field_candidates` and persisted generalized analysis artifacts as the primary extraction contract for planning and audits.
 - Do not reactivate the older five-field extraction compatibility path as a normal planner or audit source.
-- If NVIDIA GLiNER enrichment is enabled, use it only to enrich labels, categories, and PII/entity hints.
+- Use Gemini/LangGraph only to enrich document understanding, grouping, routing assistance, and explanation.
 - Deterministic extracted text and geometry remain the source-of-record for actual values and coordinates.
 - Prefer service boundaries over scattered orchestration logic.
 - Keep deterministic fallbacks available even when agent enrichment exists.

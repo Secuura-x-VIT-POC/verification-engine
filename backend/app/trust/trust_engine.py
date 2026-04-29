@@ -192,28 +192,32 @@ def build_final_verdict(
         )
 
 
-def evaluate_trust(trust_input: dict, connector_result: dict, policy: dict) -> dict:
+def evaluate_trust(trust_input: dict, connector_result: dict | list[dict] | None, policy: dict) -> dict:
     """
     Evaluates the overall trust for a document based on field extractions, verifier results, and policy.
     """
-    if connector_result:
+    connector_results = _normalize_connector_results(connector_result)
+    primary_connector_result = connector_results[0] if connector_results else None
+    if primary_connector_result:
         verifier_result = VerifierResult(
             task_id="dummy",
             field_id="dummy",
-            connector_id=connector_result["connector_id"],
-            status=connector_result["status"],
+            connector_id=primary_connector_result["connector_id"],
+            status=primary_connector_result["status"],
             verification_confidence=1.0,
-            reason_codes=connector_result["reason_codes"],
-            high_assurance=connector_result.get("assurance_class") == "HIGH",
+            reason_codes=list(primary_connector_result.get("reason_codes") or []),
+            high_assurance=primary_connector_result.get("assurance_class") == "HIGH",
         )
     else:
         verifier_result = None
     
     field_decisions = []
-    
-    for field_id, value in trust_input["fields"].items():
-        confidence = trust_input["confidence"].get(field_id, 0.0)
-        mandatory = field_id in policy.get("required_fields", [])
+    fields = _normalize_trust_fields(trust_input, policy)
+
+    for field_id, field in fields.items():
+        value = field["value"]
+        confidence = field["confidence"]
+        mandatory = field["mandatory"]
         
         extracted_value = value
         normalized_value = value
@@ -230,3 +234,45 @@ def evaluate_trust(trust_input: dict, connector_result: dict, policy: dict) -> d
     
     final_verdict = build_final_verdict(field_decisions, [verifier_result] if verifier_result else [], False, [])
     return final_verdict.model_dump()
+
+
+def _normalize_connector_results(connector_result: dict | list[dict] | None) -> list[dict]:
+    if isinstance(connector_result, dict):
+        return [connector_result]
+    if isinstance(connector_result, list):
+        return [item for item in connector_result if isinstance(item, dict)]
+    return []
+
+
+def _normalize_trust_fields(trust_input: dict, policy: dict) -> dict[str, dict[str, Any]]:
+    required_fields = {str(item) for item in policy.get("required_fields", [])}
+    raw_fields = trust_input.get("fields") or {}
+    confidence_map = trust_input.get("confidence") or {}
+    fields: dict[str, dict[str, Any]] = {}
+
+    if isinstance(raw_fields, dict):
+        for field_id, value in raw_fields.items():
+            key = str(field_id)
+            fields[key] = {
+                "value": value,
+                "confidence": float(confidence_map.get(key, 0.0) or 0.0),
+                "mandatory": key in required_fields,
+            }
+    elif isinstance(raw_fields, list):
+        for item in raw_fields:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("name") or item.get("field_id") or "")
+            if not key:
+                continue
+            value = item.get("value")
+            confidence = item.get("confidence")
+            fields[key] = {
+                "value": value or "",
+                "confidence": float(confidence if confidence not in (None, "") else 0.0),
+                "mandatory": bool(item.get("is_mandatory")) or key in required_fields,
+            }
+
+    for field_id in required_fields:
+        fields.setdefault(field_id, {"value": "", "confidence": 0.0, "mandatory": True})
+    return fields

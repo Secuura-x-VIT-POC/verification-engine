@@ -447,9 +447,9 @@ export const checks = [
         {
           session_id: "session-1",
           agent_run_status: "READY",
-          provider_used: "nvidia",
-          reasoning_model_used: "minimaxai/minimax-m2.5",
-          pii_model_used: "nvidia/gliner-pii",
+          provider_used: "gemini",
+          reasoning_model_used: "gemini-2.5-flash",
+          pii_model_used: null,
           pii_enrichment_used: true,
           fallback_used: false,
           warnings: [],
@@ -516,9 +516,9 @@ export const checks = [
       assert.equal(viewModel.analysisRows[0].agentRecommendedVerifierLabel, "Address Check");
       assert.equal(viewModel.auditDetails[0].agentAssisted, true);
       assert.equal(viewModel.agentStatusLabel, "Ready");
-      assert.equal(viewModel.agentUnderstandingSummary.providerUsed, "nvidia");
-      assert.equal(viewModel.agentUnderstandingSummary.reasoningModelUsed, "minimaxai/minimax-m2.5");
-      assert.equal(viewModel.agentUnderstandingSummary.piiModelUsed, "nvidia/gliner-pii");
+      assert.equal(viewModel.agentUnderstandingSummary.providerUsed, "gemini");
+      assert.equal(viewModel.agentUnderstandingSummary.reasoningModelUsed, "gemini-2.5-flash");
+      assert.equal(viewModel.agentUnderstandingSummary.piiModelUsed, null);
       assert.equal(viewModel.agentUnderstandingSummary.piiEnrichmentUsed, true);
     },
   },

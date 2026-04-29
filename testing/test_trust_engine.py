@@ -50,8 +50,37 @@ class TrustEngineTests(unittest.TestCase):
         )
 
         self.assertEqual(result["outcome"], "GREEN")
-        self.assertEqual(result["reason_codes"], ["CONNECTOR_VERIFIED"])
+        self.assertEqual(result["reason_codes"], [])
         self.assertEqual(result["connector_ids"], ["vit_registry"])
+
+    def test_list_shaped_connector_response_preserves_green_path(self):
+        result = evaluate_trust(
+            self.base_extraction,
+            [
+                {
+                    "connector_id": "vit_registry",
+                    "status": "VERIFIED",
+                    "reason_codes": ["REGISTRY_MATCH"],
+                    "assurance_class": "HIGH",
+                }
+            ],
+            self.base_policy,
+        )
+
+        self.assertEqual(result["outcome"], "GREEN")
+        self.assertEqual(result["reason_codes"], [])
+        self.assertEqual(result["connector_ids"], ["vit_registry"])
+
+    def test_missing_verifier_requires_review(self):
+        policy = {
+            **self.base_policy,
+            "require_connector": False,
+        }
+        result = evaluate_trust(self.base_extraction, None, policy)
+
+        self.assertEqual(result["outcome"], "AMBER")
+        self.assertEqual(result["reason_codes"], ["LOW_CONFIDENCE_REVIEW_REQUIRED"])
+        self.assertEqual(result["connector_ids"], [])
 
     def test_mismatch_returns_red(self):
         result = evaluate_trust(
@@ -66,7 +95,7 @@ class TrustEngineTests(unittest.TestCase):
         )
 
         self.assertEqual(result["outcome"], "RED")
-        self.assertEqual(result["reason_codes"], ["CONNECTOR_MISMATCH"])
+        self.assertEqual(result["reason_codes"], ["NAME_MISMATCH"])
 
     def test_missing_field_returns_red(self):
         extraction = {
@@ -90,7 +119,7 @@ class TrustEngineTests(unittest.TestCase):
         )
 
         self.assertEqual(result["outcome"], "RED")
-        self.assertEqual(result["reason_codes"], ["MISSING_REQUIRED_FIELD"])
+        self.assertEqual(result["reason_codes"], ["MISSING_MANDATORY_FIELD"])
 
     def test_high_assurance_timeout_returns_red(self):
         result = evaluate_trust(
@@ -105,7 +134,7 @@ class TrustEngineTests(unittest.TestCase):
         )
 
         self.assertEqual(result["outcome"], "RED")
-        self.assertEqual(result["reason_codes"], ["CONNECTOR_TIMEOUT_REQUIRED"])
+        self.assertEqual(result["reason_codes"], ["CONNECTOR_TIMEOUT"])
 
     def test_optional_timeout_returns_amber(self):
         policy = {
@@ -124,7 +153,7 @@ class TrustEngineTests(unittest.TestCase):
         )
 
         self.assertEqual(result["outcome"], "AMBER")
-        self.assertEqual(result["reason_codes"], ["NOT_VERIFIED"])
+        self.assertEqual(result["reason_codes"], ["CONNECTOR_TIMEOUT"])
 
 
 if __name__ == "__main__":

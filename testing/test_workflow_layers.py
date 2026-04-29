@@ -240,7 +240,7 @@ class WorkflowServiceTests(unittest.TestCase):
         extraction_data = {
             "is_unsafe": False,
             "critical_tamper_signal": False,
-            "fields": [{"name": "name", "is_mandatory": True, "is_grounded": True}],
+            "fields": [{"name": "name", "value": "Kanak", "confidence": 0.98, "is_mandatory": True, "is_grounded": True}],
         }
         connector_responses = [
             {
@@ -284,7 +284,7 @@ class WorkflowServiceTests(unittest.TestCase):
         self.assertEqual(complete_args[0], conn)
         self.assertEqual(complete_args[1], "session-1")
         self.assertEqual(complete_args[2], "GREEN")
-        self.assertEqual(set(complete_args[3]), {"CONNECTOR_VERIFIED"})
+        self.assertEqual(complete_args[3], [])
         self.assertEqual(complete_args[4], ["vit_registry"])
 
     def test_run_worker_pipeline_handles_failure_when_a_stage_fails(self):
@@ -603,10 +603,10 @@ class WorkflowRuntimeFailureTests(unittest.TestCase):
                 "is_unsafe": False,
                 "critical_tamper_signal": False,
                 "fields": [
-                    {"name": "name", "is_mandatory": True, "is_grounded": True, "value": "Kanak Sharma"},
-                    {"name": "institution", "is_mandatory": True, "is_grounded": True, "value": "VIT Vellore"},
-                    {"name": "credential", "is_mandatory": True, "is_grounded": True, "value": "BTech"},
-                    {"name": "id", "is_mandatory": True, "is_grounded": True, "value": "22BCE1234"},
+                    {"name": "name", "is_mandatory": True, "is_grounded": True, "value": "Kanak Sharma", "confidence": 0.98},
+                    {"name": "institution", "is_mandatory": True, "is_grounded": True, "value": "VIT Vellore", "confidence": 0.97},
+                    {"name": "credential", "is_mandatory": True, "is_grounded": True, "value": "BTech", "confidence": 0.96},
+                    {"name": "id", "is_mandatory": True, "is_grounded": True, "value": "22BCE1234", "confidence": 0.95},
                 ],
             },
             "connector_input": {

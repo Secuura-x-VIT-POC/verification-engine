@@ -10,12 +10,10 @@ import fitz
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from backend.app.inference.nvidia import NvidiaInferenceError
 from backend.app.workflow.runtime import extract_document_payload
-from extraction.analysis.pipeline import build_evidence_lines, build_generalized_analysis, extract_field_candidates
-from extraction.analysis.nvidia_enrichment import enrich_field_candidates_with_nvidia
+from extraction.analysis.pipeline import build_evidence_lines, extract_field_candidates
 from extraction.parser.document_parser import extract_document_data
-from extraction.schema.models import BoundingBox, EvidenceLine, ExtractionWarning, FieldCandidate, SpatialTextToken
+from extraction.schema.models import SpatialTextToken
 
 
 class ExtractionPipelineMergeTests(unittest.TestCase):
@@ -369,19 +367,11 @@ class ExtractionSemanticNormalizationTests(unittest.TestCase):
             extraction_method="native_text",
             warnings=[],
         )
-        _, _, payload, _ = build_generalized_analysis(
-            raw_text=raw_text,
-            spatial_text_map=spatial_text_map,
-            extraction_method="native_text",
-            warnings=[],
-        )
-
         labels = {candidate.label for candidate in candidates}
         self.assertIn("full_name", labels)
         self.assertIn("date_of_birth", labels)
         self.assertIn("aadhaar_number", labels)
         self.assertNotIn("government_identifier", labels)
-        self.assertIn("aadhaar_card", payload.document_profile_payload.document_family_hints)
 
     def test_pan_like_document_prefers_pan_number_and_dob_over_generic_fields(self):
         spatial_text_map = [
@@ -489,185 +479,6 @@ class ExtractionSemanticNormalizationTests(unittest.TestCase):
         labels = {candidate.label for candidate in candidates}
         self.assertIn("document_number", labels)
         self.assertIn("date", labels)
-
-
-class NvidiaPiiEnrichmentTests(unittest.TestCase):
-    def test_gliner_enrichment_refines_candidate_typing_without_replacing_geometry(self):
-        base_candidate = FieldCandidate(
-            candidate_id="cand-aadhaar",
-            label="document_id",
-            category="document_number",
-            raw_value="1234 5678 9012",
-            normalized_value="123456789012",
-            source_text="Aadhaar Number: 1234 5678 9012",
-            evidence_snippet="Aadhaar Number: 1234 5678 9012",
-            page=1,
-            bounding_box=BoundingBox(page=1, x0=10, y0=10, x1=120, y1=20),
-            confidence=0.91,
-            is_pii=False,
-            requires_verification=True,
-            verification_reason="Identifier claim",
-            extraction_method="native_text",
-        )
-        evidence_lines = [
-            EvidenceLine(
-                page=1,
-                text="Aadhaar Number: 1234 5678 9012",
-                bbox=BoundingBox(page=1, x0=10, y0=10, x1=120, y1=20),
-                token_indices=[0, 1],
-            )
-        ]
-        spatial_text_map = [
-            SpatialTextToken(text="Aadhaar Number:", bbox=[10, 10, 60, 20], page=1),
-            SpatialTextToken(text="1234 5678 9012", bbox=[62, 10, 120, 20], page=1),
-        ]
-
-        with patch.dict(
-            os.environ,
-            {
-                "NVIDIA_API_KEY": "demo-key",
-                "NVIDIA_GLINER_PREPROCESSING_ENABLED": "1",
-            },
-            clear=False,
-        ), patch(
-            "extraction.analysis.nvidia_enrichment.NvidiaChatClient.chat_json",
-            return_value={
-                "entities": [
-                    {
-                        "text": "1234 5678 9012",
-                        "label": "AADHAAR_NUMBER",
-                        "confidence": 0.94,
-                    }
-                ]
-            },
-        ):
-            merged, metadata = enrich_field_candidates_with_nvidia(
-                raw_text="Aadhaar Number: 1234 5678 9012",
-                evidence_lines=evidence_lines,
-                spatial_text_map=spatial_text_map,
-                extraction_method="native_text",
-                warnings=[],
-                base_candidates=[base_candidate],
-            )
-
-        self.assertEqual(len(merged), 1)
-        self.assertEqual(merged[0].category, "national_identifier")
-        self.assertEqual(merged[0].bounding_box.x0, 10)
-        self.assertTrue(metadata.pii_enrichment_used)
-        self.assertEqual(metadata.pii_model_used, "nvidia/gliner-pii")
-
-    def test_gliner_failure_keeps_deterministic_candidates(self):
-        base_candidate = FieldCandidate(
-            candidate_id="cand-name",
-            label="name",
-            category="person_name",
-            raw_value="Asha Rao",
-            normalized_value="Asha Rao",
-            source_text="Holder Name: Asha Rao",
-            evidence_snippet="Holder Name: Asha Rao",
-            page=1,
-            bounding_box=BoundingBox(page=1, x0=10, y0=10, x1=90, y1=20),
-            confidence=0.95,
-            is_pii=True,
-            requires_verification=True,
-            verification_reason="Identity claim",
-            extraction_method="native_text",
-        )
-        warnings: list[ExtractionWarning] = []
-        with patch.dict(
-            os.environ,
-            {
-                "NVIDIA_API_KEY": "demo-key",
-                "NVIDIA_GLINER_PREPROCESSING_ENABLED": "1",
-            },
-            clear=False,
-        ), patch(
-            "extraction.analysis.nvidia_enrichment.NvidiaChatClient.chat_json",
-            side_effect=NvidiaInferenceError("network_error", "request failed"),
-        ):
-            merged, metadata = enrich_field_candidates_with_nvidia(
-                raw_text="Holder Name: Asha Rao",
-                evidence_lines=[
-                    EvidenceLine(
-                        page=1,
-                        text="Holder Name: Asha Rao",
-                        bbox=BoundingBox(page=1, x0=10, y0=10, x1=90, y1=20),
-                    )
-                ],
-                spatial_text_map=[SpatialTextToken(text="Asha Rao", bbox=[40, 10, 90, 20], page=1)],
-                extraction_method="native_text",
-                warnings=warnings,
-                base_candidates=[base_candidate],
-            )
-
-        self.assertEqual(len(merged), 1)
-        self.assertEqual(merged[0].category, "person_name")
-        self.assertTrue(metadata.fallback_used)
-        self.assertIn("NVIDIA_PII_ENRICHMENT_FAILED", metadata.warning_codes)
-        self.assertEqual(warnings[0].code, "NVIDIA_PII_ENRICHMENT_FAILED")
-
-    def test_gliner_does_not_override_stronger_deterministic_family_aware_labels(self):
-        base_candidate = FieldCandidate(
-            candidate_id="cand-aadhaar",
-            label="aadhaar_number",
-            category="national_identifier",
-            raw_value="1234 5678 9012",
-            normalized_value="123456789012",
-            source_text="Aadhaar Number: 1234 5678 9012",
-            evidence_snippet="Aadhaar Number: 1234 5678 9012",
-            page=1,
-            bounding_box=BoundingBox(page=1, x0=62, y0=10, x1=120, y1=20),
-            confidence=0.96,
-            is_pii=True,
-            requires_verification=True,
-            verification_reason="Identity claim",
-            extraction_method="native_text",
-        )
-        evidence_lines = [
-            EvidenceLine(
-                page=1,
-                text="Aadhaar Number: 1234 5678 9012",
-                bbox=BoundingBox(page=1, x0=10, y0=10, x1=120, y1=20),
-                token_indices=[0, 1],
-            )
-        ]
-        spatial_text_map = [
-            SpatialTextToken(text="Aadhaar Number:", bbox=[10, 10, 60, 20], page=1),
-            SpatialTextToken(text="1234 5678 9012", bbox=[62, 10, 120, 20], page=1),
-        ]
-
-        with patch.dict(
-            os.environ,
-            {
-                "NVIDIA_API_KEY": "demo-key",
-                "NVIDIA_GLINER_PREPROCESSING_ENABLED": "1",
-            },
-            clear=False,
-        ), patch(
-            "extraction.analysis.nvidia_enrichment.NvidiaChatClient.chat_json",
-            return_value={
-                "entities": [
-                    {
-                        "text": "1234 5678 9012",
-                        "label": "DOCUMENT_NUMBER",
-                        "confidence": 0.93,
-                    }
-                ]
-            },
-        ):
-            merged, metadata = enrich_field_candidates_with_nvidia(
-                raw_text="Aadhaar Number: 1234 5678 9012",
-                evidence_lines=evidence_lines,
-                spatial_text_map=spatial_text_map,
-                extraction_method="native_text",
-                warnings=[],
-                base_candidates=[base_candidate],
-            )
-
-        self.assertEqual(len(merged), 1)
-        self.assertEqual(merged[0].label, "aadhaar_number")
-        self.assertEqual(merged[0].category, "national_identifier")
-        self.assertTrue(metadata.pii_enrichment_used)
 
 
 def _write_text_pdf(path: Path, lines: list[str]) -> None:

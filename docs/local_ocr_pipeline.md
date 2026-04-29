@@ -10,7 +10,7 @@ Precedence is:
 2. PaddleOCR for scanned or image-heavy pages
 3. Tesseract as the bounded local fallback
 
-Page images are not sent to NVIDIA or any third-party OCR service.
+Page images are not sent to Gemini or any third-party OCR service.
 
 ## Backend Modes
 

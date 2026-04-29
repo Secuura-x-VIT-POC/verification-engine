@@ -81,7 +81,7 @@ Default containerized behavior:
 - OCR precedence is `native PDF text -> PaddleOCR -> Tesseract fallback`.
 - Local mock verification is enabled by default.
 - Microsoft Entra Verified ID remains the preferred trust rail architecturally, but live outbound execution is disabled by default.
-- NVIDIA reasoning and GLiNER enrichment remain optional and off unless configured.
+- Gemini/LangGraph enrichment is the active LLM path when `GEMINI_API_KEY` is configured; deterministic fallback remains available without a key.
 
 Default local URLs:
 

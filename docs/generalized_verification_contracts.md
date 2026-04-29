@@ -14,12 +14,7 @@ Microsoft Entra Verified ID is the primary VC and identity trust rail for Entra-
 
 The LangGraph layer exists to improve document understanding, credential grouping, route suggestions, and reviewer-facing explanations. It does not decide final trust, bypass verifier execution, or replace the deterministic trust engine.
 
-Optional NVIDIA-hosted inference now sits behind that bounded architecture:
-
-- `minimaxai/minimax-m2.5` for agent reasoning
-- `nvidia/gliner-pii` for PII and field-candidate enrichment
-
-These integrations are config-driven, privacy-minimized, and must fall back to deterministic local behavior if disabled, unconfigured, or unavailable.
+Gemini is the active external LLM path for that bounded LangGraph layer. It is config-driven, privacy-minimized, and must fall back to deterministic local behavior if disabled, unconfigured, or unavailable.
 
 ## Persisted Session Artifact Families
 
@@ -86,7 +81,7 @@ Semantic extraction precedence is now explicit as well:
 - deterministic document-family-aware rules lead semantic label assignment
 - Aadhaar, PAN, report-card, marksheet, transcript, and generic identity cues narrow fields before generic labels are emitted
 - generic outputs such as `date`, `document_number`, and `government_identifier` are last-resort labels when local context cannot safely narrow them further
-- NVIDIA GLiNER may refine generic candidates, but it does not override stronger deterministic family-aware semantics
+- Gemini/LangGraph enrichment may assist understanding and grouping, but it does not override stronger deterministic family-aware semantics
 
 ## Local OCR Boundary
 
@@ -95,7 +90,7 @@ OCR remains local and privacy-preserving by default.
 - native PDF text extraction runs first
 - PaddleOCR is the preferred local OCR backend for scanned or image-heavy pages when it is installed and enabled
 - Tesseract remains a bounded local fallback of last resort
-- NVIDIA models are not used for OCR and do not receive page images
+- Gemini is not used for OCR and does not receive page images
 
 The extraction payload may now include `ocr_metadata` with:
 
@@ -253,22 +248,21 @@ Execution truth is now explicit:
 - local rule-only fallback after a provider failure is labeled as fallback, not as successful provider execution
 - local mock, demo, supplementary, and live provider outcomes are distinct in result metadata and audit evidence
 
-## NVIDIA Inference Boundary
+## Gemini Orchestration Boundary
 
-The shared `backend/app/inference/` module is the optional outbound model boundary.
+The `backend/app/agent_orchestration/` module is the optional outbound model boundary.
 
-- `NVIDIA_API_KEY`
-- `NVIDIA_BASE_URL` with default `https://integrate.api.nvidia.com/v1`
-- `NVIDIA_REASONING_MODEL` with default `minimaxai/minimax-m2.5`
-- `NVIDIA_PII_MODEL` with default `nvidia/gliner-pii`
-- `AGENT_PROVIDER=nvidia`
-- `AGENT_EXTERNAL_PROVIDER_ENABLED=1`
+- `AGENT_PROVIDER=gemini`
+- `AGENT_ORCHESTRATION_ENABLED`
+- `GEMINI_API_KEY`
+- `GEMINI_MODEL`
+- `GEMINI_DEMO_RAW_TEXT_ENABLED`
+- `GEMINI_MAX_INPUT_CHARS`
 
 Bounded precedence remains:
 
 - deterministic extracted text and geometry stay source-of-record
-- GLiNER may enrich label and category typing for field candidates
-- MiniMax may improve document understanding, grouping, routing suggestions, and explanation text
+- Gemini may improve document understanding, grouping, routing suggestions, and explanation text
 - deterministic verifier execution decides field-level verification
 - deterministic trust remains the final document-level authority
 - `MANUAL_REVIEW`
@@ -497,7 +491,6 @@ Current provider surface:
 Current implementations:
 
 - `DeterministicProvider`: default, local, test-safe, and enabled by default
-- `NvidiaProvider`: stub only, disabled by default, selected only through config, and falls back to deterministic behavior when unavailable
 
 Verifier providers live under `backend/app/verifier_providers/`.
 

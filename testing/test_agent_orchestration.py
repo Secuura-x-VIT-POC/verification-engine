@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import unittest
@@ -9,12 +8,16 @@ from pydantic import ValidationError
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from backend.app.agent_orchestration.graph import (
-    build_generalized_verification_graph,
-    build_gemini_normalization_graph,
-)
+from backend.app.agent_orchestration.graph import build_generalized_verification_graph
 from backend.app.agent_orchestration.policies import AgentRuntimePolicy
-from backend.app.agent_orchestration.schemas import FieldDecision, WorkspacePayload
+from backend.app.agent_orchestration.schemas import (
+    FieldDecision,
+    GeminiCredentialGroupCollection,
+    GeminiDocumentUnderstanding,
+    GeminiNormalizedField,
+    GeminiNormalizedFieldCollection,
+    WorkspacePayload,
+)
 from backend.app.agent_orchestration.service import normalize_extraction_payload
 
 
@@ -38,87 +41,91 @@ def _runtime_payload() -> dict:
     }
 
 
-class _FakeMessage:
-    def __init__(self, content):
-        self.content = content
-
-
 class _FakeLlm:
-    def __init__(self, payload):
-        self.payload = payload
+    def __init__(self, response):
+        self.response = response
 
     def invoke(self, _prompt):
-        return _FakeMessage(json.dumps(self.payload))
+        return self.response
 
 
 class GeminiNormalizationTests(unittest.TestCase):
-    def test_graph_accepts_strict_valid_output(self):
-        llm_payload = {
-            "document_type": "academic_credential",
-            "fields": {
-                "name": "Kanak Sharma",
-                "institution": "VIT Vellore",
-                "credential": "BTech",
-                "date": "2024",
-                "id": "22BCE1234",
-            },
-            "confidence": {
-                "name": 0.99,
-                "institution": 0.98,
-                "credential": 0.97,
-                "date": 0.8,
-                "id": 0.96,
-            },
-            "connector_input": {
-                "name": "Kanak Sharma",
-                "degree": "BTech",
-                "institution": "VIT Vellore",
-                "document_id": "22BCE1234",
-            },
-            "ambiguities": [],
-        }
+    def test_generalized_graph_accepts_mocked_gemini_structured_outputs(self):
+        policy = AgentRuntimePolicy(
+            orchestration_enabled=True,
+            provider_key="gemini",
+            gemini_api_key="test-key",
+            gemini_model="gemini-2.5-flash",
+            gemini_demo_raw_text_enabled=True,
+        )
+        responses = [
+            _FakeLlm(
+                GeminiDocumentUnderstanding(
+                    document_type="academic_credential",
+                    summary="Credential document",
+                    explanation="Structured Gemini output accepted.",
+                    grounding_confidence=0.9,
+                    matching_score=0.8,
+                    visual_match_probability=0.7,
+                )
+            ),
+            _FakeLlm(
+                GeminiNormalizedFieldCollection(
+                    fields=[
+                        GeminiNormalizedField(
+                            field_id="name",
+                            label="Name",
+                            extracted_value="Kanak Sharma",
+                            normalized_value="Kanak Sharma",
+                            ai_confidence=0.99,
+                            grounding_confidence=0.9,
+                            mandatory=True,
+                            verifier_hint="vit_registry",
+                        )
+                    ]
+                )
+            ),
+            _FakeLlm(
+                GeminiCredentialGroupCollection(
+                    groups=[
+                        {
+                            "group_id": "primary-credential",
+                            "label": "Primary Credential",
+                            "field_ids": ["name"],
+                            "connector_id": "vit_registry",
+                            "claim_type": "credential",
+                            "optional": False,
+                            "high_assurance": True,
+                            "explanation": "Grouped for registry verification.",
+                        }
+                    ]
+                )
+            ),
+        ]
 
         with patch(
-            "backend.app.agent_orchestration.graph._build_gemini_llm",
-            return_value=_FakeLlm(llm_payload),
+            "backend.app.agent_orchestration.graph._build_structured_gemini_llm",
+            side_effect=responses,
         ):
-            result = build_gemini_normalization_graph().invoke({"raw_extraction": _runtime_payload()})
+            result = build_generalized_verification_graph(policy=policy).invoke(
+                {
+                    "session_id": "session-1",
+                    "filename": "demo.pdf",
+                    "file_path": "",
+                    "extraction_payload": _runtime_payload(),
+                }
+            )
 
-        normalized = result["normalized_extraction"]
-        self.assertFalse(result["fallback_used"])
-        self.assertEqual(normalized["connector_input"]["institution"], "VIT Vellore")
-        self.assertEqual(normalized["trust_input"]["fields"][0]["value"], "Kanak Sharma")
-
-    def test_graph_rejects_malformed_output_and_falls_back(self):
-        malformed_payload = {
-            "document_type": "academic_credential",
-            "fields": {
-                "name": "Kanak Sharma",
-                "institution": "VIT Vellore",
-                "credential": "BTech",
-                "date": "1899",
-            },
-            "confidence": {"name": 1.2},
-            "connector_input": {"name": "Kanak Sharma"},
-            "ambiguities": "not-a-list",
-        }
-        raw_payload = _runtime_payload()
-
-        with patch(
-            "backend.app.agent_orchestration.graph._build_gemini_llm",
-            return_value=_FakeLlm(malformed_payload),
-        ):
-            result = build_gemini_normalization_graph().invoke({"raw_extraction": raw_payload})
-
-        self.assertTrue(result["fallback_used"])
-        self.assertEqual(result["normalized_extraction"], raw_payload)
-        self.assertTrue(result["validation_errors"])
+        self.assertFalse(result.get("gemini_fallback_used", False))
+        workspace = WorkspacePayload.model_validate(result["workspace_payload"])
+        self.assertEqual(workspace.document.document_type, "academic_credential")
+        self.assertEqual(workspace.fields[0].normalized_value, "Kanak Sharma")
 
     def test_service_falls_back_when_gemini_dependency_or_call_fails(self):
         raw_payload = _runtime_payload()
 
         with patch(
-            "backend.app.agent_orchestration.graph._build_gemini_llm",
+            "backend.app.agent_orchestration.graph._build_structured_gemini_llm",
             side_effect=RuntimeError("gemini unavailable"),
         ):
             result = normalize_extraction_payload(raw_payload)

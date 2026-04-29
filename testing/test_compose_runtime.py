@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from backend.app.inference.nvidia import load_nvidia_inference_config
 from backend.app.main import app as main_app
 from backend.app.verifier_providers.policies import load_provider_runtime_policy
 from backend.app.verifier_providers.providers.local_mock import (
@@ -68,22 +67,6 @@ class ComposeEnvCompatibilityTests(unittest.TestCase):
             resolved = _resolve_local_verification_fixture_path()
 
         self.assertEqual(resolved, overridden_path)
-
-    def test_nvidia_config_accepts_agent_aliases(self):
-        with patch.dict(
-            os.environ,
-            {
-                "AGENT_REQUEST_TIMEOUT_MS": "2500",
-                "AGENT_ENABLE_REASONING": "0",
-                "AGENT_ENABLE_PII_ENRICHMENT": "0",
-            },
-            clear=True,
-        ):
-            config = load_nvidia_inference_config()
-
-        self.assertEqual(config.timeout_ms, 2500)
-        self.assertFalse(config.reasoning_enabled)
-        self.assertFalse(config.pii_enrichment_enabled)
 
 
 if __name__ == "__main__":

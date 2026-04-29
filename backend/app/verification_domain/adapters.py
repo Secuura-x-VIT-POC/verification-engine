@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
-
+from backend.app.workflow.task_planner import build_verification_tasks
 from ..verifier_execution.contracts import CredentialVerificationBundleCollection
 from .contracts import (
     AUDIT_STATUS_MANUAL_REVIEW,
@@ -49,19 +49,15 @@ def build_session_verification_plan(
     router: VerifierRouter | None = None,
     credentials: SessionCredentialCollection | None = None,
 ) -> SessionVerificationPlan:
-    active_router = router or RuleBasedVerifierRouter()
+
     credential_collection = credentials or build_session_credentials(session_id, extraction_payload)
-    route_decisions = [active_router.route(credential) for credential in credential_collection.credentials]
-    route_map = {decision.credential_id: decision for decision in route_decisions}
-    tasks = [
-        _build_task(credential, route_map[credential.credential_id])
-        for credential in credential_collection.credentials
-        if credential.requires_verification
-    ]
+
+    tasks = build_verification_tasks(credential_collection.credentials)
+
     return SessionVerificationPlan(
         session_id=session_id,
         document_type=credential_collection.document_type,
-        route_decisions=route_decisions,
+        route_decisions=[],  # compatibility
         tasks=tasks,
     )
 

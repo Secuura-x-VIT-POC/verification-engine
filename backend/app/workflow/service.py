@@ -145,7 +145,7 @@ def run_worker_pipeline(
     )
     extraction = extraction_stage or _default_extraction_stage
     grounding = grounding_stage or _default_grounding_stage
-    connector_eval = connector_stage or _default_connector_stage
+    connector_eval = None
     load_policy = policy_loader or _default_policy_loader
     failure_type = "unknown_processing_error"
 
@@ -165,17 +165,9 @@ def run_worker_pipeline(
             failure_type = "extraction_crash"
             grounded_data = grounding(conn, session_id, worker_id, extraction_data)
 
-            update_worker_phase(conn, session_id, worker_id, WORKER_PHASE_CONNECTOR_EVAL)
-            policy = load_policy(conn, session_id, worker_id, grounded_data)
             failure_type = "transient_connector_error"
-            connector_responses = _invoke_connector_stage(
-                connector_eval,
-                conn,
-                session_id,
-                worker_id,
-                grounded_data,
-                policy,
-            )
+            connector_responses = []
+            policy = {}
 
             update_worker_phase(conn, session_id, worker_id, WORKER_PHASE_TRUST_SCORING)
             failure_type = "unknown_processing_error"

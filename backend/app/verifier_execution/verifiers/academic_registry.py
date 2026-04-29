@@ -16,15 +16,7 @@ class AcademicRegistryVerifier(ConnectorAwareVerifier):
         context: VerificationExecutionContext,
     ):
         institution = resolve_document_institution(context.extraction_payload).lower()
-        if "vit" in institution:
-            return self.build_unverified_result(
-                task,
-                credential,
-                explanation="This issuer is routed to the academic registry, but no registry match was available for this credential.",
-                reason_codes=["ACADEMIC_REGISTRY_NO_MATCH"],
-                extra_summary={"issuer_hint": institution or "unknown"},
-            )
-
+        
         if institution:
             return self.build_manual_review_result(
                 task,

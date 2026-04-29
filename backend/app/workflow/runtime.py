@@ -12,13 +12,10 @@ from sqlalchemy.orm import Session as DbSession
 
 from ..audit.service import get_latest_audit_receipt
 from ..cleanup.controller import complete_cleanup, fail_cleanup, start_cleanup
-from ..connectors.broker import call_connector
 from ..sessions.constants import SessionState, VERIFIED_STATES
 from ..sessions.models import Session as SessionModel
 from . import repository
 from .failures import WorkflowProcessingError
-from .service import call_connector_with_retry
-
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
@@ -445,45 +442,18 @@ def _coerce_int(value: Any) -> int | None:
 
 
 def build_connector_responses(extraction_payload: dict[str, Any], policy: dict | None = None) -> list[dict[str, Any]]:
-    connector_input = extraction_payload["connector_input"]
-    institution = (connector_input.get("institution") or "").lower()
-    name = connector_input.get("name")
-    degree = connector_input.get("degree")
-    if "vit" not in institution or not name or not degree:
-        return []
-
-    connector_policy = dict((policy or {}).get("connector_policies", {}).get("vit_registry", {}))
-    connector_policy.setdefault("connector_id", "vit_registry")
-    response = call_connector_with_retry(
-        lambda payload: call_connector(payload, "vit_registry"),
-        {
-            "name": name,
-            "degree": degree,
-            "status": "verified",
-        },
-        connector_policy,
-    )
-    return [response]
+    """
+    DISABLED: Old connector-based routing removed.
+    Now handled via task planner + verifier registry.
+    """
+    return []
 
 
 def build_policy(extraction_payload: dict[str, Any]) -> dict[str, Any]:
-    institution = (extraction_payload["connector_input"].get("institution") or "").lower()
-    should_query_registry = "vit" in institution
-    return {
-        "required_fields": ["name", "institution", "credential", "id"],
-        "min_confidence_threshold": 0.6,
-        "require_connector": should_query_registry,
-        "requires_high_assurance": False,
-        "required_connectors": ["vit_registry"] if should_query_registry else [],
-        "connector_policies": {
-            "vit_registry": {
-                "connector_id": "vit_registry",
-                "assurance_class": "HIGH" if should_query_registry else "OPTIONAL",
-                "max_retries": 2,
-                "deferred_retry_allowed": False,
-            }
-        },
-    }
+    """
+     DISABLED: Connector policy system removed.
+    """
+    return {}
 
 
 def _raise_on_processing_connector_failure(connector_responses: list[dict[str, Any]]) -> None:

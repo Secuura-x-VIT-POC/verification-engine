@@ -9,7 +9,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from ..workflow.runtime import build_connector_responses, build_policy, extract_document_payload
+from ..workflow.runtime import extract_document_payload
 from ..trust.trust_engine import build_final_verdict, determine_field_decision
 from .policies import AgentRuntimePolicy, load_agent_runtime_policy, minimize_extraction_payload
 from .schemas import (
@@ -78,7 +78,7 @@ def _load_extraction_state(
 
     return {
         "runtime_policy": runtime_policy,
-        "policy": build_policy(extraction_payload),
+        "policy": {},
         "extraction_payload": extraction_payload,
         "sanitized_extraction": sanitized_extraction,
         "raw_text": raw_text,
@@ -154,22 +154,27 @@ def _build_verification_tasks(state: GeneralizedVerificationState) -> dict[str, 
     
     tasks: list[VerificationTask] = []
     for group in groups:
-        connector_id = str(group.connector_id or "").strip()
-        if not connector_id:
-            continue
         tasks.append(
             VerificationTask(
                 task_id=f"task-{group.group_id}",
                 field_id=group.group_id,
                 label=group.label,
-                connector_id=connector_id,
+
+                # REMOVE
+                # connector_id=connector_id,
+
+                # NEW STRUCTURE
                 claim_type=group.claim_type,
                 optional=group.optional,
                 high_assurance=group.high_assurance,
                 input_payload=connector_input,
                 field_ids=list(group.field_ids),
+
+                # ADD THIS
+                provider_candidates=["local_mock_registry"],
             )
         )
+
 
     return {
         "verification_tasks": [task.model_dump(mode="json") for task in tasks],
@@ -177,58 +182,13 @@ def _build_verification_tasks(state: GeneralizedVerificationState) -> dict[str, 
     }
 
 def _run_verifier_apis(state: GeneralizedVerificationState) -> dict[str, Any]:
-    extraction_payload = state.get("extraction_payload") or {}
-    tasks = [VerificationTask.model_validate(item) for item in list(state.get("verification_tasks") or [])]
-    policy = state.get("policy") or {}
-    connector_responses = build_connector_responses(extraction_payload, policy)
-    
-    by_connector = {
-        str(item.get("connector_id") or ""): item
-        for item in connector_responses
-        if isinstance(item, dict)
-    }
-    
-    verifier_results: list[VerifierResult] = []
-    for task in tasks:
-        raw_result = by_connector.get(task.connector_id)
-        if raw_result is None:
-            verifier_results.append(
-                VerifierResult(
-                    task_id=task.task_id,
-                    field_id=task.field_id,
-                    connector_id=task.connector_id,
-                    status="SKIPPED" if task.optional else "NOT_APPLICABLE",
-                    verification_confidence=0.35 if task.optional else 0.0,
-                    reason_codes=["OPTIONAL_VERIFIER_UNAVAILABLE"] if task.optional else ["NO_VERIFIER_APPLICABLE"],
-                    source_api=task.connector_id,
-                    audit_message="No verifier response was available for this task.",
-                    optional=task.optional,
-                    high_assurance=task.high_assurance,
-                    field_ids=task.field_ids,
-                )
-            )
-            continue
-
-        status = str(raw_result.get("status") or "ERROR").upper()
-        verifier_results.append(
-            VerifierResult(
-                task_id=task.task_id,
-                field_id=task.field_id,
-                connector_id=task.connector_id,
-                status=status if status in {"VERIFIED", "MISMATCH", "TIMEOUT", "ERROR"} else "ERROR",
-                verification_confidence=_verification_confidence_from_status(status),
-                reason_codes=list(raw_result.get("reason_codes") or []),
-                source_api=task.connector_id,
-                audit_message=_verifier_audit_message(task.connector_id, status, raw_result),
-                optional=task.optional,
-                high_assurance=task.high_assurance,
-                field_ids=task.field_ids,
-            )
-        )
-
+    """
+    DISABLED: Old connector-based execution removed.
+    Now handled via task planner + verifier registry (backend pipeline).
+    """
     return {
-        "verifier_results": [result.model_dump(mode="json") for result in verifier_results],
-        "audit_log": [_audit_item("run_verifier_apis", f"Collected {len(verifier_results)} verifier result(s).")],
+        "verifier_results": [],
+        "audit_log": [_audit_item("run_verifier_apis", "Connector execution disabled.")],
     }
 
 def _gemini_confidence_fusion(state: GeneralizedVerificationState) -> dict[str, Any]:
@@ -488,7 +448,7 @@ def _deterministic_normalized_fields(extraction_payload: dict[str, Any]) -> list
                 ai_confidence=float(field.get("confidence") or 0.0),
                 grounding_confidence=1.0 if boxes or field.get("is_grounded") else 0.0,
                 mandatory=bool(field.get("is_mandatory")),
-                verifier_hint="vit_registry" if field_name in {"name", "institution", "credential", "id"} else None,
+                verifier_hint= None,
                 bounding_boxes=boxes,
             )
         )
@@ -499,8 +459,8 @@ def _deterministic_credential_groups(
     normalized_fields: list[GeminiNormalizedField],
 ) -> list[GeminiCredentialGroup]:
     connector_input = extraction_payload.get("connector_input") or {}
-    institution = str(connector_input.get("institution") or "").lower()
-    connector_id = "vit_registry" if "vit" in institution else None
+    #institution = str(connector_input.get("institution") or "").lower()
+    connector_id =  None
     field_ids = [field.field_id for field in normalized_fields if field.mandatory] or [field.field_id for field in normalized_fields]
     return [
         GeminiCredentialGroup(
@@ -509,8 +469,8 @@ def _deterministic_credential_groups(
             field_ids=field_ids,
             connector_id=connector_id,
             claim_type="credential",
-            optional=connector_id is None,
-            high_assurance=connector_id is not None,
+            optional=True,  
+            high_assurance=False,
             explanation="Deterministic grouping based on extracted connector input.",
         )
     ]

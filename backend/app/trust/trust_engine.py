@@ -192,22 +192,37 @@ def build_final_verdict(
         )
 
 
-def evaluate_trust(trust_input: dict, connector_result: dict, policy: dict) -> dict:
+def evaluate_trust(trust_input: dict, verifier_results: list[dict], policy: dict) -> dict:
     """
     Evaluates the overall trust for a document based on field extractions, verifier results, and policy.
     """
-    if connector_result:
-        verifier_result = VerifierResult(
-            task_id="dummy",
-            field_id="dummy",
-            connector_id=connector_result["connector_id"],
-            status=connector_result["status"],
-            verification_confidence=1.0,
-            reason_codes=connector_result["reason_codes"],
-            high_assurance=connector_result.get("assurance_class") == "HIGH",
+    verifier_map = {}
+
+    for vr in verifier_results:
+        field_id = vr.get("credential_id") or vr.get("field_id") or "unknown"
+
+        task_status = vr.get("task_status")
+
+        if task_status == "SUCCEEDED":
+            status = "VERIFIED"
+        elif task_status == "FAILED":
+            status = "MISMATCH"
+        elif task_status == "MANUAL_REVIEW":
+            status = "ERROR"
+        elif task_status == "PARTIAL":
+            status = "ERROR"
+        else:
+            status = "ERROR"
+
+        verifier_map[field_id] = VerifierResult(
+            task_id=vr.get("task_id", ""),
+            field_id=field_id,
+            connector_id=vr.get("executed_provider_key"),
+            status=status,
+            verification_confidence=vr.get("confidence") or 0.5,
+            reason_codes=vr.get("reason_codes", []),
+            high_assurance=(vr.get("assurance_required") == "HIGH"),
         )
-    else:
-        verifier_result = None
     
     field_decisions = []
     
@@ -221,12 +236,21 @@ def evaluate_trust(trust_input: dict, connector_result: dict, policy: dict) -> d
         ai_confidence = confidence
         grounding_confidence = 1.0  # Placeholder, adjust as needed
         
+        vr = verifier_map.get(field_id)
+
         decision = determine_field_decision(
-            field_id, field_id, extracted_value, normalized_value,
-            extraction_confidence, ai_confidence, grounding_confidence,
-            verifier_result, mandatory, False
+            field_id,
+            field_id,
+            extracted_value,
+            normalized_value,
+            extraction_confidence,
+            ai_confidence,
+            grounding_confidence,
+            vr,
+            mandatory,
+            False,
         )
         field_decisions.append(decision)
     
-    final_verdict = build_final_verdict(field_decisions, [verifier_result] if verifier_result else [], False, [])
+    final_verdict = build_final_verdict(field_decisions, list(verifier_map.values()), False, [])
     return final_verdict.model_dump()

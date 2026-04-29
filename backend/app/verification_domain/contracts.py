@@ -90,11 +90,12 @@ class ExtractedCredential(ContractModel):
 class VerificationTask(ContractModel):
     task_id: str
     credential_id: str
-    verifier_key: str
-    verifier_label: str
-    verification_type: str
-    required: bool
-    status: str
+    claim_type: str  
+    provider_candidates: list[str] = Field(default_factory=list)
+    required_fields: list[str] = Field(default_factory=list)
+    assurance_required: str = "MEDIUM"  
+    selected_provider: str | None = None
+    status: str = "PENDING"
     reason_codes: list[str] = Field(default_factory=list)
     input_payload: dict[str, Any] = Field(default_factory=dict)
 

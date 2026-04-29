@@ -36,16 +36,31 @@ class VerifierRegistry:
 
 def build_default_verifier_registry() -> VerifierRegistry:
     registry = VerifierRegistry()
+
+    identity = IdentityDatabaseVerifier()
+    academic = AcademicRegistryVerifier()
+    address = AddressCheckVerifier()
+    passport = PassportDatabaseVerifier()
+    certificate = CertificateRegistryVerifier()
+    license_v = LicenseRegistryVerifier()
+    financial = FinancialRegistryVerifier()
+    tax = TaxAuthorityVerifier()
+    manual = ManualReviewVerifier()
+
     for verifier in (
-        IdentityDatabaseVerifier(),
-        AddressCheckVerifier(),
-        PassportDatabaseVerifier(),
-        AcademicRegistryVerifier(),
-        CertificateRegistryVerifier(),
-        LicenseRegistryVerifier(),
-        FinancialRegistryVerifier(),
-        TaxAuthorityVerifier(),
-        ManualReviewVerifier(),
+        identity,
+        address,
+        passport,
+        academic,
+        certificate,
+        license_v,
+        financial,
+        tax,
+        manual,
     ):
         registry.register(verifier)
+
+    registry._verifiers["entra_verified_id"] = identity
+    registry._verifiers["local_mock_registry"] = academic
+
     return registry

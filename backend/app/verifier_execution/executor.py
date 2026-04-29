@@ -128,44 +128,47 @@ class VerificationTaskExecutor:
             )
             return self._stamp_result(result, executed_at=executed_at, started=started)
 
-        verifier = self.registry.get(task.verifier_key)
-        if verifier is None:
-            result = self._manual_review_verifier.execute(task, credential, context)
-            result.reason_codes = list(dict.fromkeys([*result.reason_codes, "VERIFIER_NOT_REGISTERED"]))
-            summary = dict(result.raw_result_summary)
-            summary["requested_verifier_key"] = task.verifier_key
-            result.raw_result_summary = summary
-            return self._stamp_result(result, executed_at=executed_at, started=started)
+        providers = getattr(task, "provider_candidates", []) or []
 
-        try:
-            result = verifier.execute(task, credential, context)
-        except Exception as exc:  # pragma: no cover - defensive
-            route_truth = task_execution_truth(task)
-            result = VerificationTaskResult(
-                task_id=task.task_id,
-                credential_id=credential.credential_id,
-                verifier_key=task.verifier_key,
-                verifier_label=task.verifier_label,
-                preferred_provider_key=route_truth.get("preferred_provider_key"),
-                preferred_provider_label=route_truth.get("preferred_provider_label"),
-                planned_provider_key=route_truth.get("planned_provider_key"),
-                planned_provider_label=route_truth.get("planned_provider_label"),
-                execution_mode="EXECUTION_FAILURE",
-                fallback_reason=route_truth.get("fallback_reason"),
-                task_status=TASK_STATUS_FAILED,
-                audit_status=AUDIT_STATUS_MANUAL_REVIEW,
-                outcome_color=OUTCOME_COLOR_AMBER,
-                explanation=f"Verifier execution failed: {exc}",
-                reason_codes=["VERIFIER_EXECUTION_FAILED"],
-                missing_fields=[credential.label],
-                raw_result_summary=summarize_result(
-                    execution_mode="EXECUTION_FAILURE",
-                    task=task,
-                    credential=credential,
-                    extra={"error": str(exc)},
-                ),
-                manual_review_recommended=True,
-            )
+        # fallback to old system if not present (safe migration)
+        if not providers and hasattr(task, "verifier_key"):
+            providers = [task.verifier_key]
+
+        last_exception = None
+
+        for provider_id in providers:
+            verifier = self.registry.get(provider_id)
+
+            if verifier is None:
+                continue
+
+            try:
+                result = verifier.execute(task, credential, context)
+
+                if result:
+                    # set execution metadata
+                    result.executed_provider_key = provider_id
+                    result.executed_provider_label = provider_id
+                    return self._stamp_result(result, executed_at=executed_at, started=started)
+
+            except Exception as exc:
+                last_exception = exc
+                continue
+
+        # NO PROVIDER WORKED → FALLBACK
+        result = self._manual_review_verifier.execute(task, credential, context)
+
+        # add reason
+        result.reason_codes = list(dict.fromkeys([*result.reason_codes, "NO_PROVIDER_AVAILABLE"]))
+
+        # attach debug info
+        summary = dict(result.raw_result_summary)
+        summary["attempted_providers"] = providers
+        if last_exception:
+            summary["last_error"] = str(last_exception)
+
+        result.raw_result_summary = summary
+
         return self._stamp_result(result, executed_at=executed_at, started=started)
 
     def _build_bundles(

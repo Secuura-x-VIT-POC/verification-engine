@@ -79,8 +79,11 @@ class VerificationTask(BaseModel):
     task_id: str
     field_id: str
     label: str
-    connector_id: str
+    connector_id: str = ""
     claim_type: str = "document"
+    provider_candidates: list[str] = Field(default_factory=list)
+    required_fields: list[str] = Field(default_factory=list)
+    assurance_required: str = "MEDIUM"
     optional: bool = False
     high_assurance: bool = False
     input_payload: dict[str, Any] = Field(default_factory=dict)

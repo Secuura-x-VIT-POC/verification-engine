@@ -188,16 +188,30 @@ def _build_placeholder_workspace(session: SessionModel) -> WorkspacePayload:
                 timestamp=_utc_now(),
             )
         ],
-        actions=_default_actions(),
+        actions=_default_actions(session.status),
     )
 
 
-def _default_actions() -> list[WorkspaceAction]:
+def _default_actions(session_status: str = "") -> list[WorkspaceAction]:
+    pending_human_review = session_status in {
+        SessionState.VERIFIED_GREEN,
+        SessionState.VERIFIED_AMBER,
+        SessionState.VERIFIED_RED,
+        SessionState.PENDING_HUMAN_REVIEW,
+    }
+    human_final = session_status in {
+        SessionState.HUMAN_APPROVED,
+        SessionState.HUMAN_REJECTED,
+        SessionState.MANUAL_REVIEW_REQUIRED,
+    }
     return [
         WorkspaceAction(action_id="can_rerun", label="Rerun"),
         WorkspaceAction(action_id="can_manual_override", label="Manual Override"),
-        WorkspaceAction(action_id="can_export_report", label="Export Report"),
-        WorkspaceAction(action_id="can_close", label="Close Session"),
+        WorkspaceAction(action_id="can_export_report", label="Export Report", enabled=not pending_human_review),
+        WorkspaceAction(action_id="can_close", label="Close Session", enabled=not pending_human_review or human_final),
+        WorkspaceAction(action_id="can_approve", label="Approve", enabled=pending_human_review),
+        WorkspaceAction(action_id="can_reject", label="Reject", enabled=pending_human_review),
+        WorkspaceAction(action_id="can_manual_review", label="Manual Review", enabled=pending_human_review),
     ]
 
 

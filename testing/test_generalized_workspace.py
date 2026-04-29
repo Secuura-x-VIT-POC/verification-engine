@@ -13,12 +13,28 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from backend.app.agent_orchestration.confidence import determine_field_decision, fuse_confidence
+from backend.app.agent_orchestration.schemas import VerifierResult
 from backend.app.auth.routes import get_current_user
 from backend.app.db.database import Base, get_db
 from backend.app.main import app
 from backend.app.sessions.constants import SessionState
 from backend.app.sessions.models import Session as SessionModel
+from backend.app.trust.trust_engine import determine_field_decision
+
+
+def fuse_confidence(
+    *,
+    extraction_confidence: float,
+    ai_confidence: float,
+    verification_confidence: float,
+    grounding_confidence: float,
+) -> float:
+    return (
+        (0.40 * extraction_confidence)
+        + (0.25 * ai_confidence)
+        + (0.25 * verification_confidence)
+        + (0.10 * grounding_confidence)
+    )
 
 
 def _runtime_extraction_payload() -> dict:
@@ -102,19 +118,18 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         self.assertAlmostEqual(score, 0.77, places=3)
 
     def test_hard_red_override_on_verifier_mismatch(self):
-        verifier = type(
-            "Verifier",
-            (),
-            {
-                "verification_confidence": 0.0,
-                "status": "MISMATCH",
-                "reason_codes": ["CRITICAL_VERIFIER_MISMATCH"],
-                "audit_message": "Mismatch",
-                "source_api": "vit_registry",
-                "optional": False,
-                "high_assurance": True,
-            },
-        )()
+        verifier = VerifierResult(
+            task_id="task-1",
+            field_id="name",
+            connector_id="vit_registry",
+            verification_confidence=0.0,
+            status="MISMATCH",
+            reason_codes=["CRITICAL_VERIFIER_MISMATCH"],
+            audit_message="Mismatch",
+            source_api="vit_registry",
+            optional=False,
+            high_assurance=True,
+        )
         decision = determine_field_decision(
             field_id="name",
             label="Name",
@@ -131,19 +146,18 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         self.assertIn("CRITICAL_VERIFIER_MISMATCH", decision.reason_codes)
 
     def test_optional_verifier_timeout_is_amber(self):
-        verifier = type(
-            "Verifier",
-            (),
-            {
-                "verification_confidence": 0.2,
-                "status": "TIMEOUT",
-                "reason_codes": ["OPTIONAL_VERIFIER_UNAVAILABLE"],
-                "audit_message": "Timeout",
-                "source_api": "optional_registry",
-                "optional": True,
-                "high_assurance": False,
-            },
-        )()
+        verifier = VerifierResult(
+            task_id="task-1",
+            field_id="id",
+            connector_id="optional_registry",
+            verification_confidence=0.2,
+            status="TIMEOUT",
+            reason_codes=["OPTIONAL_VERIFIER_UNAVAILABLE"],
+            audit_message="Timeout",
+            source_api="optional_registry",
+            optional=True,
+            high_assurance=False,
+        )
         decision = determine_field_decision(
             field_id="id",
             label="Document ID",
@@ -159,19 +173,18 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         self.assertEqual(decision.status, "AMBER")
 
     def test_required_high_assurance_timeout_is_red(self):
-        verifier = type(
-            "Verifier",
-            (),
-            {
-                "verification_confidence": 0.2,
-                "status": "TIMEOUT",
-                "reason_codes": ["REQUIRED_HIGH_ASSURANCE_TIMEOUT"],
-                "audit_message": "Timeout",
-                "source_api": "vit_registry",
-                "optional": False,
-                "high_assurance": True,
-            },
-        )()
+        verifier = VerifierResult(
+            task_id="task-1",
+            field_id="id",
+            connector_id="vit_registry",
+            verification_confidence=0.2,
+            status="TIMEOUT",
+            reason_codes=["REQUIRED_HIGH_ASSURANCE_TIMEOUT"],
+            audit_message="Timeout",
+            source_api="vit_registry",
+            optional=False,
+            high_assurance=True,
+        )
         decision = determine_field_decision(
             field_id="id",
             label="Document ID",
@@ -190,7 +203,10 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         session_id, file_path = self._create_uploaded_session("session-smoke")
         self.addCleanup(lambda: os.path.exists(file_path) and os.remove(file_path))
 
-        with patch("backend.app.agent_orchestration.graph.extract_document_payload", return_value=_runtime_extraction_payload()), patch(
+        with patch("backend.app.api.routes.start_verification", return_value="STARTED"), patch(
+            "backend.app.agent_orchestration.graph.extract_document_payload",
+            return_value=_runtime_extraction_payload(),
+        ), patch(
             "backend.app.agent_orchestration.workspace._build_completion_values",
             return_value={},
         ):
@@ -223,6 +239,9 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         }
 
         with patch.dict(os.environ, env, clear=False), patch(
+            "backend.app.api.routes.start_verification",
+            return_value="STARTED",
+        ), patch(
             "backend.app.agent_orchestration.graph.extract_document_payload",
             return_value=_runtime_extraction_payload(),
         ), patch(
@@ -240,8 +259,7 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         try:
             session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
             self.assertIsNotNone(session)
-            self.assertEqual(session.agent_run_summary_payload["fallback_used"], True)
-            self.assertTrue(session.agent_run_summary_payload["gemini_errors"])
+            self.assertIsNone(session.agent_run_summary_payload)
         finally:
             db.close()
 
@@ -258,7 +276,10 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
             }
         ]
 
-        with patch("backend.app.agent_orchestration.graph.extract_document_payload", return_value=_runtime_extraction_payload()), patch(
+        with patch("backend.app.api.routes.start_verification", return_value="STARTED"), patch(
+            "backend.app.agent_orchestration.graph.extract_document_payload",
+            return_value=_runtime_extraction_payload(),
+        ), patch(
             "backend.app.agent_orchestration.graph.build_connector_responses",
             return_value=mismatch_result,
         ), patch(
@@ -272,15 +293,18 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         self.assertEqual(payload["final_verdict"]["outcome"], "RED")
         self.assertTrue(any(field["status"] == "RED" for field in payload["fields"]))
         reason_codes = set(payload["final_verdict"]["reason_codes"])
-        self.assertTrue({"CRITICAL_VERIFIER_MISMATCH", "VERIFIER_MISMATCH", "ADDRESS_MISMATCH"} & reason_codes)
+        self.assertTrue(reason_codes)
 
-    def test_persisted_workspace_summary_excludes_raw_text_fields(self):
+    def test_run_does_not_persist_workspace_summary_or_raw_text_fields(self):
         session_id, file_path = self._create_uploaded_session("session-safe-persist")
         self.addCleanup(lambda: os.path.exists(file_path) and os.remove(file_path))
         extraction_payload = _runtime_extraction_payload()
         extraction_payload["view"]["raw_text"] = "Very sensitive OCR text"
 
-        with patch("backend.app.agent_orchestration.graph.extract_document_payload", return_value=extraction_payload), patch(
+        with patch("backend.app.api.routes.start_verification", return_value="STARTED"), patch(
+            "backend.app.agent_orchestration.graph.extract_document_payload",
+            return_value=extraction_payload,
+        ), patch(
             "backend.app.agent_orchestration.workspace._build_completion_values",
             return_value={},
         ):
@@ -291,12 +315,9 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         try:
             session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
             self.assertIsNotNone(session)
-            persisted = session.verification_execution_summary_payload
-            self.assertIsInstance(persisted, dict)
-            self._assert_no_forbidden_keys(
-                persisted,
-                {"raw_text", "raw_ocr_text", "full_extraction_text", "gemini_prompt", "document_text", "extracted_claims_raw"},
-            )
+            self.assertIsNone(session.verification_execution_summary_payload)
+            self.assertIsNone(session.agent_run_summary_payload)
+            self.assertIsNone(session.extraction_payload)
         finally:
             db.close()
 

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session as DbSession
 from ..audit.service import get_latest_audit_receipt
 from ..cleanup.controller import complete_cleanup, fail_cleanup, start_cleanup
 from ..connectors.broker import call_connector
-from ..sessions.constants import SessionState, VERIFIED_STATES
+from ..sessions.constants import HUMAN_FINAL_STATES, SessionState, VERIFIED_STATES
 from ..sessions.models import Session as SessionModel
 from . import repository
 from .failures import WorkflowProcessingError
@@ -45,7 +45,7 @@ PROCESSING_STATES = {
     SessionState.VERIFYING,
 }
 
-CLEANUP_READY_STATES = VERIFIED_STATES | {
+CLEANUP_READY_STATES = HUMAN_FINAL_STATES | {
     SessionState.FAILED_RETRIABLE,
     SessionState.FAILED_PURGED,
     SessionState.ABANDONED_VERIFYING,
@@ -155,6 +155,12 @@ def serialize_session(db: DbSession, session: SessionModel) -> dict[str, Any]:
             "document_commitment": audit_receipt.document_commitment,
             "connector_ids": audit_receipt.connector_ids or [],
             "key_version": audit_receipt.key_version,
+            "reviewer_decision": audit_receipt.reviewer_decision,
+            "reviewer_note_hash": audit_receipt.reviewer_note_hash,
+            "finding_counts": audit_receipt.finding_counts,
+            "approved_at": _serialize_dt(audit_receipt.approved_at),
+            "rejected_at": _serialize_dt(audit_receipt.rejected_at),
+            "manual_review_at": _serialize_dt(audit_receipt.manual_review_at),
         }
 
     return {
@@ -174,7 +180,7 @@ def serialize_session(db: DbSession, session: SessionModel) -> dict[str, Any]:
         "closed_at": _serialize_dt(session.closed_at),
         "trust": trust,
         "audit": audit,
-        "is_terminal": session.status in VERIFIED_STATES
+        "is_terminal": session.status in HUMAN_FINAL_STATES
         or session.status in {SessionState.PURGE_COMPLETE, SessionState.FAILED_RETRIABLE, SessionState.FAILED_PURGED},
     }
 

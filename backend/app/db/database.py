@@ -17,6 +17,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expi
 Base = declarative_base()
 
 SESSION_TABLE_NAME = "verification_sessions"
+AUDIT_RECEIPT_TABLE_NAME = "audit_receipts"
 SESSION_SCHEMA_UPDATES = {
     "worker_phase": "VARCHAR",
     "lease_id": "VARCHAR",
@@ -65,6 +66,14 @@ SESSION_SCHEMA_UPDATES = {
     "closed_at": "TIMESTAMP",
     "updated_at": "TIMESTAMP",
 }
+AUDIT_RECEIPT_SCHEMA_UPDATES = {
+    "reviewer_decision": "VARCHAR",
+    "reviewer_note_hash": "VARCHAR",
+    "finding_counts": "JSON",
+    "approved_at": "TIMESTAMP",
+    "rejected_at": "TIMESTAMP",
+    "manual_review_at": "TIMESTAMP",
+}
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -86,25 +95,42 @@ def init_db() -> None:
 
 def sync_existing_schema(bind) -> None:
     inspector = inspect(bind)
-    if SESSION_TABLE_NAME not in inspector.get_table_names():
+    table_names = set(inspector.get_table_names())
+
+    _sync_table_columns(
+        bind,
+        inspector,
+        table_names,
+        SESSION_TABLE_NAME,
+        SESSION_SCHEMA_UPDATES,
+    )
+    _sync_table_columns(
+        bind,
+        inspector,
+        table_names,
+        AUDIT_RECEIPT_TABLE_NAME,
+        AUDIT_RECEIPT_SCHEMA_UPDATES,
+    )
+
+
+def _sync_table_columns(bind, inspector, table_names: set[str], table_name: str, schema_updates: dict[str, str]) -> None:
+    if table_name not in table_names:
         return
 
-    existing_columns = {column["name"] for column in inspector.get_columns(SESSION_TABLE_NAME)}
+    existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
     missing_columns = [
         (column_name, definition)
-        for column_name, definition in SESSION_SCHEMA_UPDATES.items()
+        for column_name, definition in schema_updates.items()
         if column_name not in existing_columns
     ]
-    if not missing_columns:
-        return
 
     with bind.begin() as connection:
         for column_name, definition in missing_columns:
             connection.execute(
-                text(f"ALTER TABLE {SESSION_TABLE_NAME} ADD COLUMN {column_name} {definition}")
+                text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
             )
             LOGGER.info(
                 "DB_SCHEMA_SYNC table=%s added_column=%s",
-                SESSION_TABLE_NAME,
+                table_name,
                 column_name,
             )

@@ -283,6 +283,7 @@ def _policy_verdict(state: GeneralizedVerificationState) -> dict[str, Any]:
 
 def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, Any]:
     sanitized_extraction = state.get("sanitized_extraction") or {}
+    session_status = str(state.get("session_status") or "")
     document_understanding = GeminiDocumentUnderstanding.model_validate(state.get("document_understanding") or {})
     field_decisions = [FieldDecision.model_validate(item) for item in list(state.get("field_decisions") or [])]
     verifier_results = [VerifierResult.model_validate(item) for item in list(state.get("verifier_results") or [])]
@@ -336,14 +337,28 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
         verifiers=verifiers,
         final_verdict=final_verdict,
         audit=[WorkspaceAuditEntry.model_validate(item) for item in list(state.get("audit_log") or [])],
-        actions=[
-            WorkspaceAction(action_id="can_rerun", label="Rerun"),
-            WorkspaceAction(action_id="can_manual_override", label="Manual Override"),
-            WorkspaceAction(action_id="can_export_report", label="Export Report"),
-            WorkspaceAction(action_id="can_close", label="Close Session"),
-        ],
+        actions=_workspace_actions_for_status(session_status),
     )
     return {"workspace_payload": workspace.model_dump(mode="json")}
+
+
+def _workspace_actions_for_status(session_status: str) -> list[WorkspaceAction]:
+    pending_human_review = session_status in {
+        "VERIFIED_GREEN",
+        "VERIFIED_AMBER",
+        "VERIFIED_RED",
+        "PENDING_HUMAN_REVIEW",
+    }
+    human_final = session_status in {"HUMAN_APPROVED", "HUMAN_REJECTED", "MANUAL_REVIEW_REQUIRED"}
+    return [
+        WorkspaceAction(action_id="can_rerun", label="Rerun"),
+        WorkspaceAction(action_id="can_manual_override", label="Manual Override"),
+        WorkspaceAction(action_id="can_export_report", label="Export Report", enabled=not pending_human_review),
+        WorkspaceAction(action_id="can_close", label="Close Session", enabled=not pending_human_review or human_final),
+        WorkspaceAction(action_id="can_approve", label="Approve", enabled=pending_human_review),
+        WorkspaceAction(action_id="can_reject", label="Reject", enabled=pending_human_review),
+        WorkspaceAction(action_id="can_manual_review", label="Manual Review", enabled=pending_human_review),
+    ]
 
 def _invoke_gemini_with_fallback(
     *,

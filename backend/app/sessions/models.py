@@ -98,6 +98,12 @@ class AuditReceiptRecord(Base):
     receipt_hash = Column(String, nullable=False)
     signature = Column(String, nullable=True)
     hash_chain_prev = Column(String, nullable=True)
+    reviewer_decision = Column(String, nullable=True)
+    reviewer_note_hash = Column(String, nullable=True)
+    finding_counts = Column(JSON, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    rejected_at = Column(DateTime, nullable=True)
+    manual_review_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 

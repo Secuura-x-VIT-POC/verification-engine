@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
+from ..audit.service import upsert_final_review_receipt
 from ..auth.routes import get_current_user
 from ..db.database import get_db
 from ..sessions.constants import SessionState
 from ..sessions.models import Session as SessionModel
+from ..workflow import repository
 from ..agent_orchestration.contracts import (
     AgentDocumentUnderstanding,
     SessionAgentCredentialCandidateCollection,
@@ -47,6 +50,28 @@ from ..workflow.service import start_verification
 
 router = APIRouter(tags=["workflow"])
 LOGGER = logging.getLogger(__name__)
+
+
+ReviewDecisionValue = Literal["APPROVE", "REJECT", "NEEDS_MANUAL_REVIEW"]
+
+
+class ReviewDecisionRequest(BaseModel):
+    decision: ReviewDecisionValue
+    reviewer_note: str | None = None
+
+    @model_validator(mode="after")
+    def require_note_for_manual_review(self) -> "ReviewDecisionRequest":
+        if self.decision == "NEEDS_MANUAL_REVIEW" and not (self.reviewer_note or "").strip():
+            raise ValueError("reviewer_note is required when decision is NEEDS_MANUAL_REVIEW")
+        return self
+
+
+class ReviewDecisionResponse(BaseModel):
+    session_id: str
+    status: str
+    final_decision: Literal["APPROVED", "REJECTED", "MANUAL_REVIEW_REQUIRED"]
+    cleanup_ready: bool
+    audit_receipt_id: str | None = None
 
 
 def _sensitive_artifact_gone() -> None:
@@ -94,6 +119,7 @@ def _build_workspace_payload(session: SessionModel) -> WorkspacePayload:
         "session_id": session.id,
         "filename": session.filename,
         "file_path": session.file_path,
+        "session_status": session.status,
         "extraction_payload": extraction_payload,
     }
 
@@ -108,6 +134,14 @@ def _build_workspace_payload(session: SessionModel) -> WorkspacePayload:
         raise HTTPException(status_code=500, detail="Workspace graph did not produce a workspace payload")
 
     return WorkspacePayload.model_validate(workspace_payload)
+
+
+def _review_status_for_decision(decision: ReviewDecisionValue) -> tuple[str, str]:
+    if decision == "APPROVE":
+        return SessionState.HUMAN_APPROVED, "APPROVED"
+    if decision == "REJECT":
+        return SessionState.HUMAN_REJECTED, "REJECTED"
+    return SessionState.MANUAL_REVIEW_REQUIRED, "MANUAL_REVIEW_REQUIRED"
 
 
 @router.post("/session/{session_id}/verify")
@@ -354,10 +388,83 @@ def run_generalized_verification_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> WorkspacePayload:
-    del session_id, db, user
-    raise HTTPException(
-        status_code=410,
-        detail="Deprecated. Use GET /api/v1/verification-sessions/{session_id}/workspace.",
+    session = _get_owned_session(db, session_id, user)
+    if not session.file_path:
+        raise HTTPException(status_code=409, detail="Upload a PDF before verification")
+    if not Path(session.file_path).exists():
+        raise HTTPException(status_code=404, detail="Document not found on disk")
+    if session.status in {SessionState.PENDING_CLEANUP, SessionState.PURGE_COMPLETE, SessionState.FAILED_PURGED}:
+        raise HTTPException(status_code=409, detail="Session is already closed")
+    if session.status == SessionState.VERIFYING:
+        raise HTTPException(status_code=409, detail="Verification is already in progress")
+    if session.status not in {
+        SessionState.UPLOADED_PENDING_REVIEW,
+        SessionState.FAILED_RETRIABLE,
+    }:
+        raise HTTPException(status_code=409, detail="Session is not ready for verification")
+
+    start_result = start_verification(
+        db,
+        session.id,
+        worker_id=user,
+    )
+    if start_result == "FAILED":
+        raise HTTPException(status_code=500, detail="Verification could not be started")
+    if start_result not in {"STARTED", "NO_OP"}:
+        LOGGER.error("VERIFICATION_START_UNEXPECTED session_id=%s result=%s", session.id, start_result)
+        raise HTTPException(status_code=500, detail="Verification could not be started")
+
+    db.refresh(session)
+    return _build_workspace_payload(session)
+
+
+@router.post("/api/v1/verification-sessions/{session_id}/review-decision", response_model=ReviewDecisionResponse)
+def review_decision_route(
+    session_id: str,
+    request: ReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user),
+) -> ReviewDecisionResponse:
+    session = _get_owned_session(db, session_id, user)
+    allowed_states = {
+        SessionState.PENDING_HUMAN_REVIEW,
+        SessionState.VERIFIED_GREEN,
+        SessionState.VERIFIED_AMBER,
+        SessionState.VERIFIED_RED,
+    }
+    if session.status not in allowed_states:
+        raise HTTPException(status_code=409, detail="Session is not ready for human review")
+
+    final_state, final_decision = _review_status_for_decision(request.decision)
+    try:
+        if session.status in {
+            SessionState.VERIFIED_GREEN,
+            SessionState.VERIFIED_AMBER,
+            SessionState.VERIFIED_RED,
+        }:
+            repository.transition_state(db, session.id, SessionState.PENDING_HUMAN_REVIEW)
+
+        repository.transition_state(db, session.id, final_state)
+        audit_receipt = upsert_final_review_receipt(
+            db,
+            session,
+            reviewer_ref=user,
+            reviewer_decision=final_decision,
+            reviewer_note=request.reviewer_note,
+        )
+        db.commit()
+        db.refresh(session)
+    except Exception as exc:
+        db.rollback()
+        LOGGER.exception("REVIEW_DECISION_FAILED session_id=%s decision=%s", session.id, request.decision)
+        raise HTTPException(status_code=409, detail="Review decision could not be applied") from exc
+
+    return ReviewDecisionResponse(
+        session_id=session.id,
+        status=session.status,
+        final_decision=final_decision,
+        cleanup_ready=True,
+        audit_receipt_id=audit_receipt.audit_event_id,
     )
 
 

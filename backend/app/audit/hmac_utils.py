@@ -25,3 +25,11 @@ def generate_commitment(document_bytes: bytes, nonce: bytes, scope_tag: str) -> 
         message,
         hashlib.sha256
     ).hexdigest()
+
+
+def generate_hmac_hex(message: str) -> str:
+    return hmac.new(
+        SECRET_KEY,
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()

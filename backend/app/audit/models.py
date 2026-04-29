@@ -28,6 +28,12 @@ class AuditReceipt(BaseModel):
     signature: Optional[str]
 
     hash_chain_prev: Optional[str]
+    reviewer_decision: Optional[str] = None
+    reviewer_note_hash: Optional[str] = None
+    finding_counts: Optional[dict] = None
+    approved_at: Optional[datetime] = None
+    rejected_at: Optional[datetime] = None
+    manual_review_at: Optional[datetime] = None
     created_at: Optional[datetime]
 
 

@@ -67,6 +67,10 @@ def run_generalized_verification_session(
         workspace = WorkspacePayload.model_validate(state["workspace_payload"])
         final_verdict = FinalVerdict.model_validate(state["final_verdict"])
         verified_state = _state_for_outcome(final_verdict.outcome)
+        exceptions = final_verdict.reason_codes or []
+
+        if "LOW_CONFIDENCE_REVIEW_REQUIRED" in exceptions:
+            verified_state = SessionState.PENDING_HUMAN_REVIEW
 
         completion_values = {}
         try:
@@ -115,6 +119,7 @@ def run_generalized_verification_session(
             final_verdict.reason_codes,
             final_verdict.connector_ids,
             extra_values={
+                "workspace_payload": workspace.model_dump(mode="json"),
                 "verification_execution_summary_payload": workspace.model_dump(mode="json"),
                 "verification_execution_status": "READY",
                 "generalized_analysis_status": "READY",

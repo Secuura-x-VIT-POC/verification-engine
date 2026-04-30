@@ -262,17 +262,25 @@ def complete_processing(
     *,
     extra_values: dict | None = None,
 ) -> None:
+    # Default state
+    final_state = STATE_MAP[outcome]
+
+    # ✅ FIX: derive exceptions from reason_codes (NOT extra_values)
+    exceptions = reason_codes or []
+
+    if "LOW_CONFIDENCE_REVIEW_REQUIRED" in exceptions:
+        final_state = "PENDING_HUMAN_REVIEW"
+
     repository.complete_processing(
         conn,
         session_id,
-        STATE_MAP[outcome],
+        final_state,
         outcome,
         reason_codes,
         connector_ids,
         extra_values=extra_values,
     )
     conn.commit()
-
 
 def handle_processing_failure(
     conn,

@@ -47,6 +47,7 @@ from ..agent_orchestration.schemas import WorkspacePayload
 from ..workflow.runtime import extract_document_payload
 from ..workflow.runtime import get_result_response, get_status_response, serialize_session
 from ..workflow.service import start_verification
+from ..agent_orchestration.workspace import run_generalized_verification_session
 
 
 router = APIRouter(tags=["workflow"])
@@ -397,26 +398,40 @@ def run_generalized_verification_route(
     if session.status in {SessionState.PENDING_CLEANUP, SessionState.PURGE_COMPLETE, SessionState.FAILED_PURGED}:
         raise HTTPException(status_code=409, detail="Session is already closed")
     if session.status == SessionState.VERIFYING:
-        raise HTTPException(status_code=409, detail="Verification is already in progress")
+        # Already running, just return the current (placeholder) workspace
+        return _build_workspace_payload(session)
+
+    if session.status in {
+        SessionState.VERIFIED_GREEN,
+        SessionState.VERIFIED_AMBER,
+        SessionState.VERIFIED_RED,
+        SessionState.PENDING_HUMAN_REVIEW,
+        SessionState.HUMAN_APPROVED,
+        SessionState.HUMAN_REJECTED,
+        SessionState.MANUAL_REVIEW_REQUIRED,
+    }:
+        # Already finished, return the persisted workspace
+        return _build_workspace_payload(session)
+
     if session.status not in {
         SessionState.UPLOADED_PENDING_REVIEW,
         SessionState.FAILED_RETRIABLE,
     }:
-        raise HTTPException(status_code=409, detail="Session is not ready for verification")
+        raise HTTPException(status_code=409, detail=f"Session is not ready for verification (current state: {session.status})")
 
-    start_result = start_verification(
-        db,
-        session.id,
-        worker_id=user,
-    )
-    if start_result == "FAILED":
-        raise HTTPException(status_code=500, detail="Verification could not be started")
-    if start_result not in {"STARTED", "NO_OP"}:
-        LOGGER.error("VERIFICATION_START_UNEXPECTED session_id=%s result=%s", session.id, start_result)
-        raise HTTPException(status_code=500, detail="Verification could not be started")
-
-    db.refresh(session)
-    return _build_workspace_payload(session)
+    try:
+        workspace = run_generalized_verification_session(
+            db,
+            session,
+            reviewer_ref=user,
+        )
+        db.commit()
+        db.refresh(session)
+        print("FINAL DB STATUS:", session.status)
+        return workspace
+    except Exception as exc:
+        LOGGER.exception("GENERALIZED_VERIFICATION_FAILED session_id=%s", session.id)
+        raise HTTPException(status_code=500, detail="Generalized verification failed") from exc
 
 
 @router.post("/api/v1/verification-sessions/{session_id}/review-decision", response_model=ReviewDecisionResponse)
@@ -469,7 +484,7 @@ def review_decision_route(
     )
 
 
-@router.get("/api/v1/verification-sessions/{session_id}/workspace", response_model=WorkspacePayload)
+@router.get("/api/v1/verification-sessions/{session_id}/workspace", response_model=dict)
 def get_generalized_workspace_route(
     session_id: str,
     db: Session = Depends(get_db),
@@ -478,4 +493,77 @@ def get_generalized_workspace_route(
     session = _get_owned_session(db, session_id, user)
     if session.status in {SessionState.PENDING_CLEANUP, SessionState.PURGE_COMPLETE, SessionState.FAILED_PURGED}:
         raise HTTPException(status_code=409, detail="Session is already closed")
-    return _build_workspace_payload(session)
+    if not session.workspace_payload:
+        raise HTTPException(
+            status_code=409,
+            detail="Workspace not ready. Run verification first."
+        )
+
+    return build_workspace_response(session)
+
+def build_workspace_response(session):
+    workspace = session.workspace_payload or {}
+
+    document = workspace.get("document", {})
+    summary = workspace.get("summary", {})
+    fields = workspace.get("fields", [])
+    verifiers = workspace.get("verifiers", [])
+    audit = workspace.get("audit", [])
+    actions = workspace.get("actions", [])
+
+    # 🔹 FINDINGS (fields → findings)
+    findings = [
+        {
+            "field_id": f.get("field_id"),
+            "label": f.get("label"),
+            "value": f.get("normalized_value"),
+            "status": f.get("status"),
+            "confidence": f.get("final_confidence"),
+            "reason_codes": f.get("reason_codes", []),
+            "source": f.get("source_api"),
+            "message": f.get("audit_message"),
+        }
+        for f in fields
+    ]
+
+    # 🔹 VERIFICATION TASKS (verifiers → tasks)
+    verification_tasks = [
+        {
+            "task_id": v.get("connector_id"),
+            "status": v.get("status"),
+            "confidence": v.get("confidence"),
+            "reason_codes": v.get("reason_codes", []),
+            "source": v.get("source_api"),
+            "field_ids": v.get("field_ids", []),
+        }
+        for v in verifiers
+    ]
+
+    # 🔹 TASK RESULTS (can be same as tasks or expanded later)
+    task_results = verification_tasks
+
+    # 🔹 AUDIT SUMMARY (simplified)
+    audit_summary = [
+        {
+            "stage": a.get("stage"),
+            "message": a.get("message"),
+            "level": a.get("level"),
+        }
+        for a in audit
+    ]
+
+    return {
+        "session_id": workspace.get("session_id") or str(session.id),
+        "status": workspace.get("status"),
+        "ui_status": workspace.get("ui_status"),
+
+        "document": document,
+        "summary": summary,
+
+        "findings": findings,
+        "verification_tasks": verification_tasks,
+        "task_results": task_results,
+
+        "audit_summary": audit_summary,
+        "actions": actions,
+    }

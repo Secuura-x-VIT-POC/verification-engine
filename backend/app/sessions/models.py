@@ -70,6 +70,7 @@ class Session(Base):
     verified_at = Column(DateTime, nullable=True)
     closed_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    workspace_payload = Column(JSON, nullable=True)
 
 
 class UploadToken(Base):

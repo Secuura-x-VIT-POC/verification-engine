@@ -4,7 +4,8 @@ WORKDIR /app/frontend
 
 COPY frontend/package.json frontend/package-lock.json ./
 
-RUN npm ci
+RUN npm install
+ENV PATH=/app/frontend/node_modules/.bin:$PATH
 
 COPY frontend /app/frontend
 

@@ -263,13 +263,32 @@ def _policy_verdict(state: GeneralizedVerificationState) -> dict[str, Any]:
 
 def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, Any]:
     sanitized_extraction = state.get("sanitized_extraction") or {}
-    session_status = str(state.get("session_status") or "")
     document_understanding = GeminiDocumentUnderstanding.model_validate(state.get("document_understanding") or {})
     field_decisions = [FieldDecision.model_validate(item) for item in list(state.get("field_decisions") or [])]
     verifier_results = [VerifierResult.model_validate(item) for item in list(state.get("verifier_results") or [])]
     final_verdict = state.get("final_verdict") or {}
     warnings = list(((sanitized_extraction.get("view") or {}).get("warnings")) or [])
-    
+
+    outcome = final_verdict.get("outcome", "AMBER")
+    if outcome == "GREEN":
+        status = "VERIFIED_GREEN"
+    elif outcome == "RED":
+        status = "VERIFIED_RED"
+    else:
+        status = "VERIFIED_AMBER"
+
+    active_exceptions = sorted(
+        {
+            code
+            for field in field_decisions
+            for code in field.reason_codes
+            if field.status != "GREEN"
+        }
+    )
+
+    if "LOW_CONFIDENCE_REVIEW_REQUIRED" in active_exceptions:
+        status = "PENDING_HUMAN_REVIEW"
+
     verifiers = [
         WorkspaceVerifierStatus(
             connector_id=result.connector_id,
@@ -283,11 +302,17 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
         )
         for result in verifier_results
     ]
-    
+
+    ui_status = "Ready"
+    if status == "PENDING_HUMAN_REVIEW":
+        ui_status = "Ready for human review"
+    elif status.startswith("VERIFIED_"):
+        ui_status = "Verification completed"
+
     workspace = WorkspacePayload(
         session_id=str(state.get("session_id") or ""),
-        status=final_verdict.get("outcome", "AMBER"),
-        ui_status="COMPLETED",
+        status=status,
+        ui_status=ui_status,
         document=WorkspaceDocument(
             filename=state.get("filename"),
             document_type=document_understanding.document_type or str((sanitized_extraction.get("view") or {}).get("document_type") or "unknown"),
@@ -304,20 +329,13 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
             matching_score=final_verdict.get("matching_score", document_understanding.matching_score),
             visual_match_probability=final_verdict.get("visual_match_probability", document_understanding.visual_match_probability),
             risk_level=final_verdict.get("risk_level", "MEDIUM"),
-            active_exceptions=sorted(
-                {
-                    code
-                    for field in field_decisions
-                    for code in field.reason_codes
-                    if field.status != "GREEN"
-                }
-            ),
+            active_exceptions=active_exceptions,
         ),
         fields=field_decisions,
         verifiers=verifiers,
         final_verdict=final_verdict,
         audit=[WorkspaceAuditEntry.model_validate(item) for item in list(state.get("audit_log") or [])],
-        actions=_workspace_actions_for_status(session_status),
+        actions=_workspace_actions_for_status(status),
     )
     return {"workspace_payload": workspace.model_dump(mode="json")}
 

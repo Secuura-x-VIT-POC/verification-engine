@@ -3,10 +3,26 @@ import {
 	getSessionDocumentBlob,
 	getVerificationWorkspace,
 } from "../api/generalizedVerificationApi.js";
-
+import { apiRequest } from "../../../lib/api.js";
 const REFRESH_INTERVAL_MS = 3000;
 const TERMINAL_UI_STATUSES = new Set(["READY", "COMPLETED", "FAILED"]);
 
+const runMap = new Set();
+
+async function ensureRun(sessionId, token, workspace) {
+	if (runMap.has(sessionId) || workspace?.status !== "UPLOADED_PENDING_REVIEW") {
+		return;
+	}
+
+	runMap.add(sessionId);
+
+	try {
+		await apiRequest(`/api/v1/verification-sessions/${sessionId}/run`, {
+			method: "POST",
+			token,
+		});
+	} catch {}
+}
 function normalizeWorkspacePayload(payload, sessionId) {
 	const workspace = payload && typeof payload === "object" ? payload : {};
 	const document = workspace.document || {};
@@ -37,8 +53,8 @@ function normalizeWorkspacePayload(payload, sessionId) {
 				? summary.active_exceptions
 				: [],
 		},
-		fields: Array.isArray(workspace.fields) ? workspace.fields : [],
-		verifiers: Array.isArray(workspace.verifiers) ? workspace.verifiers : [],
+		fields: Array.isArray(workspace.findings) ? workspace.findings : [],
+		verifiers: Array.isArray(workspace.verification_tasks) ? workspace.verification_tasks : [],
 		finalVerdict: {
 			outcome: finalVerdict.outcome || workspace.status || "AMBER",
 			reasonCodes: Array.isArray(finalVerdict.reason_codes)
@@ -52,7 +68,7 @@ function normalizeWorkspacePayload(payload, sessionId) {
 			matchingScore: Number(finalVerdict.matching_score || 0),
 			visualMatchProbability: Number(finalVerdict.visual_match_probability || 0),
 		},
-		audit: Array.isArray(workspace.audit) ? workspace.audit : [],
+		audit: Array.isArray(workspace.audit_summary) ? workspace.audit_summary : [],
 		actions: Array.isArray(workspace.actions) ? workspace.actions : [],
 		raw: workspace,
 	};
@@ -103,6 +119,7 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
 				const normalizedWorkspace = normalizeWorkspacePayload(payload, sessionId);
 				setWorkspace(normalizedWorkspace);
 				setIsLoading(false);
+				setError("");  
 
 				if (shouldPoll(normalizedWorkspace)) {
 					timeoutId = window.setTimeout(() => {
@@ -111,15 +128,32 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
 						}
 					}, REFRESH_INTERVAL_MS);
 				}
-			} catch (requestError) {
-				if (isActive) {
-					setError(requestError.message);
-					setIsLoading(false);
+			} 
+			catch (requestError) {
+				if (!isActive) return;
+
+				// ✅ IGNORE "Workspace not ready"
+				if (requestError.message?.includes("Workspace not ready")) {
+					// retry automatically
+					timeoutId = window.setTimeout(() => {
+						if (isActive) {
+							loadWorkspace();
+						}
+					}, 1000);
+
+					return;
 				}
+
+				// ❗ real errors only
+				setError(requestError.message);
+				setIsLoading(false);
 			}
 		}
 
-		loadWorkspace({ showLoading: true });
+		(async () => {
+			await ensureRun(sessionId, token);       // ✅ run FIRST
+			await loadWorkspace({ showLoading: true });  // then workspace
+		})();
 		loadDocument();
 
 		return () => {
@@ -145,9 +179,10 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
 
 	return {
 		isLoading,
-		error,
+		error: workspace ? "" : error,
 		warnings,
 		documentUrl,
 		workspace,
 	};
 }
+

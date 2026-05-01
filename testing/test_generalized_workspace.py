@@ -15,12 +15,18 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from backend.app.agent_orchestration.schemas import VerifierResult
+from backend.app.agent_orchestration.schemas import (
+    GeminiCredentialGroupCollection,
+    GeminiDocumentUnderstanding,
+    GeminiNormalizedField,
+    GeminiNormalizedFieldCollection,
+    VerifierResult,
+)
 from backend.app.auth.routes import get_current_user
 from backend.app.db.database import Base, get_db
 from backend.app.main import app
 from backend.app.sessions.constants import SessionState
-from backend.app.sessions.models import Session as SessionModel
+from backend.app.sessions.models import AuditEventRecord, AuditReceiptRecord, Session as SessionModel
 from backend.app.trust.trust_engine import determine_field_decision
 
 
@@ -90,6 +96,14 @@ def _runtime_extraction_payload() -> dict:
             "document_id": "22BCE1001",
         },
     }
+
+
+class _FakeLlm:
+    def __init__(self, response):
+        self.response = response
+
+    def invoke(self, _prompt):
+        return self.response
 
 
 class GeneralizedWorkspaceTests(unittest.TestCase):
@@ -218,6 +232,7 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         self.assertEqual(run_response.status_code, 200)
         self.assertEqual(workspace_response.status_code, 200)
         payload = workspace_response.json()
+        self.assertEqual(payload["status"], SessionState.PENDING_HUMAN_REVIEW)
         self.assertEqual(
             sorted(payload.keys()),
             sorted(["session_id", "status", "ui_status", "document", "summary", "fields", "verifiers", "final_verdict", "audit", "actions"]),
@@ -331,6 +346,7 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
+        self.assertEqual(payload["status"], SessionState.PENDING_HUMAN_REVIEW)
         self.assertIn(payload["final_verdict"]["outcome"], {"GREEN", "AMBER", "RED"})
         self.assertTrue(any("fallback" in entry["message"].lower() for entry in payload["audit"]))
 
@@ -369,6 +385,7 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
+        self.assertEqual(payload["status"], SessionState.PENDING_HUMAN_REVIEW)
         self.assertEqual(payload["final_verdict"]["outcome"], "RED")
         self.assertTrue(any(field["status"] == "RED" for field in payload["fields"]))
         reason_codes = set(payload["final_verdict"]["reason_codes"])
@@ -397,6 +414,196 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
             self.assertIsNone(session.verification_execution_summary_payload)
             self.assertIsNone(session.agent_run_summary_payload)
             self.assertIsNone(session.extraction_payload)
+        finally:
+            db.close()
+
+    def test_run_and_review_decision_do_not_persist_raw_sensitive_artifacts(self):
+        session_id, file_path = self._create_uploaded_session("session-privacy-regression")
+        self.addCleanup(lambda: os.path.exists(file_path) and os.remove(file_path))
+        extraction_payload = copy.deepcopy(_runtime_extraction_payload())
+        sentinels = {
+            "RAW_OCR_SENTINEL_41A",
+            "RAW_PDF_TEXT_SENTINEL_41B",
+            "SOURCE_TEXT_SENTINEL_41C",
+            "RAW_VALUE_SENTINEL_41D",
+            "NORMALIZED_PII_SENTINEL_41E",
+            "FULL_GEMINI_PROMPT_SENTINEL_41F",
+            "FULL_GEMINI_RESPONSE_SENTINEL_41G",
+            "RAW_VERIFIER_RESPONSE_SENTINEL_41H",
+            "RAW_REVIEWER_NOTE_SENTINEL_41I",
+        }
+        extraction_payload["view"].update(
+            {
+                "raw_text": " ".join(
+                    [
+                        "RAW_OCR_SENTINEL_41A",
+                        "RAW_PDF_TEXT_SENTINEL_41B",
+                        "FULL_GEMINI_PROMPT_SENTINEL_41F",
+                    ]
+                ),
+                "field_candidates": [
+                    {
+                        "candidate_id": "privacy-candidate",
+                        "label": "Candidate Name",
+                        "raw_value": "RAW_VALUE_SENTINEL_41D",
+                        "normalized_value": "NORMALIZED_PII_SENTINEL_41E",
+                        "source_text": "SOURCE_TEXT_SENTINEL_41C",
+                        "confidence": 0.95,
+                        "page": 1,
+                        "is_pii": True,
+                        "requires_verification": True,
+                    }
+                ],
+                "generalized_analysis": {
+                    "agent_raw_output": "FULL_GEMINI_RESPONSE_SENTINEL_41G",
+                },
+            }
+        )
+        verifier_result = [
+            {
+                "connector_id": "local_mock_registry",
+                "status": "VERIFIED",
+                "reason_codes": ["REGISTRY_MATCHED"],
+                "assurance_class": "HIGH",
+                "response_body": "RAW_VERIFIER_RESPONSE_SENTINEL_41H",
+                "raw_response": {"body": "RAW_VERIFIER_RESPONSE_SENTINEL_41H"},
+            }
+        ]
+        gemini_responses = [
+            _FakeLlm(
+                GeminiDocumentUnderstanding(
+                    document_type="academic_credential",
+                    summary="FULL_GEMINI_RESPONSE_SENTINEL_41G",
+                    explanation="FULL_GEMINI_RESPONSE_SENTINEL_41G",
+                    grounding_confidence=0.95,
+                    matching_score=0.9,
+                    visual_match_probability=0.8,
+                )
+            ),
+            _FakeLlm(
+                GeminiNormalizedFieldCollection(
+                    fields=[
+                        GeminiNormalizedField(
+                            field_id="name",
+                            label="Name",
+                            extracted_value="Alice Rao",
+                            normalized_value="Alice Rao",
+                            ai_confidence=0.99,
+                            grounding_confidence=0.95,
+                            mandatory=True,
+                        )
+                    ]
+                )
+            ),
+            _FakeLlm(
+                GeminiCredentialGroupCollection(
+                    groups=[
+                        {
+                            "group_id": "primary-credential",
+                            "label": "Primary Credential",
+                            "field_ids": ["name"],
+                            "connector_id": "local_mock_registry",
+                            "claim_type": "identity",
+                            "optional": False,
+                            "high_assurance": True,
+                            "explanation": "FULL_GEMINI_RESPONSE_SENTINEL_41G",
+                        }
+                    ]
+                )
+            ),
+        ]
+        env = {
+            "AGENT_ORCHESTRATION_ENABLED": "true",
+            "AGENT_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "test-key",
+            "GEMINI_DEMO_RAW_TEXT_ENABLED": "true",
+        }
+
+        with patch.dict(os.environ, env, clear=False), patch(
+            "backend.app.api.routes.start_verification",
+            return_value="STARTED",
+        ), patch(
+            "backend.app.agent_orchestration.graph.extract_document_payload",
+            return_value=extraction_payload,
+        ), patch(
+            "backend.app.agent_orchestration.graph.build_connector_responses",
+            return_value=verifier_result,
+        ), patch(
+            "backend.app.agent_orchestration.graph._build_structured_gemini_llm",
+            side_effect=gemini_responses,
+        ):
+            run_response = self.client.post(f"/api/v1/verification-sessions/{session_id}/run")
+
+        self.assertEqual(run_response.status_code, 200)
+        run_payload = run_response.json()
+        self.assertEqual(run_payload["status"], SessionState.PENDING_HUMAN_REVIEW)
+        self.assertIn(run_payload["final_verdict"]["outcome"], {"GREEN", "AMBER", "RED"})
+
+        reviewer_note = "RAW_REVIEWER_NOTE_SENTINEL_41I should be hashed only"
+        review_response = self.client.post(
+            f"/api/v1/verification-sessions/{session_id}/review-decision",
+            json={"decision": "NEEDS_MANUAL_REVIEW", "reviewer_note": reviewer_note},
+        )
+
+        self.assertEqual(review_response.status_code, 200)
+        self.assertEqual(review_response.json()["status"], SessionState.MANUAL_REVIEW_REQUIRED)
+
+        db = self.SessionLocal()
+        try:
+            session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+            self.assertIsNotNone(session)
+            receipt = (
+                db.query(AuditReceiptRecord)
+                .filter(AuditReceiptRecord.session_id == session_id)
+                .first()
+            )
+            self.assertIsNotNone(receipt)
+            events = (
+                db.query(AuditEventRecord)
+                .filter(AuditEventRecord.session_id == session_id)
+                .all()
+            )
+
+            self.assertEqual(session.status, SessionState.MANUAL_REVIEW_REQUIRED)
+            self.assertIn(session.trust_outcome, {"GREEN", "AMBER", "RED"})
+            self.assertIsNone(session.extraction_payload)
+            self.assertIsNone(session.connector_payload)
+            self.assertIsNone(session.agent_run_summary_payload)
+            self.assertIsNone(session.provider_execution_traces_payload)
+            self.assertIsNotNone(receipt.reviewer_note_hash)
+            self.assertNotEqual(receipt.reviewer_note_hash, reviewer_note)
+            self.assertIn(receipt.trust_outcome, {"GREEN", "AMBER", "RED"})
+            self.assertIsInstance(receipt.finding_counts, dict)
+            self.assertTrue(set(receipt.finding_counts).issuperset({"green", "amber", "red"}))
+            self.assertIsInstance(receipt.reason_codes, list)
+
+            persisted_payload = {
+                "session": {
+                    "status": session.status,
+                    "trust_outcome": session.trust_outcome,
+                    "reason_codes": session.reason_codes,
+                    "connector_ids": session.connector_ids,
+                    "workspace_payload": session.workspace_payload,
+                    "verification_execution_summary_payload": session.verification_execution_summary_payload,
+                    "agent_run_summary_payload": session.agent_run_summary_payload,
+                    "provider_execution_traces_payload": session.provider_execution_traces_payload,
+                    "extraction_payload": session.extraction_payload,
+                    "connector_payload": session.connector_payload,
+                },
+                "receipt": {
+                    "trust_outcome": receipt.trust_outcome,
+                    "reason_codes": receipt.reason_codes,
+                    "connector_ids": receipt.connector_ids,
+                    "reviewer_decision": receipt.reviewer_decision,
+                    "reviewer_note_hash": receipt.reviewer_note_hash,
+                    "finding_counts": receipt.finding_counts,
+                    "receipt_hash": receipt.receipt_hash,
+                },
+                "events": [event.event_data for event in events],
+            }
+            serialized = json.dumps(persisted_payload, sort_keys=True, default=str)
+            for sentinel in sentinels:
+                self.assertNotIn(sentinel, serialized)
         finally:
             db.close()
 

@@ -36,12 +36,6 @@ TRUST_FIELD_CONFIG = [
     ("document_id", "id", "Document ID", True),
 ]
 
-STATUS_BY_OUTCOME = {
-    "GREEN": SessionState.VERIFIED_GREEN,
-    "AMBER": SessionState.VERIFIED_AMBER,
-    "RED": SessionState.VERIFIED_RED,
-}
-
 PROCESSING_STATES = {
     SessionState.VERIFYING,
 }
@@ -200,7 +194,11 @@ def get_status_response(session: SessionModel) -> dict[str, Any]:
 
 
 def get_result_response(session: SessionModel) -> dict[str, Any]:
-    if session.status in VERIFIED_STATES:
+    if session.trust_outcome and session.status in (
+        VERIFIED_STATES
+        | HUMAN_FINAL_STATES
+        | {SessionState.PENDING_HUMAN_REVIEW}
+    ):
         return {
             "session_id": session.id,
             "outcome": session.trust_outcome,

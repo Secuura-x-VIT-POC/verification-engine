@@ -45,6 +45,12 @@ class StateMachineTests(unittest.TestCase):
             SessionState.FAILED_PURGED,
         )
 
+    def test_validate_transition_allows_verifying_to_pending_human_review(self):
+        validate_transition(
+            SessionState.VERIFYING,
+            SessionState.PENDING_HUMAN_REVIEW,
+        )
+
     def test_validate_transition_rejects_invalid_transition(self):
         with self.assertRaises(InvalidStateTransitionError):
             validate_transition(
@@ -478,7 +484,8 @@ class WorkflowRuntimeFailureTests(unittest.TestCase):
 
         db.refresh(session)
         self.assertEqual(result["outcome"], "GREEN")
-        self.assertEqual(session.status, SessionState.VERIFIED_GREEN)
+        self.assertEqual(session.status, SessionState.PENDING_HUMAN_REVIEW)
+        self.assertEqual(session.trust_outcome, "GREEN")
         self.assertIsNone(session.extraction_payload)
         self.assertIsNone(session.connector_payload)
         db.close()

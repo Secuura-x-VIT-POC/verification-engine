@@ -66,11 +66,7 @@ def run_generalized_verification_session(
         )
         workspace = WorkspacePayload.model_validate(state["workspace_payload"])
         final_verdict = FinalVerdict.model_validate(state["final_verdict"])
-        verified_state = _state_for_outcome(final_verdict.outcome)
-        exceptions = final_verdict.reason_codes or []
-
-        if "LOW_CONFIDENCE_REVIEW_REQUIRED" in exceptions:
-            verified_state = SessionState.PENDING_HUMAN_REVIEW
+        review_state = SessionState.PENDING_HUMAN_REVIEW
 
         completion_values = {}
         try:
@@ -97,8 +93,8 @@ def run_generalized_verification_session(
 
         workspace = workspace.model_copy(
             update={
-                "status": verified_state,
-                "ui_status": "READY",
+                "status": review_state,
+                "ui_status": "Ready for human review",
                 "final_verdict": final_verdict,
                 "summary": workspace.summary.model_copy(
                     update={
@@ -114,7 +110,7 @@ def run_generalized_verification_session(
         repository.complete_processing(
             db,
             session.id,
-            verified_state,
+            review_state,
             final_verdict.outcome,
             final_verdict.reason_codes,
             final_verdict.connector_ids,
@@ -220,15 +216,5 @@ def _default_actions(session_status: str = "") -> list[WorkspaceAction]:
         WorkspaceAction(action_id="can_reject", label="Reject", enabled=pending_human_review),
         WorkspaceAction(action_id="can_manual_review", label="Manual Review", enabled=pending_human_review),
     ]
-
-
-def _state_for_outcome(outcome: str) -> str:
-    if outcome == "GREEN":
-        return SessionState.VERIFIED_GREEN
-    if outcome == "RED":
-        return SessionState.VERIFIED_RED
-    return SessionState.VERIFIED_AMBER
-
-
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()

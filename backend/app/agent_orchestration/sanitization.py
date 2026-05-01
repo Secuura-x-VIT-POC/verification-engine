@@ -8,9 +8,14 @@ from .schemas import WorkspacePayload
 
 UNSAFE_KEYS = {
     "raw_text",
+    "raw_ocr_text",
+    "raw_pdf_text",
+    "pdf_text",
+    "full_pdf_text",
     "full_ocr_text",
     "ocr_text",
     "source_text",
+    "raw_value",
     "spatial_text_map",
     "evidence_lines",
     "field_candidates",
@@ -28,6 +33,12 @@ UNSAFE_KEYS = {
     "raw_payload",
     "request_body",
     "response_body",
+    "full_gemini_prompt",
+    "gemini_prompt",
+    "full_gemini_response",
+    "gemini_response",
+    "reviewer_note",
+    "raw_reviewer_note",
     "connector_payload",
     "provider_execution_traces_payload",
 }

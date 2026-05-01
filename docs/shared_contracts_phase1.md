@@ -53,9 +53,11 @@ FAILED_PURGED
 ABANDONED_VERIFYING
 ```
 
-`VERIFIED_GREEN`, `VERIFIED_AMBER`, and `VERIFIED_RED` are system findings, not final approval states.
+`VERIFIED_GREEN`, `VERIFIED_AMBER`, and `VERIFIED_RED` are legacy/backward-compatible system finding states. They may remain in code and tests while older sessions are supported, but new normal completed runs should prefer `PENDING_HUMAN_REVIEW` with the color result stored separately.
 
 `PENDING_HUMAN_REVIEW` is mandatory before final approval, rejection, or manual-review classification.
+
+GREEN, AMBER, and RED must be represented as `trust_outcome`, `overall_outcome`, or `final_verdict.outcome`, not as final workflow approval states. Frontend code should read `status` for workflow state and `overall_outcome`/`final_verdict.outcome` for the color result.
 
 Final human states must lead to cleanup.
 
@@ -66,7 +68,6 @@ CREATED
 -> UPLOAD_PENDING
 -> UPLOADED_PENDING_REVIEW
 -> VERIFYING
--> VERIFIED_GREEN/VERIFIED_AMBER/VERIFIED_RED
 -> PENDING_HUMAN_REVIEW
 -> HUMAN_APPROVED/HUMAN_REJECTED/MANUAL_REVIEW_REQUIRED
 -> PENDING_CLEANUP

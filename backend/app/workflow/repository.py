@@ -5,16 +5,17 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
 
+from ..sessions.constants import SessionState
 from ..sessions.models import Session as SessionModel
 from .state_machine import InvalidStateTransitionError, validate_transition
 
 LOGGER = logging.getLogger(__name__)
 
-PENDING_REVIEW_STATE = "UPLOADED_PENDING_REVIEW"
-VERIFYING_STATE = "VERIFYING"
+PENDING_REVIEW_STATE = SessionState.UPLOADED_PENDING_REVIEW
+VERIFYING_STATE = SessionState.VERIFYING
 LEASE_ACQUIRABLE_STATES = {
     PENDING_REVIEW_STATE,
-    "FAILED_RETRIABLE",
+    SessionState.FAILED_RETRIABLE,
 }
 
 
@@ -149,7 +150,7 @@ def mark_stale_sessions(conn, timeout_seconds: int = 60) -> int:
     _validate_transition_or_raise(
         session_id="bulk-stale-session-scan",
         current_state=VERIFYING_STATE,
-        new_state="ABANDONED_VERIFYING",
+        new_state=SessionState.ABANDONED_VERIFYING,
     )
 
     cutoff = datetime.utcnow() - timedelta(seconds=timeout_seconds)
@@ -159,7 +160,7 @@ def mark_stale_sessions(conn, timeout_seconds: int = 60) -> int:
         .where(SessionModel.heartbeat_at.is_not(None))
         .where(SessionModel.heartbeat_at < cutoff)
         .values(
-            status="ABANDONED_VERIFYING",
+            status=SessionState.ABANDONED_VERIFYING,
             lease_id=None,
             lease_holder_id=None,
             lease_acquired_at=None,
@@ -172,7 +173,7 @@ def mark_stale_sessions(conn, timeout_seconds: int = 60) -> int:
         LOGGER.info(
             "STATE_TRANSITION: %s → %s count=%s",
             VERIFYING_STATE,
-            "ABANDONED_VERIFYING",
+            SessionState.ABANDONED_VERIFYING,
             updated_rows,
         )
     return updated_rows

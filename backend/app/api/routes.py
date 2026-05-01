@@ -145,20 +145,22 @@ def _review_status_for_decision(decision: ReviewDecisionValue) -> tuple[str, str
     return SessionState.MANUAL_REVIEW_REQUIRED, "MANUAL_REVIEW_REQUIRED"
 
 
-def _workspace_state_to_outcome(status: str) -> str:
-    if status == SessionState.VERIFIED_GREEN:
-        return "GREEN"
-    if status == SessionState.VERIFIED_RED:
-        return "RED"
-    return "AMBER"
+def _completed_review_workspace(workspace: WorkspacePayload | dict) -> WorkspacePayload:
+    if isinstance(workspace, dict):
+        workspace = WorkspacePayload.model_validate(workspace)
+    return workspace.model_copy(
+        update={
+            "status": SessionState.PENDING_HUMAN_REVIEW,
+            "ui_status": "Ready for human review",
+        }
+    )
 
 
 def _persist_workspace_contract(db: Session, session: SessionModel, workspace: WorkspacePayload) -> None:
-    if isinstance(workspace, dict):
-        workspace = WorkspacePayload.model_validate(workspace)
-    session.status = workspace.status
+    workspace = _completed_review_workspace(workspace)
+    session.status = SessionState.PENDING_HUMAN_REVIEW
     session.worker_phase = "COMPLETED"
-    session.trust_outcome = _workspace_state_to_outcome(workspace.status)
+    session.trust_outcome = workspace.final_verdict.outcome
     session.reason_codes = list(workspace.final_verdict.reason_codes or [])
     session.connector_ids = list(workspace.final_verdict.connector_ids or [])
     session.workspace_payload = workspace.model_dump(mode="json")
@@ -454,7 +456,7 @@ def run_generalized_verification_route(
         raise HTTPException(status_code=500, detail="Verification could not be started")
 
     try:
-        workspace = _build_workspace_payload(session)
+        workspace = _completed_review_workspace(_build_workspace_payload(session))
         _persist_workspace_contract(db, session, workspace)
         return workspace
     except Exception as exc:

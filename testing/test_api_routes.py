@@ -137,6 +137,9 @@ class WorkflowApiRouteTests(unittest.TestCase):
     def test_verified_green_can_move_to_pending_human_review(self):
         validate_transition(SessionState.VERIFIED_GREEN, SessionState.PENDING_HUMAN_REVIEW)
 
+    def test_verifying_can_move_to_pending_human_review(self):
+        validate_transition(SessionState.VERIFYING, SessionState.PENDING_HUMAN_REVIEW)
+
     def test_run_endpoint_starts_verification_and_returns_workspace_payload(self):
         file_path = self._create_temp_pdf()
         self._create_session(
@@ -156,6 +159,8 @@ class WorkflowApiRouteTests(unittest.TestCase):
         self.assertNotEqual(response.status_code, 410)
         self.assertEqual(response.json()["session_id"], "session-run-valid")
         self.assertIn("final_verdict", response.json())
+        self.assertEqual(response.json()["status"], SessionState.PENDING_HUMAN_REVIEW)
+        self.assertEqual(response.json()["final_verdict"]["outcome"], "AMBER")
         start_mock.assert_called_once()
         self.assertEqual(start_mock.call_args.kwargs["worker_id"], "user-1")
         workspace_mock.assert_called_once()
@@ -509,8 +514,8 @@ class WorkflowApiRouteTests(unittest.TestCase):
     def _workspace_payload(self, session_id: str) -> dict:
         return {
             "session_id": session_id,
-            "status": "AMBER",
-            "ui_status": "COMPLETED",
+            "status": SessionState.PENDING_HUMAN_REVIEW,
+            "ui_status": "Ready for human review",
             "document": {
                 "filename": "demo.pdf",
                 "document_type": "academic_credential",

@@ -10,6 +10,7 @@ from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Callable
 
+from ..sessions.constants import SessionState
 from ..trust.trust_engine import evaluate_trust
 from .failures import FailureClassification, WorkflowProcessingError, classify_failure
 from . import repository
@@ -21,13 +22,6 @@ WORKER_PHASE_EXTRACTING = "EXTRACTING"
 WORKER_PHASE_GROUNDING = "GROUNDING"
 WORKER_PHASE_CONNECTOR_EVAL = "CONNECTOR_EVAL"
 WORKER_PHASE_TRUST_SCORING = "TRUST_SCORING"
-
-STATE_MAP = {
-    "GREEN": "VERIFIED_GREEN",
-    "AMBER": "VERIFIED_AMBER",
-    "RED": "VERIFIED_RED",
-}
-
 
 def generate_worker_id() -> str:
     return str(uuid.uuid4())
@@ -262,14 +256,7 @@ def complete_processing(
     *,
     extra_values: dict | None = None,
 ) -> None:
-    # Default state
-    final_state = STATE_MAP[outcome]
-
-    # ✅ FIX: derive exceptions from reason_codes (NOT extra_values)
-    exceptions = reason_codes or []
-
-    if "LOW_CONFIDENCE_REVIEW_REQUIRED" in exceptions:
-        final_state = "PENDING_HUMAN_REVIEW"
+    final_state = SessionState.PENDING_HUMAN_REVIEW
 
     repository.complete_processing(
         conn,

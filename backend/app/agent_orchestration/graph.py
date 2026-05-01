@@ -9,6 +9,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from ..sessions.constants import SessionState
 from ..workflow.runtime import build_connector_responses, build_policy, extract_document_payload
 from ..verification_domain.adapters import build_session_credentials, build_session_verification_plan
 from ..verification_domain.contracts import SessionCredentialCollection, SessionVerificationPlan
@@ -300,13 +301,7 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
     final_verdict = state.get("final_verdict") or {}
     warnings = list(((sanitized_extraction.get("view") or {}).get("warnings")) or [])
 
-    outcome = final_verdict.get("outcome", "AMBER")
-    if outcome == "GREEN":
-        status = "VERIFIED_GREEN"
-    elif outcome == "RED":
-        status = "VERIFIED_RED"
-    else:
-        status = "VERIFIED_AMBER"
+    status = SessionState.PENDING_HUMAN_REVIEW
 
     active_exceptions = sorted(
         {
@@ -316,9 +311,6 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
             if field.status != "GREEN"
         }
     )
-
-    if "LOW_CONFIDENCE_REVIEW_REQUIRED" in active_exceptions:
-        status = "PENDING_HUMAN_REVIEW"
 
     verifiers = [
         WorkspaceVerifierStatus(
@@ -334,11 +326,7 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
         for result in verifier_results
     ]
 
-    ui_status = "Ready"
-    if status == "PENDING_HUMAN_REVIEW":
-        ui_status = "Ready for human review"
-    elif status.startswith("VERIFIED_"):
-        ui_status = "Verification completed"
+    ui_status = "Ready for human review"
 
     workspace = WorkspacePayload(
         session_id=str(state.get("session_id") or ""),
@@ -373,12 +361,16 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
 
 def _workspace_actions_for_status(session_status: str) -> list[WorkspaceAction]:
     pending_human_review = session_status in {
-        "VERIFIED_GREEN",
-        "VERIFIED_AMBER",
-        "VERIFIED_RED",
-        "PENDING_HUMAN_REVIEW",
+        SessionState.VERIFIED_GREEN,
+        SessionState.VERIFIED_AMBER,
+        SessionState.VERIFIED_RED,
+        SessionState.PENDING_HUMAN_REVIEW,
     }
-    human_final = session_status in {"HUMAN_APPROVED", "HUMAN_REJECTED", "MANUAL_REVIEW_REQUIRED"}
+    human_final = session_status in {
+        SessionState.HUMAN_APPROVED,
+        SessionState.HUMAN_REJECTED,
+        SessionState.MANUAL_REVIEW_REQUIRED,
+    }
     return [
         WorkspaceAction(action_id="can_rerun", label="Rerun"),
         WorkspaceAction(action_id="can_manual_override", label="Manual Override"),

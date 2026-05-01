@@ -1,4 +1,13 @@
 PyMuPDF==1.23.8
+pypdf>=5.0.0
 pytesseract==0.3.10
 Pillow==10.2.0
 pydantic==2.5.3
+
+# Optional local OCR acceleration
+paddleocr>=2.8.0
+paddlepaddle>=2.6.0
+
+# Optional NLP enrichment
+spacy>=3.7.0
+sentence-transformers>=2.6.0

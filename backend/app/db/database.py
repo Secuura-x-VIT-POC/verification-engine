@@ -58,6 +58,7 @@ SESSION_SCHEMA_UPDATES = {
     "verification_execution_error": "TEXT",
     "document_commitment": "VARCHAR",
     "audit_receipt_id": "VARCHAR",
+    "workspace_payload": "JSON",
     "purge_status": "VARCHAR",
     "purge_error": "TEXT",
     "uploaded_at": "TIMESTAMP",

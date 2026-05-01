@@ -7,7 +7,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PyPDF2 import PdfReader
+try:
+    from pypdf import PdfReader
+except ImportError:  # pragma: no cover
+    from PyPDF2 import PdfReader  # type: ignore
 from sqlalchemy.orm import Session as DbSession
 
 from ..audit.service import get_latest_audit_receipt
@@ -531,7 +534,7 @@ def _load_extraction_result(file_path: Path) -> dict[str, Any]:
         return fallback
 
     if hasattr(result, "model_dump"):
-        return result.model_dump()
+        return result.model_dump(mode="json")
     if hasattr(result, "dict"):
         return result.dict()
     return dict(result)

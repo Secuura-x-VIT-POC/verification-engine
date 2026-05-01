@@ -188,6 +188,37 @@ def _build_verification_tasks(state: GeneralizedVerificationState) -> dict[str, 
     }
 
 def _run_verifier_apis(state: GeneralizedVerificationState) -> dict[str, Any]:
+    compatibility_results = build_connector_responses(
+        state.get("extraction_payload") or {},
+        state.get("policy") or {},
+    )
+    if isinstance(compatibility_results, list) and compatibility_results:
+        verifier_results: list[VerifierResult] = []
+        for item in compatibility_results:
+            if not isinstance(item, dict):
+                continue
+            connector_id = str(item.get("connector_id") or item.get("provider_key") or "provider")
+            status = str(item.get("status") or "ERROR").upper()
+            verifier_results.append(
+                VerifierResult(
+                    task_id=str(item.get("task_id") or connector_id),
+                    field_id=str(item.get("field_id") or "connector_claim"),
+                    connector_id=connector_id,
+                    status=status,
+                    verification_confidence=_verification_confidence_from_status(status),
+                    reason_codes=list(item.get("reason_codes") or []),
+                    source_api=connector_id,
+                    audit_message=_verifier_audit_message(connector_id, status, item),
+                    optional=bool(item.get("optional", False)),
+                    high_assurance=str(item.get("assurance_class") or "").upper() == "HIGH",
+                    field_ids=list(item.get("field_ids") or []),
+                )
+            )
+        return {
+            "verifier_results": [result.model_dump(mode="json") for result in verifier_results],
+            "audit_log": [_audit_item("run_verifier_apis", f"Collected {len(verifier_results)} verifier result(s).")],
+        }
+
     extraction_payload = state.get("extraction_payload") or {}
     session_id = str(state.get("session_id") or "")
     credentials_payload = state.get("domain_credentials") or {}

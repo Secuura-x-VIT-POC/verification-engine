@@ -3,10 +3,14 @@ uvicorn[standard]
 
 sqlalchemy
 psycopg2-binary
-pypdf2
+pypdf>=5.0.0
 pymupdf
 pytesseract
 pillow
+paddleocr>=2.8.0
+paddlepaddle>=2.6.0
+spacy>=3.7.0
+sentence-transformers>=2.6.0
 
 pydantic
 langgraph

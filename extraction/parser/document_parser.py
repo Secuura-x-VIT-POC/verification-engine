@@ -1,340 +1,212 @@
 from __future__ import annotations
 
-import json
-import re
-import subprocess
-import sys
 from pathlib import Path
+from typing import Any
 
-from extraction.analysis import build_generalized_analysis
-from extraction.schema.models import (
+from pydantic import BaseModel, ConfigDict, Field
+
+from extraction.analysis.pipeline import build_evidence_lines, extract_field_candidates
+from extraction.models import (
     CanonicalSchema,
     DocumentMetadata,
     ExtractedField,
-    ExtractionResult,
-    ExtractionWarning,
+    OCRMetadata,
     SafetyReport,
     SpatialTextToken,
 )
-from extraction.security import DocumentSafetyError, validate_document_intake
-
-MIN_TEXT_THRESHOLD = 50
-SCANNED_CHARACTER_DENSITY_THRESHOLD = 8.0
-SCANNED_WORD_COUNT_THRESHOLD = 20
-PARSING_TIMEOUT_SECONDS = 20
-OCR_TIMEOUT_SECONDS = 90
+from extraction.pipeline import extract_document_data_with_strategy as _phase3_extract_document_data_with_strategy
+from extraction.security_gate import DocumentSafetyError, validate_document_intake
 
 
-def extract_document_data(file_path: str) -> ExtractionResult:
+class LegacyExtractionResult(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    is_successful: bool
+    used_ocr: bool
+    fields: CanonicalSchema = Field(default_factory=CanonicalSchema)
+    raw_text: str = ""
+    spatial_text_map: list[SpatialTextToken] = Field(default_factory=list)
+    evidence_lines: list[Any] = Field(default_factory=list)
+    field_candidates: list[Any] = Field(default_factory=list)
+    metadata: DocumentMetadata | None = None
+    ocr_metadata: OCRMetadata | None = None
+    safety_report: SafetyReport | None = None
+    reason_code: str | None = None
+    error_message: str | None = None
+
+
+def extract_document_data(file_path: str) -> LegacyExtractionResult:
     return extract_document_data_with_strategy(file_path, strategy="auto")
 
 
-def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") -> ExtractionResult:
+def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") -> LegacyExtractionResult:
     path = Path(file_path)
-    metadata = DocumentMetadata(
-        file_name=path.name,
-        file_type=path.suffix.lower().lstrip("."),
-        size_bytes=path.stat().st_size if path.exists() else 0,
-    )
-    warnings: list[ExtractionWarning] = []
-    safety_report: SafetyReport | None = None
+    if path.suffix.lower() != ".pdf":
+        return LegacyExtractionResult(
+            is_successful=False,
+            used_ocr=False,
+            reason_code="UNSUPPORTED_FORMAT",
+            raw_text="",
+        )
 
     try:
         safety_report = validate_document_intake(str(path))
-
-        native_result = _run_parse_worker(path, mode="native", timeout_seconds=PARSING_TIMEOUT_SECONDS)
-        native_character_density = float(native_result.get("character_density", 0.0))
-        native_word_count = int(native_result.get("word_count", 0))
-        native_raw_text = str(native_result.get("raw_text", "")).strip()
-        is_scanned = _is_scanned_document(native_character_density, native_word_count, len(native_raw_text))
-        native_text_insufficient = len(native_raw_text) < MIN_TEXT_THRESHOLD and native_word_count < SCANNED_WORD_COUNT_THRESHOLD
-
-        selected_result = native_result
-
-        if strategy == "ocr_only":
-            selected_result = _run_parse_worker(path, mode="ocr", timeout_seconds=OCR_TIMEOUT_SECONDS)
-            warnings.append(ExtractionWarning(code="FORCED_OCR", message="OCR-only strategy was used for this PDF."))
-        elif strategy == "auto" and (is_scanned or native_text_insufficient):
-            try:
-                selected_result = _run_parse_worker(path, mode="hybrid", timeout_seconds=OCR_TIMEOUT_SECONDS)
-                warnings.append(
-                    ExtractionWarning(
-                        code="OCR_FALLBACK",
-                        message="Hybrid OCR fallback was used because the PDF appears scanned or text-sparse.",
-                    )
-                )
-            except RuntimeError as exc:
-                if _is_ocr_unavailable(str(exc)) and native_raw_text:
-                    selected_result = native_result
-                    warnings.append(
-                        ExtractionWarning(
-                            code="OCR_UNAVAILABLE_NATIVE_USED",
-                            message="OCR fallback was unavailable, so the pipeline continued with native PDF text extraction.",
-                        )
-                    )
-                else:
-                    raise
-        elif strategy == "text_only" and is_scanned:
-            warnings.append(
-                ExtractionWarning(
-                    code="SCANNED_TEXT_LAYER",
-                    message="Text-only mode was used on a document that appears scanned.",
-                )
-            )
-
-        ocr_metadata = selected_result.get("ocr_metadata") or None
-        used_ocr = bool((ocr_metadata or {}).get("ocr_applied"))
-        warning_codes = list(dict.fromkeys((ocr_metadata or {}).get("warning_codes") or []))
-        for warning_code in warning_codes:
-            warnings.append(
-                ExtractionWarning(
-                    code=warning_code,
-                    message=_warning_message_for_code(warning_code),
-                )
-            )
-
-        raw_text = _normalize_text(str(selected_result.get("raw_text", "")))
-        spatial_text_map = _coerce_spatial_text_map(selected_result.get("spatial_text_map", []))
-        extraction_method = strategy if strategy != "auto" else ("hybrid" if used_ocr else "native_text")
-        evidence_lines, field_candidates = build_generalized_analysis(
-            raw_text=raw_text,
-            spatial_text_map=spatial_text_map,
-            extraction_method=extraction_method,
-            warnings=warnings,
-        )
-        fields = _build_canonical_schema(field_candidates)
-
-        metadata.page_count = safety_report.page_count
-        metadata.text_char_count = len(raw_text)
-        metadata.extraction_method = extraction_method
-        metadata.character_density = float(selected_result.get("character_density", native_character_density))
-        metadata.min_resolution_dpi = safety_report.min_resolution_dpi
-        metadata.is_scanned = is_scanned
-        metadata.sandboxed_processing = True
-
-        safety_report.character_density = metadata.character_density
-        safety_report.is_scanned = is_scanned
-
-        if not raw_text.strip():
-            warnings.append(ExtractionWarning(code="EMPTY_TEXT", message="No extractable text was produced from the PDF."))
-
-        return ExtractionResult(
-            is_successful=True,
-            used_ocr=used_ocr,
-            fields=fields,
-            raw_text=raw_text,
-            spatial_text_map=spatial_text_map,
-            evidence_lines=evidence_lines,
-            field_candidates=field_candidates,
-            generalized_analysis=None,
-            metadata=metadata,
-            ocr_metadata=ocr_metadata,
-            enrichment_metadata=None,
-            safety_report=safety_report,
-            warnings=warnings,
-        )
     except DocumentSafetyError as exc:
-        return ExtractionResult(
+        return LegacyExtractionResult(
             is_successful=False,
             used_ocr=False,
-            fields=CanonicalSchema(),
-            raw_text="",
-            spatial_text_map=[],
-            metadata=metadata,
-            ocr_metadata=None,
-            safety_report=exc.safety_report or safety_report,
-            warnings=warnings,
             reason_code=exc.reason_code,
             error_message=exc.message,
-        )
-    except subprocess.TimeoutExpired as exc:
-        reason_code = "OCR_TIMEOUT" if "ocr" in " ".join(exc.cmd).lower() else "PARSING_TIMEOUT"
-        return ExtractionResult(
-            is_successful=False,
-            used_ocr=False,
-            fields=CanonicalSchema(),
             raw_text="",
-            spatial_text_map=[],
-            metadata=metadata,
-            ocr_metadata=None,
-            safety_report=safety_report,
-            warnings=warnings,
-            reason_code=reason_code,
-            error_message=f"{reason_code.replace('_', ' ').title()} was exceeded.",
-        )
-    except Exception as exc:
-        return ExtractionResult(
-            is_successful=False,
-            used_ocr=False,
-            fields=CanonicalSchema(),
-            raw_text="",
-            spatial_text_map=[],
-            metadata=metadata,
-            ocr_metadata=None,
-            safety_report=safety_report,
-            warnings=warnings,
-            reason_code=_reason_code_for_exception(str(exc), default="UNEXPECTED_PIPELINE_ERROR"),
-            error_message=str(exc),
+            safety_report=exc.safety_report,
         )
 
-
-def _run_parse_worker(path: Path, *, mode: str, timeout_seconds: int) -> dict:
-    completed = subprocess.run(
-        [sys.executable, "-m", "extraction.ocr.engine", mode, str(path)],
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
-    if completed.returncode != 0:
-        stderr = completed.stderr.strip() or completed.stdout.strip() or "Extraction worker failed."
-        raise RuntimeError(stderr)
     try:
-        return json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Extraction worker returned invalid JSON: {exc}") from exc
+        payload, extraction_method = _load_payload(path, strategy)
+        return _build_legacy_result(path, payload, safety_report, extraction_method)
+    except Exception as exc:
+        return LegacyExtractionResult(
+            is_successful=False,
+            used_ocr=False,
+            reason_code="UNEXPECTED_PIPELINE_ERROR",
+            error_message=str(exc),
+            raw_text="",
+            safety_report=safety_report,
+        )
 
 
-def _is_scanned_document(character_density: float, word_count: int, text_char_count: int) -> bool:
-    return (
-        character_density < SCANNED_CHARACTER_DENSITY_THRESHOLD
-        and word_count < SCANNED_WORD_COUNT_THRESHOLD
-        and text_char_count < MIN_TEXT_THRESHOLD
+def _load_payload(path: Path, strategy: str) -> tuple[dict[str, Any], str]:
+    if strategy == "auto":
+        native_result = _run_parse_worker(str(path), "native_text")
+        if _should_fallback_to_hybrid(native_result):
+            return _run_parse_worker(str(path), "hybrid"), "hybrid"
+        return native_result, "native_text"
+    return _run_parse_worker(str(path), strategy), strategy
+
+
+def _should_fallback_to_hybrid(payload: dict[str, Any]) -> bool:
+    raw_text = str(payload.get("raw_text") or "").strip()
+    word_count = int(payload.get("word_count") or 0)
+    density = float(payload.get("character_density") or 0.0)
+    return not raw_text or word_count == 0 or density < 5.0
+
+
+def _run_parse_worker(file_path: str, strategy: str) -> dict[str, Any]:
+    phase3_strategy = "auto"
+    if strategy == "native_text":
+        phase3_strategy = "text_only"
+    elif strategy in {"hybrid", "ocr"}:
+        phase3_strategy = "auto"
+    result = _phase3_extract_document_data_with_strategy(file_path, strategy=phase3_strategy)
+    return result.model_dump(mode="json")
+
+
+def _build_legacy_result(
+    path: Path,
+    payload: dict[str, Any],
+    safety_report: SafetyReport,
+    extraction_method: str,
+) -> LegacyExtractionResult:
+    spatial_text_map = [
+        item if isinstance(item, SpatialTextToken) else SpatialTextToken.model_validate(item)
+        for item in list(payload.get("spatial_text_map") or [])
+    ]
+    evidence_lines = build_evidence_lines(spatial_text_map)
+    field_candidates = extract_field_candidates(
+        raw_text=str(payload.get("raw_text") or ""),
+        evidence_lines=evidence_lines,
+        spatial_text_map=spatial_text_map,
+        extraction_method="hybrid" if extraction_method == "hybrid" else "native_text",
+        warnings=list(payload.get("warnings") or []),
+    )
+    fields = _build_canonical_schema(field_candidates)
+    ocr_metadata = OCRMetadata.model_validate(
+        _coerce_ocr_metadata(
+            payload.get("ocr_metadata") or {},
+            extraction_method=extraction_method,
+            has_tokens=bool(spatial_text_map),
+        )
+    )
+    metadata = DocumentMetadata(
+        file_name=path.name,
+        file_type=path.suffix.lower().lstrip("."),
+        page_count=int(payload.get("page_count") or safety_report.page_count or 0),
+        size_bytes=path.stat().st_size,
+        text_char_count=len(str(payload.get("raw_text") or "")),
+        extraction_method=extraction_method,
+        character_density=float(payload.get("character_density") or safety_report.character_density or 0.0),
+        min_resolution_dpi=float(safety_report.min_resolution_dpi or 0.0),
+        is_scanned=bool(ocr_metadata.ocr_applied),
+        sandboxed_processing=bool(safety_report.sandboxed),
+    )
+    return LegacyExtractionResult(
+        is_successful=True,
+        used_ocr=bool(ocr_metadata.ocr_applied),
+        fields=fields,
+        raw_text=str(payload.get("raw_text") or ""),
+        spatial_text_map=spatial_text_map,
+        evidence_lines=evidence_lines,
+        field_candidates=field_candidates,
+        metadata=metadata,
+        ocr_metadata=ocr_metadata,
+        safety_report=safety_report,
     )
 
 
-def _coerce_spatial_text_map(payload: list[dict]) -> list[SpatialTextToken]:
-    tokens = []
-    for token_data in payload:
-        normalized_text = _normalize_token_text(token_data.get("text", ""))
-        if not normalized_text:
-            continue
-        tokens.append(
-            SpatialTextToken(
-                text=normalized_text,
-                bbox=token_data.get("bbox", []),
-                page=int(token_data.get("page", 0) or 0),
-                source=str(token_data.get("source", "native_text") or "native_text"),
-                confidence=float(token_data.get("confidence", 1.0) or 1.0),
-                polygon=token_data.get("polygon"),
-            )
-        )
-    return tokens
-
-
-def _normalize_text(text: str) -> str:
-    replacements = {
-        "\uf0b7": "-",
-        "\u2022": "-",
-        "\u2013": "-",
-        "\u2014": "-",
-        "\u2019": "'",
-        "\u2018": "'",
-        "\u201c": '"',
-        "\u201d": '"',
-        "\ufffd": " ",
-        "â€™": "'",
-        "â€œ": '"',
-        "â€\x9d": '"',
-        "â€“": "-",
-        "â€”": "-",
-        "ï¿½": "",
-    }
-    normalized = text.replace("\r", "\n")
-    for source, target in replacements.items():
-        normalized = normalized.replace(source, target)
-    normalized = re.sub(r"[ \t]+", " ", normalized)
-    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
-    return normalized.strip()
-
-
-def _normalize_token_text(text: str) -> str:
-    return _normalize_text(str(text)).replace("\n", " ").strip()
-
-
-def _build_canonical_schema(field_candidates) -> CanonicalSchema:
+def _build_canonical_schema(field_candidates: list[Any]) -> CanonicalSchema:
     schema = CanonicalSchema()
-    category_to_field = {
-        "person_name": "candidate_name",
-        "issuer": "institution",
-        "credential_title": "credential_type",
-        "issue_date": "issue_date",
-        "date_reference": "issue_date",
-        "registration_number": "document_id",
-        "document_number": "document_id",
-        "license_number": "document_id",
-        "email": "email",
-        "phone_number": "phone_number",
-        "national_identifier": "document_id",
-        "tax_identifier": "document_id",
-    }
-    best_by_field = {}
     for candidate in field_candidates:
-        target_field = category_to_field.get(candidate.category)
-        if not target_field:
-            continue
-        current = best_by_field.get(target_field)
-        if current is None or candidate.confidence > current.confidence:
-            best_by_field[target_field] = candidate
-
-    for field_name, candidate in best_by_field.items():
-        setattr(
-            schema,
-            field_name,
-            ExtractedField(
-                value=candidate.raw_value,
-                confidence=candidate.confidence,
-                bounding_boxes=[candidate.bounding_box] if candidate.bounding_box else [],
-                match_type=candidate.grounding_match_type,
-            ),
+        extracted = ExtractedField(
+            value=candidate.raw_value,
+            confidence=float(candidate.confidence),
+            bounding_boxes=[candidate.bounding_box],
+            match_type=candidate.provenance_method,
         )
+        if candidate.label in {"full_name", "student_name"} and schema.candidate_name is None:
+            schema.candidate_name = extracted
+        elif candidate.label == "institution_name" and schema.institution is None:
+            schema.institution = extracted
+        elif candidate.label in {"board_name"} and schema.institution is None:
+            schema.institution = extracted
+        elif candidate.label in {"aadhaar_number", "pan_number", "roll_number", "registration_number", "document_number"} and schema.document_id is None:
+            schema.document_id = extracted
+        elif candidate.label in {"date", "date_of_birth", "issue_date"} and schema.issue_date is None:
+            schema.issue_date = extracted
     return schema
 
 
-def _reason_code_for_exception(message: str, default: str) -> str:
-    lowered = message.lower()
-    if _is_ocr_unavailable(lowered):
-        return "OCR_ENGINE_UNAVAILABLE"
-    malformed_markers = (
-        "malformed pdf",
-        "multiple definitions in dictionary",
-        "cannot open broken document",
-        "repairing pdf",
-        "format error",
-        "syntax error",
-        "xref",
-    )
-    if any(marker in lowered for marker in malformed_markers):
-        return "MALFORMED_PDF"
-    return default
-
-
-def _is_tesseract_missing(message: str) -> bool:
-    lowered = message.lower()
-    return "tesseractnotfounderror" in lowered or "tesseract is not installed" in lowered
-
-
-def _is_paddleocr_missing(message: str) -> bool:
-    lowered = message.lower()
-    markers = (
-        "paddleocr is unavailable",
-        "paddleocr could not initialize locally",
-        "paddleocr requires numpy",
-        "paddleocr is disabled",
-    )
-    return any(marker in lowered for marker in markers)
-
-
-def _is_ocr_unavailable(message: str) -> bool:
-    return _is_tesseract_missing(message) or _is_paddleocr_missing(message)
-
-
-def _warning_message_for_code(code: str) -> str:
-    warning_map = {
-        "PADDLEOCR_UNAVAILABLE": "PaddleOCR was unavailable, so the pipeline fell back to the next local OCR backend.",
-        "TESSERACT_UNAVAILABLE": "Tesseract OCR was unavailable for at least one page.",
-        "OCR_NO_TEXT_DETECTED": "An OCR page produced no readable text tokens.",
-        "OCR_PAGE_FAILED_NATIVE_USED": "An OCR page failed and the parser reused the native PDF text layer instead.",
-        "OCR_DISABLED_BY_MODE": "OCR was disabled by backend mode, so only native PDF text was used.",
+def _default_ocr_metadata(extraction_method: str, has_tokens: bool) -> dict[str, Any]:
+    engine_used = "paddleocr" if extraction_method == "hybrid" else "native_text"
+    return {
+        "method_used": engine_used,
+        "fallback_triggered": extraction_method == "hybrid",
+        "total_pages": 1,
+        "ocr_pages": [1] if extraction_method == "hybrid" else [],
+        "avg_confidence": 0.95 if extraction_method == "hybrid" else 1.0 if has_tokens else 0.0,
+        "language_detected": "en",
+        "engine_used": engine_used,
+        "engines_used": [engine_used],
+        "native_text_used": extraction_method != "hybrid",
+        "ocr_applied": extraction_method == "hybrid",
+        "fallback_used": extraction_method == "hybrid",
+        "average_confidence": 0.95 if extraction_method == "hybrid" else 1.0 if has_tokens else None,
+        "preprocessing_applied": [],
+        "pages_ocrd": [1] if extraction_method == "hybrid" else [],
+        "page_metadata": [],
+        "warning_codes": [],
     }
-    return warning_map.get(code, code.replace("_", " ").title())
+
+
+def _coerce_ocr_metadata(payload: dict[str, Any], *, extraction_method: str, has_tokens: bool) -> dict[str, Any]:
+    base = _default_ocr_metadata(extraction_method, has_tokens)
+    merged = dict(base)
+    merged.update(dict(payload or {}))
+    return merged
+
+
+__all__ = [
+    "extract_document_data",
+    "extract_document_data_with_strategy",
+    "validate_document_intake",
+    "_run_parse_worker",
+]

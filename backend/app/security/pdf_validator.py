@@ -1,4 +1,7 @@
-from PyPDF2 import PdfReader
+try:
+    from pypdf import PdfReader
+except ImportError:  # pragma: no cover
+    from PyPDF2 import PdfReader  # type: ignore
 import io
 
 

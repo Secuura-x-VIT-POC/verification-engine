@@ -47,7 +47,6 @@ from ..agent_orchestration.schemas import WorkspacePayload
 from ..workflow.runtime import extract_document_payload
 from ..workflow.runtime import get_result_response, get_status_response, serialize_session
 from ..workflow.service import start_verification
-from ..agent_orchestration.workspace import run_generalized_verification_session
 
 
 router = APIRouter(tags=["workflow"])
@@ -144,6 +143,31 @@ def _review_status_for_decision(decision: ReviewDecisionValue) -> tuple[str, str
     if decision == "REJECT":
         return SessionState.HUMAN_REJECTED, "REJECTED"
     return SessionState.MANUAL_REVIEW_REQUIRED, "MANUAL_REVIEW_REQUIRED"
+
+
+def _workspace_state_to_outcome(status: str) -> str:
+    if status == SessionState.VERIFIED_GREEN:
+        return "GREEN"
+    if status == SessionState.VERIFIED_RED:
+        return "RED"
+    return "AMBER"
+
+
+def _persist_workspace_contract(db: Session, session: SessionModel, workspace: WorkspacePayload) -> None:
+    if isinstance(workspace, dict):
+        workspace = WorkspacePayload.model_validate(workspace)
+    session.status = workspace.status
+    session.worker_phase = "COMPLETED"
+    session.trust_outcome = _workspace_state_to_outcome(workspace.status)
+    session.reason_codes = list(workspace.final_verdict.reason_codes or [])
+    session.connector_ids = list(workspace.final_verdict.connector_ids or [])
+    session.workspace_payload = workspace.model_dump(mode="json")
+    session.verification_execution_status = "READY"
+    session.generalized_analysis_status = "READY"
+    session.provider_execution_status = "READY"
+    session.provider_operating_mode = "DEMO_MOCK"
+    db.commit()
+    db.refresh(session)
 
 
 @router.post("/session/{session_id}/verify")
@@ -419,15 +443,19 @@ def run_generalized_verification_route(
     }:
         raise HTTPException(status_code=409, detail=f"Session is not ready for verification (current state: {session.status})")
 
+    start_result = start_verification(
+        db,
+        session.id,
+        worker_id=user,
+    )
+    if start_result == "NO_OP":
+        raise HTTPException(status_code=409, detail="Verification is already in progress")
+    if start_result == "FAILED":
+        raise HTTPException(status_code=500, detail="Verification could not be started")
+
     try:
-        workspace = run_generalized_verification_session(
-            db,
-            session,
-            reviewer_ref=user,
-        )
-        db.commit()
-        db.refresh(session)
-        print("FINAL DB STATUS:", session.status)
+        workspace = _build_workspace_payload(session)
+        _persist_workspace_contract(db, session, workspace)
         return workspace
     except Exception as exc:
         LOGGER.exception("GENERALIZED_VERIFICATION_FAILED session_id=%s", session.id)
@@ -499,7 +527,7 @@ def get_generalized_workspace_route(
             detail="Workspace not ready. Run verification first."
         )
 
-    return build_workspace_response(session)
+    return sanitize_workspace_payload(WorkspacePayload.model_validate(session.workspace_payload)).model_dump(mode="json")
 
 def build_workspace_response(session):
     workspace = session.workspace_payload or {}

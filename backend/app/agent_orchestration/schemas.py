@@ -23,8 +23,15 @@ class BoundingBox(BaseModel):
 
 class GeminiDocumentUnderstanding(BaseModel):
     document_type: str = "unknown"
+    document_type_confidence: float = 0.0
+    likely_claim_types: list[str] = Field(default_factory=list)
+    credential_group_hints: list[str] = Field(default_factory=list)
+    mandatory_fields: list[str] = Field(default_factory=list)
+    optional_fields: list[str] = Field(default_factory=list)
+    safety_flags: list[str] = Field(default_factory=list)
+    ambiguity_flags: list[str] = Field(default_factory=list)
     summary: str = ""
-    explanation: str = ""
+    explanation: str | None = ""
     unsafe_or_malformed: bool = False
     grounding_confidence: float = 0.0
     matching_score: float = 0.0
@@ -32,6 +39,7 @@ class GeminiDocumentUnderstanding(BaseModel):
     risk_flags: list[str] = Field(default_factory=list)
 
     _confidence_fields = field_validator(
+        "document_type_confidence",
         "grounding_confidence",
         "matching_score",
         "visual_match_probability",
@@ -64,14 +72,19 @@ class SemanticNormalizedClaim(BaseModel):
     claim_id: str
     field_id: str | None = None
     raw_value: str | None = None
+    label: str | None = None
+    value_preview: str | None = None
     normalized_value: str = ""
     claim_type: str = "generic_claim"
     canonical_label: str | None = None
     document_context: str | None = None
     confidence: float = 0.0
+    source: Literal["gemini", "deterministic_fallback"] | None = None
     normalization_source: Literal["gemini", "deterministic_fallback"] = "deterministic_fallback"
     requires_verification: bool = True
     reason: str | None = None
+    reason_codes: list[str] = Field(default_factory=list)
+    ambiguity_flags: list[str] = Field(default_factory=list)
 
     _confidence_fields = field_validator("confidence", mode="before")(
         lambda cls, value: _clamp(value or 0.0)
@@ -84,32 +97,61 @@ class SemanticNormalizedClaimCollection(BaseModel):
 
 class GeminiCredentialGroup(BaseModel):
     group_id: str
+    credential_id: str | None = None
+    credential_type: str | None = None
     label: str
+    claim_ids: list[str] = Field(default_factory=list)
     field_ids: list[str] = Field(default_factory=list)
+    required_field_ids: list[str] = Field(default_factory=list)
+    optional_field_ids: list[str] = Field(default_factory=list)
     connector_id: str | None = None
     claim_type: str = "document"
+    assurance_required: Literal["LOW", "MEDIUM", "HIGH"] = "MEDIUM"
+    group_confidence: float = 0.0
     optional: bool = False
     high_assurance: bool = False
     explanation: str = ""
+
+    _confidence_fields = field_validator("group_confidence", mode="before")(
+        lambda cls, value: _clamp(value or 0.0)
+    )
 
 
 class GeminiCredentialGroupCollection(BaseModel):
     groups: list[GeminiCredentialGroup] = Field(default_factory=list)
 
 
+class RouteRecommendation(BaseModel):
+    credential_id: str
+    claim_type: str = "generic_claim"
+    provider_candidates: list[dict[str, Any] | str] = Field(default_factory=list)
+    preferred_provider_key: str | None = None
+    provider_id: str | None = None
+    assurance_required: Literal["LOW", "MEDIUM", "HIGH"] = "MEDIUM"
+    priority: Literal["REQUIRED", "OPTIONAL"] = "REQUIRED"
+    planner_reason: str = ""
+
+
+class RouteRecommendationCollection(BaseModel):
+    recommendations: list[RouteRecommendation] = Field(default_factory=list)
+
+
 class VerificationTask(BaseModel):
     task_id: str
-    field_id: str
-    label: str
+    credential_id: str | None = None
+    field_id: str = ""
+    label: str = ""
     connector_id: str = ""
     claim_type: str = "document"
-    provider_candidates: list[str] = Field(default_factory=list)
+    provider_candidates: list[dict[str, Any] | str] = Field(default_factory=list)
     required_fields: list[str] = Field(default_factory=list)
-    assurance_required: str = "MEDIUM"
+    assurance_required: Literal["LOW", "MEDIUM", "HIGH"] = "MEDIUM"
+    priority: Literal["REQUIRED", "OPTIONAL"] = "REQUIRED"
     optional: bool = False
     high_assurance: bool = False
     input_payload: dict[str, Any] = Field(default_factory=dict)
     field_ids: list[str] = Field(default_factory=list)
+    planner_reason: str = ""
 
 
 class VerifierResult(BaseModel):

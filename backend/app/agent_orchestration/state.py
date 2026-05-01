@@ -23,9 +23,11 @@ class GeneralizedVerificationState(TypedDict, total=False):
     
     # Structured Graph State (Passed between nodes)
     document_understanding: dict[str, Any]
+    document_profile: dict[str, Any]
     semantic_claims: list[dict[str, Any]]
     normalized_fields: list[dict[str, Any]]
     credential_groups: list[dict[str, Any]]
+    route_recommendations: list[dict[str, Any]]
     verification_tasks: list[dict[str, Any]]
     domain_credentials: dict[str, Any]
     domain_verification_plan: dict[str, Any]
@@ -33,8 +35,12 @@ class GeneralizedVerificationState(TypedDict, total=False):
     field_decisions: list[dict[str, Any]]
     final_verdict: dict[str, Any]
     workspace_payload: dict[str, Any]
+    sanitized_workspace_fragment: dict[str, Any]
     
     # Reducers: LangGraph will automatically append to these lists instead of overwriting.
     gemini_errors: Annotated[list[str], operator.add]
+    errors: Annotated[list[str], operator.add]
+    ai_warnings: Annotated[list[str], operator.add]
     audit_log: Annotated[list[dict[str, Any]], operator.add]
     gemini_fallback_used: Annotated[bool, _reduce_bool]
+    fallback_used: Annotated[bool, _reduce_bool]

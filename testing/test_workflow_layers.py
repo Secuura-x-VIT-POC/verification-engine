@@ -27,6 +27,7 @@ from backend.app.workflow.service import (
     WORKER_PHASE_TRUST_SCORING,
     acquire_lease,
     call_connector_with_retry,
+    complete_processing,
     mark_stale_sessions,
     run_worker_pipeline,
     start_verification,
@@ -52,6 +53,43 @@ class StateMachineTests(unittest.TestCase):
             SessionState.VERIFYING,
             SessionState.PENDING_HUMAN_REVIEW,
         )
+
+    def test_validate_transition_allows_pending_human_review_to_human_final_states(self):
+        for final_state in (
+            SessionState.HUMAN_APPROVED,
+            SessionState.HUMAN_REJECTED,
+            SessionState.MANUAL_REVIEW_REQUIRED,
+        ):
+            with self.subTest(final_state=final_state):
+                validate_transition(
+                    SessionState.PENDING_HUMAN_REVIEW,
+                    final_state,
+                )
+
+    def test_validate_transition_allows_human_final_states_to_cleanup(self):
+        for final_state in (
+            SessionState.HUMAN_APPROVED,
+            SessionState.HUMAN_REJECTED,
+            SessionState.MANUAL_REVIEW_REQUIRED,
+        ):
+            with self.subTest(final_state=final_state):
+                validate_transition(
+                    final_state,
+                    SessionState.PENDING_CLEANUP,
+                )
+
+    def test_validate_transition_rejects_verified_states_directly_to_cleanup(self):
+        for verified_state in (
+            SessionState.VERIFIED_GREEN,
+            SessionState.VERIFIED_AMBER,
+            SessionState.VERIFIED_RED,
+        ):
+            with self.subTest(verified_state=verified_state):
+                with self.assertRaises(InvalidStateTransitionError):
+                    validate_transition(
+                        verified_state,
+                        SessionState.PENDING_CLEANUP,
+                    )
 
     def test_validate_transition_rejects_invalid_transition(self):
         with self.assertRaises(InvalidStateTransitionError):
@@ -432,6 +470,42 @@ class WorkflowRepositoryIntegrationTests(unittest.TestCase):
         self.assertEqual(active_session.status, SessionState.VERIFYING)
         self.assertEqual(active_session.lease_id, "worker-active")
         db.close()
+
+    def test_complete_processing_sets_pending_human_review_and_stores_trust_outcome(self):
+        for outcome in ("GREEN", "AMBER"):
+            with self.subTest(outcome=outcome):
+                db = self.SessionLocal()
+                session = SessionModel(
+                    id=f"complete-{outcome.lower()}",
+                    user_id="user-1",
+                    status=SessionState.VERIFYING,
+                    lease_id="worker-1",
+                    lease_holder_id="worker-1",
+                    lease_acquired_at=datetime.utcnow(),
+                    heartbeat_at=datetime.utcnow(),
+                )
+                db.add(session)
+                db.commit()
+
+                complete_processing(
+                    db,
+                    session.id,
+                    outcome,
+                    [f"{outcome}_REASON"],
+                    ["local_mock"],
+                )
+
+                db.refresh(session)
+                self.assertEqual(session.status, SessionState.PENDING_HUMAN_REVIEW)
+                self.assertEqual(session.trust_outcome, outcome)
+                self.assertEqual(session.reason_codes, [f"{outcome}_REASON"])
+                self.assertEqual(session.connector_ids, ["local_mock"])
+                self.assertEqual(session.worker_phase, "COMPLETED")
+                self.assertIsNone(session.lease_id)
+                self.assertIsNone(session.lease_holder_id)
+                self.assertIsNone(session.lease_acquired_at)
+                self.assertIsNone(session.heartbeat_at)
+                db.close()
 
 
 class WorkflowRuntimeFailureTests(unittest.TestCase):

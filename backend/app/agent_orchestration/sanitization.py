@@ -29,6 +29,7 @@ UNSAFE_KEYS = {
     "verifier_raw_evidence",
     "verifier_raw_response",
     "provider_raw_response",
+    "raw_provider_body",
     "raw_response",
     "raw_payload",
     "request_body",

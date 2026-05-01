@@ -16,11 +16,16 @@ from backend.app.agent_orchestration.schemas import (
     GeminiDocumentUnderstanding,
     GeminiNormalizedField,
     GeminiNormalizedFieldCollection,
+    RouteRecommendation,
     SemanticNormalizedClaimCollection,
+    VerificationTask,
+    VerifierResult,
     WorkspacePayload,
 )
+from backend.app.agent_orchestration.providers.gemini import build_gemini_llm
 from backend.app.agent_orchestration.semantic_normalization import normalize_claims_semantically
 from backend.app.agent_orchestration.service import normalize_extraction_payload
+from backend.app.trust.trust_engine import build_final_verdict, determine_field_decision
 
 
 def _runtime_payload() -> dict:
@@ -43,6 +48,31 @@ def _runtime_payload() -> dict:
     }
 
 
+def _generic_payload(document_type: str, fields: list[dict]) -> dict:
+    return {
+        "view": {
+            "document_type": document_type,
+            "page_count": 1,
+            "used_ocr": False,
+            "warnings": [],
+            "field_details": fields,
+        },
+        "trust_input": {
+            "is_unsafe": False,
+            "fields": [
+                {
+                    "name": field["key"],
+                    "value": field["value"],
+                    "is_mandatory": field.get("mandatory", True),
+                    "is_grounded": True,
+                    "confidence": field.get("confidence", 0.8),
+                }
+                for field in fields
+            ],
+        },
+    }
+
+
 class _FakeLlm:
     def __init__(self, response):
         self.response = response
@@ -52,6 +82,11 @@ class _FakeLlm:
 
 
 class GeminiNormalizationTests(unittest.TestCase):
+    def test_build_gemini_llm_raises_clear_error_without_key(self):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "GEMINI_API_KEY is not configured"):
+                build_gemini_llm()
+
     def test_generalized_graph_accepts_mocked_gemini_structured_outputs(self):
         policy = AgentRuntimePolicy(
             orchestration_enabled=True,
@@ -72,18 +107,19 @@ class GeminiNormalizationTests(unittest.TestCase):
                 )
             ),
             _FakeLlm(
-                GeminiNormalizedFieldCollection(
-                    fields=[
-                        GeminiNormalizedField(
-                            field_id="name",
-                            label="Name",
-                            extracted_value="Kanak Sharma",
-                            normalized_value="Kanak Sharma",
-                            ai_confidence=0.99,
-                            grounding_confidence=0.9,
-                            mandatory=True,
-                            verifier_hint="vit_registry",
-                        )
+                SemanticNormalizedClaimCollection(
+                    claims=[
+                        {
+                            "claim_id": "claim-name",
+                            "field_id": "name",
+                            "label": "Name",
+                            "canonical_label": "Name",
+                            "normalized_value": "Kanak Sharma",
+                            "claim_type": "identity",
+                            "confidence": 0.99,
+                            "normalization_source": "gemini",
+                            "requires_verification": True,
+                        }
                     ]
                 )
             ),
@@ -122,6 +158,9 @@ class GeminiNormalizationTests(unittest.TestCase):
         workspace = WorkspacePayload.model_validate(result["workspace_payload"])
         self.assertEqual(workspace.document.document_type, "academic_credential")
         self.assertEqual(workspace.fields[0].normalized_value, "Kanak Sharma")
+        self.assertTrue(result["route_recommendations"])
+        self.assertTrue(result["verification_tasks"])
+        VerificationTask.model_validate(result["verification_tasks"][0])
 
     def test_service_falls_back_when_gemini_dependency_or_call_fails(self):
         raw_payload = _runtime_payload()
@@ -155,6 +194,75 @@ class GeminiNormalizationTests(unittest.TestCase):
         self.assertTrue(state["gemini_fallback_used"])
         workspace = WorkspacePayload.model_validate(state["workspace_payload"])
         self.assertEqual(workspace.session_id, "session-1")
+
+    def test_document_understanding_fallback_handles_generic_document_types(self):
+        samples = [
+            ("identity_document", [{"key": "holder_name", "label": "Holder Name", "value": "Asha Rao"}]),
+            ("professional_certificate", [{"key": "credential", "label": "Credential", "value": "ISO 27001 Lead Auditor"}]),
+            ("employment_letter", [{"key": "employer", "label": "Employer", "value": "Example Corp"}]),
+            ("invoice", [{"key": "amount", "label": "Invoice Amount", "value": "1250.00"}]),
+        ]
+
+        for document_type, fields in samples:
+            with self.subTest(document_type=document_type):
+                state = build_generalized_verification_graph(
+                    policy=AgentRuntimePolicy(orchestration_enabled=True, provider_key="gemini", gemini_api_key=None)
+                ).invoke(
+                    {
+                        "session_id": f"session-{document_type}",
+                        "filename": f"{document_type}.pdf",
+                        "file_path": "",
+                        "extraction_payload": _generic_payload(document_type, fields),
+                    }
+                )
+
+                self.assertEqual(state["document_understanding"]["document_type"], document_type)
+                self.assertNotEqual(state["credential_groups"][0]["claim_type"], "academic_degree")
+                self.assertTrue(state["verification_tasks"])
+
+    def test_route_recommendation_and_task_planning_are_generic_and_sanitized(self):
+        payload = _generic_payload(
+            "professional_certificate",
+            [
+                {
+                    "key": "credential",
+                    "label": "Credential",
+                    "value": "ISO 27001 Lead Auditor",
+                    "confidence": 0.91,
+                    "source_text": "RAW_SOURCE_SENTINEL",
+                },
+                {
+                    "key": "issuer",
+                    "label": "Issuer",
+                    "value": "Example Standards Body",
+                    "confidence": 0.88,
+                    "mandatory": False,
+                },
+            ],
+        )
+        payload["view"]["raw_text"] = "RAW_TEXT_SENTINEL"
+
+        state = build_generalized_verification_graph(
+            policy=AgentRuntimePolicy(orchestration_enabled=True, provider_key="gemini", gemini_api_key=None)
+        ).invoke(
+            {
+                "session_id": "session-routing",
+                "filename": "certificate.pdf",
+                "file_path": "",
+                "extraction_payload": payload,
+            }
+        )
+
+        route = RouteRecommendation.model_validate(state["route_recommendations"][0])
+        task = VerificationTask.model_validate(state["verification_tasks"][0])
+        self.assertTrue(route.provider_candidates)
+        self.assertTrue(task.provider_candidates)
+        self.assertIn(task.assurance_required, {"LOW", "MEDIUM", "HIGH"})
+        self.assertIn(task.priority, {"REQUIRED", "OPTIONAL"})
+        self.assertTrue(task.required_fields)
+        serialized_tasks = str(state["verification_tasks"])
+        self.assertNotIn("RAW_TEXT_SENTINEL", serialized_tasks)
+        self.assertNotIn("RAW_SOURCE_SENTINEL", serialized_tasks)
 
     def test_workspace_schema_validation_rejects_invalid_status(self):
         with self.assertRaises(ValidationError):
@@ -229,6 +337,49 @@ class GeminiNormalizationTests(unittest.TestCase):
 
         self.assertEqual(normalized[0]["normalization_source"], "deterministic_fallback")
         self.assertEqual(normalized[0]["normalized_value"], "Generic Evidence")
+
+    def test_ai_only_high_confidence_does_not_create_final_green(self):
+        decision = determine_field_decision(
+            field_id="credential",
+            label="Credential",
+            extracted_value="ISO 27001 Lead Auditor",
+            normalized_value="ISO 27001 Lead Auditor",
+            extraction_confidence=1.0,
+            ai_confidence=1.0,
+            grounding_confidence=1.0,
+            verifier_result=None,
+            mandatory=True,
+            unsafe_or_malformed=False,
+        )
+
+        verdict = build_final_verdict([decision], [], False, [])
+        self.assertNotEqual(verdict.outcome, "GREEN")
+
+    def test_verifier_red_overrides_ai_confidence(self):
+        verifier = VerifierResult(
+            task_id="task-1",
+            field_id="credential",
+            connector_id="local_mock",
+            status="MISMATCH",
+            verification_confidence=0.0,
+            reason_codes=["VERIFIER_MISMATCH"],
+        )
+
+        decision = determine_field_decision(
+            field_id="credential",
+            label="Credential",
+            extracted_value="ISO 27001 Lead Auditor",
+            normalized_value="ISO 27001 Lead Auditor",
+            extraction_confidence=1.0,
+            ai_confidence=1.0,
+            grounding_confidence=1.0,
+            verifier_result=verifier,
+            mandatory=True,
+            unsafe_or_malformed=False,
+        )
+
+        verdict = build_final_verdict([decision], [verifier], False, [])
+        self.assertEqual(verdict.outcome, "RED")
 
 
 if __name__ == "__main__":

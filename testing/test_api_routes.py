@@ -376,6 +376,27 @@ class WorkflowApiRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
 
+    def test_review_decision_non_review_states_return_409(self):
+        for state in (
+            SessionState.UPLOAD_PENDING,
+            SessionState.PENDING_CLEANUP,
+            SessionState.PURGE_COMPLETE,
+        ):
+            session_id = f"session-review-{state.lower()}"
+            with self.subTest(state=state):
+                self._create_session(
+                    session_id=session_id,
+                    status=state,
+                    user_id="user-1",
+                )
+
+                response = self.client.post(
+                    f"/api/v1/verification-sessions/{session_id}/review-decision",
+                    json={"decision": "APPROVE"},
+                )
+
+                self.assertEqual(response.status_code, 409)
+
     def test_review_decision_wrong_owner_returns_403(self):
         self._create_session(
             session_id="session-review-other-user",
@@ -439,6 +460,24 @@ class WorkflowApiRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 422)
 
+    def test_workspace_reads_persisted_payload_without_rerunning_graph(self):
+        workspace_payload = self._workspace_payload("session-workspace-persisted")
+        self._create_session(
+            session_id="session-workspace-persisted",
+            status=SessionState.PENDING_HUMAN_REVIEW,
+            user_id="user-1",
+            workspace_payload=workspace_payload,
+        )
+
+        with patch(
+            "backend.app.api.routes.build_generalized_verification_graph",
+            side_effect=AssertionError("workspace GET must not run Gemini graph"),
+        ):
+            response = self.client.get("/api/v1/verification-sessions/session-workspace-persisted/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["session_id"], "session-workspace-persisted")
+
     def _override_get_db(self):
         db = self.SessionLocal()
         try:
@@ -456,6 +495,7 @@ class WorkflowApiRouteTests(unittest.TestCase):
         reason_codes: list[str] | None = None,
         connector_ids: list[str] | None = None,
         file_path: str | None = None,
+        workspace_payload: dict | None = None,
         verification_execution_summary_payload: dict | None = None,
         audit_receipt_id: str | None = None,
     ) -> None:
@@ -469,6 +509,7 @@ class WorkflowApiRouteTests(unittest.TestCase):
             trust_outcome=trust_outcome,
             reason_codes=reason_codes or [],
             connector_ids=connector_ids or [],
+            workspace_payload=workspace_payload,
             verification_execution_summary_payload=verification_execution_summary_payload,
             audit_receipt_id=audit_receipt_id,
         )

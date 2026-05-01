@@ -24,6 +24,7 @@ def normalize_claims_semantically(
             for claim in collection.claims:
                 payload = claim.model_dump(mode="json")
                 payload["normalization_source"] = "gemini"
+                payload["source"] = "gemini"
                 normalized.append(_without_raw_value(payload))
             return normalized
         except Exception:
@@ -76,14 +77,19 @@ def _fallback_claim(index: int, claim: dict[str, Any]) -> SemanticNormalizedClai
         claim_id=safe_normalized_string(claim.get("claim_id") or claim.get("candidate_id") or f"claim-{index}"),
         field_id=safe_normalized_string(claim.get("field_id") or claim.get("key") or claim.get("name")) or None,
         raw_value=None,
+        label=label or None,
+        value_preview=_value_preview(normalized_value),
         normalized_value=normalized_value,
         claim_type=category or _claim_type_from_label(label),
         canonical_label=label or None,
         document_context=safe_normalized_string(claim.get("document_context") or claim.get("category")) or None,
         confidence=_coerce_confidence(claim.get("confidence"), default=0.5),
+        source="deterministic_fallback",
         normalization_source="deterministic_fallback",
         requires_verification=bool(claim.get("requires_verification", True)),
         reason=safe_normalized_string(claim.get("reason") or claim.get("verification_reason")) or None,
+        reason_codes=list(claim.get("reason_codes") or []),
+        ambiguity_flags=list(claim.get("ambiguity_flags") or []),
     )
 
 
@@ -110,3 +116,12 @@ def _without_raw_value(claim: dict[str, Any]) -> dict[str, Any]:
     sanitized = dict(claim)
     sanitized.pop("raw_value", None)
     return sanitized
+
+
+def _value_preview(value: str) -> str | None:
+    text = safe_normalized_string(value)
+    if not text:
+        return None
+    if len(text) <= 32:
+        return text
+    return f"{text[:29].rstrip()}..."

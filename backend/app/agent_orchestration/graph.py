@@ -24,6 +24,9 @@ from .schemas import (
     GeminiDocumentUnderstanding,
     GeminiNormalizedField,
     GeminiNormalizedFieldCollection,
+    RouteRecommendation,
+    RouteRecommendationCollection,
+    SemanticNormalizedClaimCollection,
     VerificationTask,
     VerifierResult,
     WorkspaceAction,
@@ -33,6 +36,7 @@ from .schemas import (
     WorkspaceSummary,
     WorkspaceVerifierStatus,
 )
+from .providers.gemini import build_gemini_llm
 from .semantic_normalization import normalize_claims_semantically, safe_normalized_string
 from .state import GeneralizedVerificationState
 
@@ -49,7 +53,9 @@ def build_generalized_verification_graph(
     graph.add_node("gemini_document_understanding", lambda state: _gemini_document_understanding(state, runtime_policy))
     graph.add_node("gemini_field_normalization", lambda state: _gemini_field_normalization(state, runtime_policy))
     graph.add_node("gemini_credential_grouping", lambda state: _gemini_credential_grouping(state, runtime_policy))
-    graph.add_node("build_verification_tasks", _build_verification_tasks)
+    graph.add_node("route_recommendation", _route_recommendation)
+    graph.add_node("verification_task_planning", _verification_task_planning)
+    graph.add_node("planning_output_for_existing_runtime", _planning_output_for_existing_runtime)
     graph.add_node("run_verifier_apis", _run_verifier_apis)
     graph.add_node("gemini_confidence_fusion", _gemini_confidence_fusion)
     graph.add_node("policy_verdict", _policy_verdict)
@@ -59,8 +65,10 @@ def build_generalized_verification_graph(
     graph.add_edge("load_extraction_state", "gemini_document_understanding")
     graph.add_edge("gemini_document_understanding", "gemini_field_normalization")
     graph.add_edge("gemini_field_normalization", "gemini_credential_grouping")
-    graph.add_edge("gemini_credential_grouping", "build_verification_tasks")
-    graph.add_edge("build_verification_tasks", "run_verifier_apis")
+    graph.add_edge("gemini_credential_grouping", "route_recommendation")
+    graph.add_edge("route_recommendation", "verification_task_planning")
+    graph.add_edge("verification_task_planning", "planning_output_for_existing_runtime")
+    graph.add_edge("planning_output_for_existing_runtime", "run_verifier_apis")
     graph.add_edge("run_verifier_apis", "gemini_confidence_fusion")
     graph.add_edge("gemini_confidence_fusion", "policy_verdict")
     graph.add_edge("policy_verdict", "build_workspace_payload")
@@ -88,6 +96,11 @@ def _load_extraction_state(
         "extraction_payload": extraction_payload,
         "sanitized_extraction": sanitized_extraction,
         "raw_text": raw_text,
+        "sanitized_workspace_fragment": minimize_extraction_payload(
+            sanitized_extraction,
+            max_fields=runtime_policy.max_fields_for_provider,
+            max_value_chars=runtime_policy.max_value_chars,
+        ) or {},
         "audit_log": [_audit_item("load_extraction_state", "Extraction payload loaded.")],
     }
 
@@ -98,7 +111,7 @@ def _gemini_document_understanding(
     extraction_payload = state.get("extraction_payload") or {}
     fallback = _fallback_document_understanding(extraction_payload)
     
-    return _invoke_gemini_with_fallback(
+    result = _invoke_gemini_with_fallback(
         runtime_policy=runtime_policy,
         schema=GeminiDocumentUnderstanding,
         prompt=_build_document_understanding_prompt(
@@ -109,32 +122,54 @@ def _gemini_document_understanding(
         fallback_model=fallback,
         stage_name="gemini_document_understanding",
     )
+    result["document_profile"] = result.get("document_understanding") or fallback.model_dump(mode="json")
+    return result
 
 def _gemini_field_normalization(
     state: GeneralizedVerificationState,
     runtime_policy: AgentRuntimePolicy,
 ) -> dict[str, Any]:
     extraction_payload = state.get("extraction_payload") or {}
+    llm = None
+    fallback_used = False
+    errors: list[str] = []
+    if _gemini_enabled(runtime_policy):
+        try:
+            llm = _build_structured_gemini_llm(
+                runtime_policy=runtime_policy,
+                schema=SemanticNormalizedClaimCollection,
+            )
+        except Exception as exc:
+            fallback_used = True
+            errors.append(f"gemini_field_normalization: {exc}")
+
     semantic_claims = normalize_claims_semantically(
         _claims_from_extraction_payload(extraction_payload),
         document_profile=state.get("document_understanding") or {},
-        llm=None,
+        llm=llm,
     )
     fallback = GeminiNormalizedFieldCollection(fields=_deterministic_normalized_fields(extraction_payload, semantic_claims))
-    
-    result = _invoke_gemini_with_fallback(
-        runtime_policy=runtime_policy,
-        schema=GeminiNormalizedFieldCollection,
-        prompt=_build_field_normalization_prompt(
-            extraction_payload=state.get("sanitized_extraction") or extraction_payload,
-            raw_text=state.get("raw_text") or "",
-            runtime_policy=runtime_policy,
-        ),
-        fallback_model=fallback,
-        stage_name="gemini_field_normalization",
-        state_key="normalized_fields",
-    )
-    result["semantic_claims"] = semantic_claims
+    if not semantic_claims or all(claim.get("normalization_source") == "deterministic_fallback" for claim in semantic_claims):
+        fallback_used = True
+
+    result = {
+        "semantic_claims": semantic_claims,
+        "normalized_fields": fallback.model_dump(mode="json")["fields"],
+        "audit_log": [
+            _audit_item(
+                "gemini_field_normalization",
+                "Semantic claim normalization completed."
+                if not fallback_used
+                else "Semantic claim deterministic fallback applied.",
+                level="WARNING" if fallback_used else "INFO",
+            )
+        ],
+    }
+    if fallback_used:
+        result["gemini_fallback_used"] = True
+        result["fallback_used"] = True
+    if errors:
+        result["gemini_errors"] = errors
     return result
 
 def _gemini_credential_grouping(
@@ -160,7 +195,84 @@ def _gemini_credential_grouping(
         state_key="credential_groups",
     )
 
-def _build_verification_tasks(state: GeneralizedVerificationState) -> dict[str, Any]:
+def _route_recommendation(state: GeneralizedVerificationState) -> dict[str, Any]:
+    groups = [
+        GeminiCredentialGroup.model_validate(item)
+        for item in list(state.get("credential_groups") or [])
+    ]
+    recommendations = [_recommend_route_for_group(group) for group in groups]
+    return {
+        "route_recommendations": [item.model_dump(mode="json") for item in recommendations],
+        "audit_log": [_audit_item("route_recommendation", f"Built {len(recommendations)} route recommendation(s).")],
+    }
+
+
+def _verification_task_planning(state: GeneralizedVerificationState) -> dict[str, Any]:
+    groups = [
+        GeminiCredentialGroup.model_validate(item)
+        for item in list(state.get("credential_groups") or [])
+    ]
+    routes = [
+        RouteRecommendation.model_validate(item)
+        for item in list(state.get("route_recommendations") or [])
+    ]
+    route_by_credential = {route.credential_id: route for route in routes}
+    claims_by_field = {
+        str(claim.get("field_id") or claim.get("claim_id") or ""): claim
+        for claim in list(state.get("semantic_claims") or [])
+        if isinstance(claim, dict)
+    }
+
+    tasks: list[VerificationTask] = []
+    for index, group in enumerate(groups, start=1):
+        credential_id = group.credential_id or group.group_id or f"credential-{index}"
+        route = route_by_credential.get(credential_id) or _recommend_route_for_group(group)
+        field_ids = list(dict.fromkeys(group.field_ids or group.required_field_ids or group.claim_ids))
+        required_fields = list(dict.fromkeys(group.required_field_ids or field_ids))
+        input_payload = {
+            field_id: claims_by_field.get(field_id, {}).get("normalized_value", "")
+            for field_id in field_ids
+            if field_id in claims_by_field
+        }
+        task = VerificationTask(
+            task_id=f"task-{_slug_id(credential_id)}-{index}",
+            credential_id=credential_id,
+            field_id=field_ids[0] if field_ids else credential_id,
+            label=group.label,
+            connector_id=route.preferred_provider_key or route.provider_id or "",
+            claim_type=group.claim_type or route.claim_type,
+            provider_candidates=list(route.provider_candidates),
+            required_fields=required_fields,
+            assurance_required=route.assurance_required,
+            priority=route.priority,
+            optional=route.priority == "OPTIONAL",
+            high_assurance=route.assurance_required == "HIGH",
+            input_payload=_safe_task_payload(
+                {
+                    "credential_id": credential_id,
+                    "label": group.label,
+                    "claim_type": group.claim_type or route.claim_type,
+                    "required_fields": required_fields,
+                    "assurance_required": route.assurance_required,
+                    "provider_candidates": route.provider_candidates,
+                    "preferred_provider_key": route.preferred_provider_key,
+                    "planner_reason": route.planner_reason,
+                    **input_payload,
+                }
+            ),
+            field_ids=field_ids,
+            planner_reason=route.planner_reason,
+        )
+        tasks.append(task)
+
+    return {
+        "verification_tasks": [task.model_dump(mode="json") for task in tasks],
+        "ai_warnings": _planning_warnings(tasks),
+        "audit_log": [_audit_item("verification_task_planning", f"Planned {len(tasks)} verification task(s).")],
+    }
+
+
+def _planning_output_for_existing_runtime(state: GeneralizedVerificationState) -> dict[str, Any]:
     extraction_payload = state.get("extraction_payload") or {}
     session_id = str(state.get("session_id") or "")
     credentials = build_session_credentials(session_id, extraction_payload)
@@ -170,30 +282,10 @@ def _build_verification_tasks(state: GeneralizedVerificationState) -> dict[str, 
         credentials=credentials,
     )
 
-    workspace_tasks: list[VerificationTask] = []
-    for task in plan.tasks:
-        workspace_tasks.append(
-            VerificationTask(
-                task_id=task.task_id,
-                field_id=task.credential_id,
-                label=str(task.input_payload.get("label") or task.credential_id),
-                connector_id=task.selected_provider or task.planned_provider_key or task.verifier_key,
-                claim_type=task.claim_type or task.verification_type,
-                provider_candidates=list(task.provider_candidates or []),
-                required_fields=list(task.required_fields or []),
-                assurance_required=task.assurance_required,
-                optional=not task.required,
-                high_assurance=task.assurance_required == "HIGH",
-                input_payload=_safe_task_payload(task.input_payload),
-                field_ids=[task.credential_id],
-            )
-        )
-
     return {
         "domain_credentials": credentials.model_dump(mode="json"),
         "domain_verification_plan": plan.model_dump(mode="json"),
-        "verification_tasks": [task.model_dump(mode="json") for task in workspace_tasks],
-        "audit_log": [_audit_item("build_verification_tasks", f"Built {len(workspace_tasks)} verification task(s).")],
+        "audit_log": [_audit_item("planning_output_for_existing_runtime", f"Built existing runtime plan with {len(plan.tasks)} task(s).")],
     }
 
 def _run_verifier_apis(state: GeneralizedVerificationState) -> dict[str, Any]:
@@ -444,6 +536,8 @@ def _safe_task_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "assurance_required",
         "provider_candidates",
         "preferred_provider_key",
+        "priority",
+        "planner_reason",
         "planned_provider_key",
         "planned_provider_label",
         "fallback_reason",
@@ -465,7 +559,7 @@ def _invoke_gemini_with_fallback(
     try:
         llm = _build_structured_gemini_llm(runtime_policy=runtime_policy, schema=schema)
         response = llm.invoke(prompt)
-        payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else response.dict()
+        payload = _validated_payload(schema, response)
         
         result_key = state_key or _state_key_for_collection(schema)
         result_payload = payload if schema is GeminiDocumentUnderstanding else payload.get(_default_collection_key(schema), [])
@@ -492,12 +586,8 @@ def _fallback_response(stage_name: str, fallback_model, error_message: str, *, s
     }
 
 def _build_structured_gemini_llm(*, runtime_policy: AgentRuntimePolicy, schema):
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    llm = ChatGoogleGenerativeAI(
-        model=runtime_policy.gemini_model,
-        temperature=0.0,
-        google_api_key=runtime_policy.gemini_api_key,
-    )
+    del runtime_policy
+    llm = build_gemini_llm()
     return llm.with_structured_output(schema)
 
 def _gemini_enabled(runtime_policy: AgentRuntimePolicy) -> bool:
@@ -505,7 +595,19 @@ def _gemini_enabled(runtime_policy: AgentRuntimePolicy) -> bool:
         runtime_policy.orchestration_enabled
         and runtime_policy.provider_key == "gemini"
         and bool(runtime_policy.gemini_api_key)
+        and runtime_policy.gemini_structured_output_enabled
     )
+
+
+def _validated_payload(schema, response: Any) -> dict[str, Any]:
+    if hasattr(response, "model_dump"):
+        payload = response.model_dump(mode="json")
+    elif hasattr(response, "dict"):
+        payload = response.dict()
+    else:
+        payload = response
+    model = schema.model_validate(payload)
+    return model.model_dump(mode="json")
 
 def _build_document_understanding_prompt(
     *,
@@ -558,8 +660,35 @@ def _fallback_document_understanding(extraction_payload: dict[str, Any]) -> Gemi
     view = extraction_payload.get("view") or {}
     warnings = [str(item) for item in list(view.get("warnings") or [])]
     field_details = list(view.get("field_details") or [])
+    document_type = str(view.get("document_type") or extraction_payload.get("document_type") or "unknown_document")
+    if document_type == "unknown":
+        document_type = "unknown_document"
+    claim_types = sorted(
+        {
+            _claim_type_from_label(
+                str(item.get("category") or item.get("label") or item.get("key") or "")
+            )
+            for item in _claims_from_extraction_payload(extraction_payload)
+            if isinstance(item, dict)
+        }
+    )
     return GeminiDocumentUnderstanding(
-        document_type=str(view.get("document_type") or extraction_payload.get("document_type") or "unknown"),
+        document_type=document_type,
+        document_type_confidence=0.7 if document_type != "unknown_document" else 0.2,
+        likely_claim_types=claim_types or ["generic_claim"],
+        credential_group_hints=claim_types[:4],
+        mandatory_fields=[
+            str(field.get("name") or field.get("field_id"))
+            for field in list((extraction_payload.get("trust_input") or {}).get("fields") or [])
+            if isinstance(field, dict) and field.get("is_mandatory")
+        ],
+        optional_fields=[
+            str(field.get("name") or field.get("field_id"))
+            for field in list((extraction_payload.get("trust_input") or {}).get("fields") or [])
+            if isinstance(field, dict) and not field.get("is_mandatory")
+        ],
+        safety_flags=["UNSAFE_OR_MALFORMED"] if bool((extraction_payload.get("trust_input") or {}).get("is_unsafe")) else [],
+        ambiguity_flags=warnings,
         summary="Deterministic document understanding fallback was used.",
         explanation="Gemini was disabled or unavailable, so deterministic extraction remained authoritative.",
         unsafe_or_malformed=bool((extraction_payload.get("trust_input") or {}).get("is_unsafe")),
@@ -576,6 +705,12 @@ def _claims_from_extraction_payload(extraction_payload: dict[str, Any]) -> list[
         for item in list(view.get("field_details") or [])
         if isinstance(item, dict)
     ]
+    if not claims:
+        claims = [
+            dict(item)
+            for item in list(view.get("field_candidates") or [])
+            if isinstance(item, dict)
+        ]
     if claims:
         return claims
     trust_input = extraction_payload.get("trust_input") or {}
@@ -630,25 +765,198 @@ def _deterministic_normalized_fields(
                 bounding_boxes=boxes,
             )
         )
+    if not normalized_fields:
+        for index, claim in enumerate(list(semantic_claims or []), start=1):
+            if not isinstance(claim, dict):
+                continue
+            field_id = str(claim.get("field_id") or claim.get("claim_id") or f"field-{index}")
+            normalized_fields.append(
+                GeminiNormalizedField(
+                    field_id=field_id,
+                    label=str(claim.get("canonical_label") or claim.get("label") or field_id.replace("_", " ").title()),
+                    extracted_value=safe_normalized_string(claim.get("normalized_value") or claim.get("value_preview")),
+                    normalized_value=safe_normalized_string(claim.get("normalized_value") or claim.get("value_preview")),
+                    ai_confidence=float(claim.get("confidence") or 0.0),
+                    grounding_confidence=0.0,
+                    mandatory=bool(claim.get("requires_verification", True)),
+                    verifier_hint=None,
+                    bounding_boxes=[],
+                )
+            )
     return normalized_fields
 
 def _deterministic_credential_groups(
     extraction_payload: dict[str, Any],
     normalized_fields: list[GeminiNormalizedField],
 ) -> list[GeminiCredentialGroup]:
-    field_ids = [field.field_id for field in normalized_fields if field.mandatory] or [field.field_id for field in normalized_fields]
+    del extraction_payload
+    fields_by_claim_type: dict[str, list[GeminiNormalizedField]] = {}
+    for field in normalized_fields:
+        fields_by_claim_type.setdefault(_claim_type_from_field(field), []).append(field)
+
+    groups: list[GeminiCredentialGroup] = []
+    for index, (claim_type, fields) in enumerate(fields_by_claim_type.items(), start=1):
+        field_ids = [field.field_id for field in fields]
+        required_field_ids = [field.field_id for field in fields if field.mandatory]
+        assurance_required = _assurance_for_claim_type(claim_type, bool(required_field_ids))
+        groups.append(
+            GeminiCredentialGroup(
+                group_id=f"credential-{index}",
+                credential_id=f"credential-{index}",
+                credential_type=claim_type,
+                label=f"{claim_type.replace('_', ' ').title()} Verification",
+                claim_ids=field_ids,
+                field_ids=field_ids,
+                required_field_ids=required_field_ids or field_ids,
+                optional_field_ids=[field_id for field_id in field_ids if field_id not in set(required_field_ids)],
+                connector_id=None,
+                claim_type=claim_type,
+                assurance_required=assurance_required,
+                group_confidence=sum(field.ai_confidence for field in fields) / max(len(fields), 1),
+                optional=not bool(required_field_ids),
+                high_assurance=assurance_required == "HIGH",
+                explanation="Deterministic grouping based on normalized claim type.",
+            )
+        )
+    if groups:
+        return groups
     return [
         GeminiCredentialGroup(
             group_id="primary-credential",
+            credential_id="primary-credential",
+            credential_type="generic_claim",
             label="Primary Credential Verification",
-            field_ids=field_ids,
+            claim_ids=[],
+            field_ids=[],
+            required_field_ids=[],
             connector_id=None,
-            claim_type="credential",
+            claim_type="generic_claim",
+            assurance_required="MEDIUM",
             optional=False,
-            high_assurance=True,
-            explanation="Deterministic grouping based on extracted connector input.",
+            high_assurance=False,
+            explanation="Deterministic grouping fallback for unknown extraction.",
         )
     ]
+
+
+def _recommend_route_for_group(group: GeminiCredentialGroup) -> RouteRecommendation:
+    claim_type = str(group.claim_type or group.credential_type or "generic_claim")
+    assurance_required = group.assurance_required or _assurance_for_claim_type(claim_type, not group.optional)
+    priority = "OPTIONAL" if group.optional else "REQUIRED"
+    provider_candidates = _provider_candidates_for_claim_type(claim_type, assurance_required)
+    preferred_provider_key = str(provider_candidates[0].get("provider_id") if isinstance(provider_candidates[0], dict) else provider_candidates[0])
+    return RouteRecommendation(
+        credential_id=group.credential_id or group.group_id,
+        claim_type=claim_type,
+        provider_candidates=provider_candidates,
+        preferred_provider_key=preferred_provider_key,
+        provider_id=preferred_provider_key,
+        assurance_required=assurance_required,
+        priority=priority,
+        planner_reason=(
+            "Route recommendation is advisory only; deterministic verifier execution and trust rules remain authoritative."
+        ),
+    )
+
+
+def _provider_candidates_for_claim_type(claim_type: str, assurance_required: str) -> list[dict[str, Any]]:
+    normalized = str(claim_type or "").lower()
+    try:
+        from ..verifier_execution.registry import build_default_verifier_registry
+
+        registry_candidates = build_default_verifier_registry().get_provider_candidates(
+            claim_type=normalized,
+            assurance_required=assurance_required,
+            context={"category": normalized},
+        )
+        if registry_candidates:
+            return [
+                {
+                    "provider_id": item.provider_key,
+                    "provider_label": item.provider_label,
+                    "provider_mode": "local_fixture" if item.provider_key == "local_mock" else "manual" if item.provider_key == "manual_review" else "architectural_candidate",
+                    "verifier_key": item.verifier_key,
+                    "reason_codes": list(item.reason_codes or []),
+                }
+                for item in registry_candidates
+            ]
+    except Exception:
+        pass
+
+    candidates: list[dict[str, Any]] = []
+    if normalized in {"identity", "identity_document", "certificate", "certificate_document", "academic", "academic_degree", "academic_credential"}:
+        candidates.append(
+            {
+                "provider_id": "entra_verified_id",
+                "provider_label": "Microsoft Entra Verified ID",
+                "provider_mode": "architectural_candidate",
+            }
+        )
+    candidates.append(
+        {
+            "provider_id": "local_mock",
+            "provider_label": "Local Mock Registry",
+            "provider_mode": "local_fixture",
+        }
+    )
+    if assurance_required != "LOW" or normalized in {"generic_claim", "unknown", "unknown_document"}:
+        candidates.append(
+            {
+                "provider_id": "manual_review",
+                "provider_label": "Manual Review",
+                "provider_mode": "manual",
+            }
+        )
+    return candidates
+
+
+def _claim_type_from_field(field: GeminiNormalizedField) -> str:
+    haystack = f"{field.field_id} {field.label}".lower()
+    if any(token in haystack for token in ("identity", "passport", "aadhaar", "pan", "name", "date of birth")):
+        return "identity"
+    if any(token in haystack for token in ("employment", "employer", "job", "role")):
+        return "employment"
+    if any(token in haystack for token in ("invoice", "amount", "tax", "balance", "account")):
+        return "financial"
+    if any(token in haystack for token in ("certificate", "certification", "credential", "license")):
+        return "certificate"
+    if any(token in haystack for token in ("issuer", "institution", "organization", "authority")):
+        return "issuer_identity"
+    return "generic_claim"
+
+
+def _claim_type_from_label(label: str) -> str:
+    normalized = safe_normalized_string(label).lower()
+    if not normalized:
+        return "generic_claim"
+    synthetic_field = GeminiNormalizedField(
+        field_id=normalized.replace(" ", "_"),
+        label=normalized,
+    )
+    return _claim_type_from_field(synthetic_field)
+
+
+def _assurance_for_claim_type(claim_type: str, required: bool) -> str:
+    normalized = str(claim_type or "").lower()
+    if normalized in {"identity", "identity_document", "license", "financial", "tax"}:
+        return "HIGH"
+    if required or normalized in {"certificate", "academic", "academic_degree", "academic_credential"}:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _planning_warnings(tasks: list[VerificationTask]) -> list[str]:
+    warnings: list[str] = []
+    for task in tasks:
+        if not task.required_fields:
+            warnings.append(f"{task.task_id}:MISSING_REQUIRED_FIELDS")
+        if not task.provider_candidates:
+            warnings.append(f"{task.task_id}:NO_PROVIDER_CANDIDATES")
+    return warnings
+
+
+def _slug_id(value: str) -> str:
+    return "".join(character if character.isalnum() else "-" for character in str(value).lower()).strip("-") or "task"
 
 def _resolve_extraction_confidence(extraction_payload: dict[str, Any], field_id: str, extracted_value: str) -> float:
     trust_input = extraction_payload.get("trust_input") or {}

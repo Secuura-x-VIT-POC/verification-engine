@@ -97,6 +97,7 @@ class WorkspaceSanitizationTests(unittest.TestCase):
             "spatial_text_map": ["raw layout text"],
             "evidence_lines": ["raw evidence line"],
             "provider_raw_response": "provider body",
+            "raw_provider_body": "raw provider body sentinel",
             "request_body": "request body",
         }
 
@@ -117,6 +118,7 @@ class WorkspaceSanitizationTests(unittest.TestCase):
             "raw_response",
             "response_body",
             "provider_raw_response",
+            "raw_provider_body",
             "request_body",
             "full_prompt",
             "full_response",
@@ -131,6 +133,7 @@ class WorkspaceSanitizationTests(unittest.TestCase):
             "Candidate Name: Student Demo",
             "raw verifier response",
             "raw provider body",
+            "raw provider body sentinel",
             "raw gemini output",
             "full prompt should not leak",
             "full response should not leak",

@@ -44,7 +44,9 @@ class AgentRuntimePolicy:
     max_value_chars: int = 160
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash"
+    gemini_temperature: float = 0.0
     gemini_demo_raw_text_enabled: bool = True
+    gemini_structured_output_enabled: bool = True
     gemini_max_input_chars: int = 12000
 
 
@@ -58,9 +60,11 @@ def load_agent_runtime_policy() -> AgentRuntimePolicy:
         classification_override_confidence=_read_float("AGENT_CLASSIFICATION_OVERRIDE_CONFIDENCE", 0.74),
         max_fields_for_provider=_read_int("AGENT_MAX_FIELDS_FOR_PROVIDER", 18),
         max_value_chars=_read_int("AGENT_MAX_VALUE_CHARS", 160),
-        gemini_api_key=(os.getenv("GEMINI_API_KEY") or "").strip() or None,
+        gemini_api_key=(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip() or None,
         gemini_model=(os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip() or "gemini-2.5-flash",
+        gemini_temperature=_read_float("GEMINI_TEMPERATURE", 0.0),
         gemini_demo_raw_text_enabled=_read_bool("GEMINI_DEMO_RAW_TEXT_ENABLED", True),
+        gemini_structured_output_enabled=_read_bool("GEMINI_STRUCTURED_OUTPUT_ENABLED", True),
         gemini_max_input_chars=_read_int("GEMINI_MAX_INPUT_CHARS", 12000),
     )
 

@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import json
 from datetime import datetime
 from unittest.mock import patch
 
@@ -33,6 +34,7 @@ from backend.app.verification_domain.contracts import (
 )
 from backend.app.verifier_execution import (
     EXECUTION_STATUS_READY,
+    TASK_STATUS_FAILED,
     TASK_STATUS_MANUAL_REVIEW,
     TASK_STATUS_PARTIAL,
     TASK_STATUS_SUCCEEDED,
@@ -44,6 +46,27 @@ from backend.app.verifier_execution import (
 )
 from backend.app.verifier_execution.adapters import build_execution_context
 from backend.app.verifier_execution.executor import VerificationTaskExecutor
+
+
+class _FakeProviderRegistry:
+    def __init__(self, providers: dict[str, object] | None = None):
+        self.providers = dict(providers or {})
+
+    def get(self, provider_key: str):
+        return self.providers.get(provider_key)
+
+
+class _FakeProviderRuntime:
+    def __init__(self, providers: dict[str, object] | None = None):
+        self.registry = _FakeProviderRegistry(providers)
+
+
+class _CapabilityMismatchProvider:
+    provider_key = "wrong_category_provider"
+    provider_label = "Wrong Category Provider"
+
+    def supports(self, verifier_key: str, category: str) -> bool:
+        return False
 
 
 def _sample_extraction_payload() -> dict:
@@ -255,6 +278,439 @@ class PlaceholderVerifierTests(unittest.TestCase):
 
 
 class VerificationExecutorTests(unittest.TestCase):
+    def _single_identity_credential_collection(
+        self,
+        *,
+        credential_id: str = "name-1",
+    ) -> SessionCredentialCollection:
+        return SessionCredentialCollection(
+            session_id="session-exec-safety",
+            document_type="identity_document",
+            credentials=[
+                ExtractedCredential(
+                    credential_id=credential_id,
+                    label="Candidate Name",
+                    category="identity",
+                    value="Kanak Sharma",
+                    normalized_value="Kanak Sharma",
+                    confidence=0.98,
+                    requires_verification=True,
+                )
+            ],
+        )
+
+    def _single_task_plan(
+        self,
+        *,
+        credential_id: str = "name-1",
+        verifier_key: str = "identity_db",
+        verifier_label: str = "Identity Database",
+        provider_candidates: list[str] | None = None,
+    ) -> SessionVerificationPlan:
+        return SessionVerificationPlan(
+            session_id="session-exec-safety",
+            document_type="identity_document",
+            route_decisions=[
+                VerifierRouteDecision(
+                    credential_id=credential_id,
+                    selected_verifier_key=verifier_key,
+                    selected_verifier_label=verifier_label,
+                    route_reason="safety test route",
+                )
+            ],
+            tasks=[
+                VerificationTask(
+                    task_id="task-name",
+                    credential_id=credential_id,
+                    verifier_key=verifier_key,
+                    verifier_label=verifier_label,
+                    verification_type="identity",
+                    required=True,
+                    status="PLANNED",
+                    provider_candidates=list(provider_candidates or []),
+                    input_payload={
+                        "label": "Candidate Name",
+                        "value": "Kanak Sharma",
+                        "preferred_provider_key": (
+                            provider_candidates[0] if provider_candidates else None
+                        ),
+                    },
+                )
+            ],
+        )
+
+    def _empty_context(self, *, provider_runtime=None):
+        return build_execution_context(
+            session_id="session-exec-safety",
+            document_type="identity_document",
+            extraction_payload={"document_type": "identity_document"},
+            connector_payload=[],
+            trust_outcome=None,
+            reason_codes=[],
+            provider_runtime=provider_runtime,
+        )
+
+    def test_unknown_provider_candidate_is_skipped_and_falls_back_to_manual_review(self):
+        artifacts = VerificationTaskExecutor().execute_plan(
+            credential_collection=self._single_identity_credential_collection(),
+            verification_plan=self._single_task_plan(provider_candidates=["unknown_provider"]),
+            context=self._empty_context(),
+        )
+
+        result = artifacts["task_results"].results[0]
+
+        self.assertEqual(result.task_status, TASK_STATUS_MANUAL_REVIEW)
+        self.assertEqual(result.audit_status, "MANUAL_REVIEW")
+        self.assertEqual(result.outcome_color, "amber")
+        self.assertTrue(result.manual_review_recommended)
+        self.assertIn("PROVIDER_NOT_REGISTERED", result.reason_codes)
+        self.assertIn("NO_PROVIDER_AVAILABLE", result.reason_codes)
+        self.assertEqual(result.fallback_reason, "NO_EXECUTABLE_PROVIDER")
+        self.assertNotEqual(result.audit_status, "VERIFIED")
+        self.assertNotEqual(result.outcome_color, "green")
+
+    def test_provider_capability_mismatch_is_skipped_and_falls_back_to_manual_review(self):
+        runtime = _FakeProviderRuntime(
+            {"wrong_category_provider": _CapabilityMismatchProvider()}
+        )
+
+        artifacts = VerificationTaskExecutor().execute_plan(
+            credential_collection=self._single_identity_credential_collection(),
+            verification_plan=self._single_task_plan(
+                provider_candidates=["wrong_category_provider"]
+            ),
+            context=self._empty_context(provider_runtime=runtime),
+        )
+
+        result = artifacts["task_results"].results[0]
+
+        self.assertEqual(result.task_status, TASK_STATUS_MANUAL_REVIEW)
+        self.assertEqual(result.audit_status, "MANUAL_REVIEW")
+        self.assertEqual(result.outcome_color, "amber")
+        self.assertIn("PROVIDER_CAPABILITY_MISMATCH", result.reason_codes)
+        self.assertIn("NO_PROVIDER_AVAILABLE", result.reason_codes)
+        self.assertTrue(result.manual_review_recommended)
+        self.assertNotEqual(result.audit_status, "VERIFIED")
+        self.assertNotEqual(result.outcome_color, "green")
+
+    def test_no_executable_provider_available_becomes_manual_review_result(self):
+        artifacts = VerificationTaskExecutor().execute_plan(
+            credential_collection=self._single_identity_credential_collection(),
+            verification_plan=self._single_task_plan(
+                verifier_key="unregistered_verifier",
+                verifier_label="Unregistered Verifier",
+                provider_candidates=["unregistered_provider"],
+            ),
+            context=self._empty_context(),
+        )
+
+        result = artifacts["task_results"].results[0]
+
+        self.assertEqual(result.task_status, TASK_STATUS_MANUAL_REVIEW)
+        self.assertEqual(result.audit_status, "MANUAL_REVIEW")
+        self.assertEqual(result.outcome_color, "amber")
+        self.assertEqual(result.fallback_reason, "NO_EXECUTABLE_PROVIDER")
+        self.assertIn("VERIFIER_NOT_REGISTERED", result.reason_codes)
+        self.assertIn("NO_PROVIDER_AVAILABLE", result.reason_codes)
+        self.assertLess(result.confidence or 0.0, 0.99)
+        self.assertNotEqual(result.audit_status, "VERIFIED")
+        self.assertNotEqual(result.outcome_color, "green")
+
+    def test_missing_credential_reference_is_handled_without_false_verification(self):
+        artifacts = VerificationTaskExecutor().execute_plan(
+            credential_collection=self._single_identity_credential_collection(
+                credential_id="name-1"
+            ),
+            verification_plan=self._single_task_plan(credential_id="missing-name"),
+            context=self._empty_context(),
+        )
+
+        result = artifacts["task_results"].results[0]
+
+        self.assertEqual(result.task_status, TASK_STATUS_FAILED)
+        self.assertEqual(result.audit_status, "MANUAL_REVIEW")
+        self.assertEqual(result.outcome_color, "amber")
+        self.assertTrue(result.manual_review_recommended)
+        self.assertIn("MISSING_CREDENTIAL_REFERENCE", result.reason_codes)
+        self.assertEqual(result.execution_mode, "EXECUTOR_FAILURE")
+        self.assertNotEqual(result.audit_status, "VERIFIED")
+        self.assertNotEqual(result.outcome_color, "green")
+
+    def test_provider_mismatch_result_remains_red_through_bundle_selection(self):
+        credentials = self._single_identity_credential_collection()
+        plan = self._single_task_plan()
+        mismatch = VerificationTaskResult(
+            task_id="task-mismatch",
+            credential_id="name-1",
+            verifier_key="identity_db",
+            verifier_label="Identity Database",
+            executed_provider_key="local_mock",
+            executed_provider_label="Local Mock Provider",
+            task_status="SUCCEEDED",
+            audit_status="MISMATCH",
+            outcome_color="red",
+            explanation="Provider returned contradictory evidence.",
+            reason_codes=["PROVIDER_MISMATCH"],
+            mismatched_fields={"name": {"document_value": "Kanak", "expected_value": "Asha"}},
+            confidence=0.98,
+        )
+        manual_review = VerificationTaskResult(
+            task_id="task-review",
+            credential_id="name-1",
+            verifier_key="manual_review",
+            verifier_label="Manual Review",
+            task_status="MANUAL_REVIEW",
+            audit_status="MANUAL_REVIEW",
+            outcome_color="amber",
+            explanation="Manual review fallback.",
+            reason_codes=["MANUAL_REVIEW_REQUIRED"],
+            confidence=0.0,
+            manual_review_recommended=True,
+        )
+        verified = VerificationTaskResult(
+            task_id="task-verified",
+            credential_id="name-1",
+            verifier_key="identity_db",
+            verifier_label="Identity Database",
+            task_status="SUCCEEDED",
+            audit_status="VERIFIED",
+            outcome_color="green",
+            explanation="A later result claims a match.",
+            reason_codes=["PROVIDER_VERIFIED"],
+            confidence=0.99,
+        )
+
+        bundles = VerificationTaskExecutor()._build_bundles(
+            credential_collection=credentials,
+            verification_plan=plan,
+            results=[manual_review, verified, mismatch],
+        )
+
+        bundle = bundles.bundles[0]
+        self.assertEqual(bundle.best_result.task_id, "task-mismatch")
+        self.assertEqual(bundle.final_audit_status, "MISMATCH")
+        self.assertEqual(bundle.final_outcome_color, "red")
+        self.assertIn("PROVIDER_MISMATCH", bundle.reason_codes)
+        self.assertNotEqual(bundle.final_audit_status, "VERIFIED")
+        self.assertNotEqual(bundle.final_outcome_color, "green")
+
+    def test_audit_assembly_does_not_expose_raw_credential_values(self):
+        credentials = SessionCredentialCollection(
+            session_id="session-privacy-audit",
+            document_type="identity_document",
+            credentials=[
+                ExtractedCredential(
+                    credential_id="credential-name",
+                    label="Candidate Name",
+                    category="identity",
+                    value="RAW_PERSON_NAME_SECRET_123",
+                    normalized_value="RAW_ID_NUMBER_SECRET_123",
+                    source_text="RAW_SOURCE_TEXT_SECRET_123",
+                    page=1,
+                    bounding_box=BoundingBox(page=1, x0=10, y0=10, x1=80, y1=20),
+                    confidence=0.98,
+                    requires_verification=True,
+                    extraction_method="unit_test",
+                )
+            ],
+        )
+        plan = SessionVerificationPlan(
+            session_id="session-privacy-audit",
+            document_type="identity_document",
+            route_decisions=[
+                VerifierRouteDecision(
+                    credential_id="credential-name",
+                    selected_verifier_key="manual_review",
+                    selected_verifier_label="Manual Review",
+                    route_reason="manual review",
+                    manual_review_recommended=True,
+                )
+            ],
+            tasks=[],
+        )
+
+        audits = build_session_credential_audits(
+            "session-privacy-audit",
+            {"document_type": "identity_document"},
+            credentials=credentials,
+            verification_plan=plan,
+        )
+        serialized = json.dumps(audits.model_dump(mode="json"), sort_keys=True)
+
+        self.assertNotIn("RAW_PERSON_NAME_SECRET_123", serialized)
+        self.assertNotIn("RAW_ID_NUMBER_SECRET_123", serialized)
+        self.assertNotIn("RAW_SOURCE_TEXT_SECRET_123", serialized)
+        audit = audits.audits[0]
+        self.assertIsNone(audit.document_value)
+        self.assertIsNone(audit.normalized_value)
+
+    def test_extraction_evidence_keeps_safe_metadata_only(self):
+        credential = ExtractedCredential(
+            credential_id="credential-name",
+            label="Candidate Name",
+            category="identity",
+            value="RAW_PERSON_NAME_SECRET_123",
+            normalized_value="RAW_ID_NUMBER_SECRET_123",
+            source_text="RAW_SOURCE_TEXT_SECRET_123",
+            page=1,
+            bounding_box=BoundingBox(page=1, x0=10, y0=10, x1=80, y1=20),
+            confidence=0.98,
+            requires_verification=True,
+            extraction_method="unit_test",
+        )
+        audits = build_session_credential_audits(
+            "session-safe-evidence",
+            {"document_type": "identity_document"},
+            credentials=SessionCredentialCollection(
+                session_id="session-safe-evidence",
+                document_type="identity_document",
+                credentials=[credential],
+            ),
+            verification_plan=SessionVerificationPlan(
+                session_id="session-safe-evidence",
+                document_type="identity_document",
+                route_decisions=[
+                    VerifierRouteDecision(
+                        credential_id="credential-name",
+                        selected_verifier_key="manual_review",
+                        selected_verifier_label="Manual Review",
+                        route_reason="manual review",
+                        manual_review_recommended=True,
+                    )
+                ],
+                tasks=[],
+            ),
+        )
+
+        extraction_item = next(
+            item for item in audits.audits[0].evidence if item.evidence_type == "document_extraction"
+        )
+
+        self.assertEqual(
+            set(extraction_item.detail.keys()),
+            {
+                "credential_id",
+                "label",
+                "category",
+                "field_local_only",
+                "page",
+                "bounding_box",
+                "confidence",
+                "extraction_method",
+            },
+        )
+        self.assertEqual(extraction_item.detail["credential_id"], "credential-name")
+        self.assertEqual(extraction_item.detail["label"], "Candidate Name")
+        self.assertEqual(extraction_item.detail["category"], "identity")
+        self.assertEqual(extraction_item.detail["bounding_box"]["x0"], 10)
+        serialized = json.dumps(extraction_item.model_dump(mode="json"), sort_keys=True)
+        self.assertNotIn("source_text", serialized)
+        self.assertNotIn("normalized_value", serialized)
+        self.assertNotIn("RAW_SOURCE_TEXT_SECRET_123", serialized)
+        self.assertNotIn("RAW_ID_NUMBER_SECRET_123", serialized)
+
+    def test_task_result_evidence_does_not_include_raw_provider_summary(self):
+        credential = ExtractedCredential(
+            credential_id="credential-name",
+            label="Candidate Name",
+            category="identity",
+            value="RAW_PERSON_NAME_SECRET_123",
+            normalized_value="RAW_ID_NUMBER_SECRET_123",
+            source_text="RAW_SOURCE_TEXT_SECRET_123",
+            confidence=0.98,
+            requires_verification=True,
+        )
+        result = VerificationTaskResult(
+            task_id="task-name",
+            credential_id="credential-name",
+            verifier_key="identity_db",
+            verifier_label="Identity Database",
+            executed_provider_key="local_mock",
+            executed_provider_label="Local Mock Provider",
+            execution_mode="LOCAL_MOCK",
+            task_status="SUCCEEDED",
+            audit_status="MISMATCH",
+            outcome_color="red",
+            explanation="Provider returned contradictory evidence.",
+            reason_codes=["PROVIDER_MISMATCH"],
+            matched_fields={"name": "RAW_PERSON_NAME_SECRET_123"},
+            mismatched_fields={
+                "document_id": {
+                    "document_value": "RAW_ID_NUMBER_SECRET_123",
+                    "expected_value": "RAW_PROVIDER_SECRET_123",
+                }
+            },
+            missing_fields=["Candidate Name"],
+            raw_result_summary={
+                "provider_key": "local_mock",
+                "provider_label": "Local Mock Provider",
+                "provider_response_summary": {
+                    "raw_provider_body": "RAW_PROVIDER_SECRET_123",
+                    "safe_mode": "local_mock",
+                },
+                "raw_result_summary": "RAW_PROVIDER_SECRET_123",
+                "execution_mode": "LOCAL_MOCK",
+            },
+            confidence=0.98,
+        )
+        bundle = CredentialVerificationBundle(
+            credential_id="credential-name",
+            label="Candidate Name",
+            category="identity",
+            selected_task_ids=["task-name"],
+            result_count=1,
+            final_audit_status="MISMATCH",
+            final_outcome_color="red",
+            explanation="Provider returned contradictory evidence.",
+            reason_codes=["PROVIDER_MISMATCH"],
+            best_result=result,
+            all_results=[],
+        )
+        audits = build_session_credential_audits(
+            "session-provider-privacy",
+            {"document_type": "identity_document"},
+            credentials=SessionCredentialCollection(
+                session_id="session-provider-privacy",
+                document_type="identity_document",
+                credentials=[credential],
+            ),
+            verification_plan=SessionVerificationPlan(
+                session_id="session-provider-privacy",
+                document_type="identity_document",
+                route_decisions=[
+                    VerifierRouteDecision(
+                        credential_id="credential-name",
+                        selected_verifier_key="identity_db",
+                        selected_verifier_label="Identity Database",
+                        route_reason="identity",
+                    )
+                ],
+                tasks=[],
+            ),
+            credential_bundles=CredentialVerificationBundleCollection(
+                session_id="session-provider-privacy",
+                document_type="identity_document",
+                bundles=[bundle],
+            ),
+        )
+        serialized = json.dumps(audits.model_dump(mode="json"), sort_keys=True)
+
+        self.assertNotIn("RAW_PROVIDER_SECRET_123", serialized)
+        self.assertNotIn("RAW_PERSON_NAME_SECRET_123", serialized)
+        self.assertNotIn("RAW_ID_NUMBER_SECRET_123", serialized)
+        self.assertNotIn("raw_result_summary", serialized)
+        audit = audits.audits[0]
+        self.assertEqual(audit.audit_status, "MISMATCH")
+        self.assertEqual(audit.outcome_color, "red")
+        self.assertEqual(audit.reason_codes, ["PROVIDER_MISMATCH"])
+        self.assertEqual(audit.matched_fields, {"name": True})
+        self.assertEqual(audit.mismatched_fields, {"document_id": True})
+        task_item = next(
+            item for item in audit.evidence if item.evidence_type == "verification_task_result"
+        )
+        self.assertEqual(task_item.detail["matched_fields"], {"name": True})
+        self.assertEqual(task_item.detail["mismatched_fields"], {"document_id": True})
+
     def test_route_plan_marks_entra_preferred_but_local_mock_planned_honestly(self):
         credentials = SessionCredentialCollection(
             session_id="session-route-truth",
@@ -659,7 +1115,7 @@ class VerificationExecutionServiceTests(unittest.TestCase):
 
         self.assertEqual(name_audit.audit_status, "VERIFIED")
         self.assertEqual(address_audit.audit_status, "PARTIAL")
-        self.assertEqual(name_audit.matched_fields, {"name": "Kanak Sharma"})
+        self.assertEqual(name_audit.matched_fields, {"name": True})
         self.assertEqual(address_audit.matched_fields, {})
         self.assertTrue(any(item.evidence_type == "connector_claim_summary" for item in name_audit.evidence))
         self.assertFalse(any(item.evidence_type == "connector_claim_summary" for item in address_audit.evidence))
@@ -670,8 +1126,9 @@ class VerificationExecutionServiceTests(unittest.TestCase):
         )
 
         extraction_item = next(item for item in address_audit.evidence if item.evidence_type == "document_extraction")
-        self.assertEqual(extraction_item.detail["source_text"], "Home Address: 42 Registry Road")
         self.assertEqual(extraction_item.detail["bounding_box"]["x0"], 10)
+        self.assertNotIn("source_text", extraction_item.detail)
+        self.assertNotIn("normalized_value", extraction_item.detail)
 
     def test_audit_provider_evidence_distinguishes_preference_plan_and_execution(self):
         credential = ExtractedCredential(

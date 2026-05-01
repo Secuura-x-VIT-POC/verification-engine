@@ -155,8 +155,8 @@ def _build_audit_from_bundle(
     return CredentialAudit(
         credential_id=credential.credential_id,
         label=bundle.label or credential.label,
-        document_value=credential.value,
-        normalized_value=credential.normalized_value,
+        document_value=None,
+        normalized_value=None,
         verifier_label=(
             best_result.verifier_label
             if best_result is not None
@@ -166,8 +166,8 @@ def _build_audit_from_bundle(
         outcome_color=bundle.final_outcome_color,
         explanation=bundle.explanation,
         reason_codes=list(bundle.reason_codes or []),
-        matched_fields=(dict(best_result.matched_fields) if best_result is not None else {}),
-        mismatched_fields=(dict(best_result.mismatched_fields) if best_result is not None else {}),
+        matched_fields=(_safe_field_presence_map(best_result.matched_fields) if best_result is not None else {}),
+        mismatched_fields=(_safe_field_presence_map(best_result.mismatched_fields) if best_result is not None else {}),
         missing_fields=(
             list(best_result.missing_fields)
             if best_result is not None
@@ -406,8 +406,8 @@ def _build_audit(
         return CredentialAudit(
             credential_id=credential.credential_id,
             label=credential.label,
-            document_value=credential.value,
-            normalized_value=credential.normalized_value,
+            document_value=None,
+            normalized_value=None,
             verifier_label=decision.selected_verifier_label,
             audit_status=AUDIT_STATUS_NOT_APPLICABLE,
             outcome_color=OUTCOME_COLOR_NEUTRAL,
@@ -421,15 +421,15 @@ def _build_audit(
         return CredentialAudit(
             credential_id=credential.credential_id,
             label=credential.label,
-            document_value=credential.value,
-            normalized_value=credential.normalized_value,
+            document_value=None,
+            normalized_value=None,
             verifier_label=decision.selected_verifier_label,
             audit_status=AUDIT_STATUS_MISMATCH,
             outcome_color=OUTCOME_COLOR_RED,
             explanation=f"Current connector evidence indicates a mismatch for this field via '{connector.get('connector_id', 'connector')}'.",
             reason_codes=_dedupe_reason_codes(list(connector.get("reason_codes") or ["CONNECTOR_MISMATCH"])),
-            matched_fields=claim_evidence["matched_fields"],
-            mismatched_fields=claim_evidence["mismatched_fields"],
+            matched_fields=_safe_field_presence_map(claim_evidence["matched_fields"]),
+            mismatched_fields=_safe_field_presence_map(claim_evidence["mismatched_fields"]),
             evidence=evidence,
             timestamp=timestamp,
         )
@@ -438,14 +438,14 @@ def _build_audit(
         return CredentialAudit(
             credential_id=credential.credential_id,
             label=credential.label,
-            document_value=credential.value,
-            normalized_value=credential.normalized_value,
+            document_value=None,
+            normalized_value=None,
             verifier_label=decision.selected_verifier_label,
             audit_status=AUDIT_STATUS_VERIFIED,
             outcome_color=OUTCOME_COLOR_GREEN,
             explanation=f"Current connector evidence matched this field via '{connector.get('connector_id', 'connector')}'.",
             reason_codes=_dedupe_reason_codes(list(connector.get("reason_codes") or ["CONNECTOR_VERIFIED"])),
-            matched_fields=claim_evidence["matched_fields"],
+            matched_fields=_safe_field_presence_map(claim_evidence["matched_fields"]),
             evidence=evidence,
             timestamp=timestamp,
         )
@@ -455,8 +455,8 @@ def _build_audit(
         return CredentialAudit(
             credential_id=credential.credential_id,
             label=credential.label,
-            document_value=credential.value,
-            normalized_value=credential.normalized_value,
+            document_value=None,
+            normalized_value=None,
             verifier_label=decision.selected_verifier_label,
             audit_status=AUDIT_STATUS_MANUAL_REVIEW,
             outcome_color=OUTCOME_COLOR_AMBER,
@@ -472,8 +472,8 @@ def _build_audit(
         return CredentialAudit(
             credential_id=credential.credential_id,
             label=credential.label,
-            document_value=credential.value,
-            normalized_value=credential.normalized_value,
+            document_value=None,
+            normalized_value=None,
             verifier_label=decision.selected_verifier_label,
             audit_status=AUDIT_STATUS_PARTIAL,
             outcome_color=OUTCOME_COLOR_AMBER,
@@ -488,8 +488,8 @@ def _build_audit(
     return CredentialAudit(
         credential_id=credential.credential_id,
         label=credential.label,
-        document_value=credential.value,
-        normalized_value=credential.normalized_value,
+        document_value=None,
+        normalized_value=None,
         verifier_label=decision.selected_verifier_label,
         audit_status=AUDIT_STATUS_UNVERIFIED,
         outcome_color=OUTCOME_COLOR_AMBER,
@@ -508,12 +508,12 @@ def _build_extraction_evidence(credential: ExtractedCredential) -> list[Evidence
             source="session.extraction_payload",
             detail={
                 "credential_id": credential.credential_id,
+                "label": credential.label,
+                "category": credential.category,
                 "field_local_only": True,
                 "page": credential.page,
                 "bounding_box": _maybe_dump_model(credential.bounding_box),
                 "confidence": credential.confidence,
-                "source_text": credential.source_text,
-                "normalized_value": credential.normalized_value,
                 "extraction_method": credential.extraction_method,
             },
         )
@@ -546,10 +546,10 @@ def _build_task_result_evidence(bundle) -> list[EvidenceItem]:
                     "audit_status": result.audit_status,
                     "outcome_color": result.outcome_color,
                     "reason_codes": list(result.reason_codes or []),
-                    "matched_fields": dict(result.matched_fields or {}),
-                    "mismatched_fields": dict(result.mismatched_fields or {}),
+                    "matched_fields": _safe_field_presence_map(result.matched_fields),
+                    "mismatched_fields": _safe_field_presence_map(result.mismatched_fields),
                     "missing_fields": list(result.missing_fields or []),
-                    "raw_result_summary": dict(result.raw_result_summary or {}),
+                    "result_summary": _safe_result_summary(result),
                     "confidence": result.confidence,
                     "latency_ms": result.latency_ms,
                     "manual_review_recommended": result.manual_review_recommended,
@@ -589,7 +589,9 @@ def _build_provider_evidence_from_bundle(bundle) -> list[EvidenceItem]:
                         "provider_technical_status": raw_summary.get("provider_technical_status"),
                         "provider_http_status": raw_summary.get("provider_http_status"),
                         "provider_latency_ms": raw_summary.get("provider_latency_ms"),
-                        "provider_response_summary": dict(raw_summary.get("provider_response_summary") or {}),
+                        "provider_response_summary": _safe_provider_response_summary(
+                            raw_summary.get("provider_response_summary")
+                        ),
                         "provider_operating_mode": raw_summary.get("provider_operating_mode"),
                         "provider_demo_profile_key": raw_summary.get("provider_demo_profile_key"),
                         "provider_execution_environment_label": raw_summary.get("provider_execution_environment_label"),
@@ -675,8 +677,8 @@ def _build_connector_claim_evidence(
                 "status": connector.get("status"),
                 "reason_codes": list(connector.get("reason_codes") or []),
                 "assurance_class": connector.get("assurance_class"),
-                "matched_fields": matched_fields,
-                "mismatched_fields": mismatched_fields,
+                "matched_fields": _safe_field_presence_map(matched_fields),
+                "mismatched_fields": _safe_field_presence_map(mismatched_fields),
             },
         )
     ]
@@ -815,3 +817,65 @@ def _maybe_dump_model(value: Any) -> Any:
     if hasattr(value, "dict"):
         return value.dict()
     return value
+
+
+def _safe_field_presence_map(fields: dict[str, Any] | None) -> dict[str, bool]:
+    if not isinstance(fields, dict):
+        return {}
+    return {str(key): True for key in fields.keys() if str(key)}
+
+
+def _safe_result_summary(result) -> dict[str, Any]:
+    raw_summary = dict(result.raw_result_summary or {})
+    return {
+        key: value
+        for key, value in {
+            "provider_key": raw_summary.get("provider_key") or result.executed_provider_key,
+            "provider_label": raw_summary.get("provider_label") or result.executed_provider_label,
+            "executed_provider_key": raw_summary.get("executed_provider_key") or result.executed_provider_key,
+            "executed_provider_label": raw_summary.get("executed_provider_label") or result.executed_provider_label,
+            "execution_mode": raw_summary.get("execution_mode") or result.execution_mode,
+            "fallback_reason": raw_summary.get("fallback_reason") or result.fallback_reason,
+            "provider_technical_status": raw_summary.get("provider_technical_status"),
+            "provider_http_status": raw_summary.get("provider_http_status"),
+            "provider_latency_ms": raw_summary.get("provider_latency_ms") or result.latency_ms,
+            "provider_operating_mode": raw_summary.get("provider_operating_mode"),
+            "provider_demo_profile_key": raw_summary.get("provider_demo_profile_key"),
+            "provider_execution_environment_label": raw_summary.get("provider_execution_environment_label"),
+            "provider_transition_notes": list(raw_summary.get("provider_transition_notes") or []),
+            "provider_is_mock_result": raw_summary.get("provider_is_mock_result", result.is_mock_result),
+            "provider_is_demo_result": raw_summary.get("provider_is_demo_result", result.is_demo_result),
+            "provider_is_live_result": raw_summary.get("provider_is_live_result", result.is_live_result),
+            "provider_fallback_used": raw_summary.get("provider_fallback_used"),
+            "connector_id": raw_summary.get("connector_id"),
+            "connector_status": raw_summary.get("connector_status"),
+            "matched_field_count": raw_summary.get("matched_field_count"),
+            "mismatched_field_count": raw_summary.get("mismatched_field_count"),
+        }.items()
+        if value not in (None, "", [])
+    }
+
+
+def _safe_provider_response_summary(summary: Any) -> dict[str, Any]:
+    if not isinstance(summary, dict):
+        return {}
+    safe_keys = {
+        "mode",
+        "match_status",
+        "presentation_mode",
+        "presentation_state",
+        "trust_rail",
+        "verification_authority",
+        "operating_mode",
+        "execution_environment_label",
+        "demo_profile_key",
+        "mock_mode",
+        "live_execution",
+        "outbound_mode",
+        "retry_count",
+    }
+    return {
+        str(key): value
+        for key, value in summary.items()
+        if str(key) in safe_keys and not isinstance(value, (dict, list))
+    }

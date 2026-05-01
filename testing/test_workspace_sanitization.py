@@ -98,6 +98,11 @@ class WorkspaceSanitizationTests(unittest.TestCase):
             "evidence_lines": ["raw evidence line"],
             "provider_raw_response": "provider body",
             "raw_provider_body": "raw provider body sentinel",
+            "provider_raw_body": "provider raw body sentinel",
+            "raw_connector_response": "raw connector response sentinel",
+            "raw_verifier_response": "raw verifier response sentinel",
+            "full_provider_response": "full provider response sentinel",
+            "raw_result_summary": {"secret": "raw result summary sentinel"},
             "request_body": "request body",
         }
 
@@ -119,6 +124,11 @@ class WorkspaceSanitizationTests(unittest.TestCase):
             "response_body",
             "provider_raw_response",
             "raw_provider_body",
+            "provider_raw_body",
+            "raw_connector_response",
+            "raw_verifier_response",
+            "full_provider_response",
+            "raw_result_summary",
             "request_body",
             "full_prompt",
             "full_response",
@@ -134,6 +144,11 @@ class WorkspaceSanitizationTests(unittest.TestCase):
             "raw verifier response",
             "raw provider body",
             "raw provider body sentinel",
+            "provider raw body sentinel",
+            "raw connector response sentinel",
+            "raw verifier response sentinel",
+            "full provider response sentinel",
+            "raw result summary sentinel",
             "raw gemini output",
             "full prompt should not leak",
             "full response should not leak",
@@ -150,7 +165,7 @@ class WorkspaceSanitizationTests(unittest.TestCase):
         self.assertEqual(field["extraction_confidence"], 0.9)
         self.assertEqual(field["bounding_boxes"][0]["page"], 1)
         self.assertIn("***", field["extracted_value"])
-        self.assertIn("***", field["normalized_value"])
+        self.assertNotIn("normalized_value", field)
 
 
 if __name__ == "__main__":

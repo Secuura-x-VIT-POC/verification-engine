@@ -399,7 +399,7 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
     field_decisions = [FieldDecision.model_validate(item) for item in list(state.get("field_decisions") or [])]
     verifier_results = [VerifierResult.model_validate(item) for item in list(state.get("verifier_results") or [])]
     final_verdict = state.get("final_verdict") or {}
-    warnings = list(((sanitized_extraction.get("view") or {}).get("warnings")) or [])
+    warnings = _workspace_safe_warnings(((sanitized_extraction.get("view") or {}).get("warnings")) or [])
 
     status = SessionState.PENDING_HUMAN_REVIEW
 
@@ -437,7 +437,7 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
             document_type=document_understanding.document_type or str((sanitized_extraction.get("view") or {}).get("document_type") or "unknown"),
             page_count=(sanitized_extraction.get("view") or {}).get("page_count"),
             used_ocr=bool((sanitized_extraction.get("view") or {}).get("used_ocr")),
-            warnings=[str(item) for item in warnings],
+            warnings=warnings,
             highlights_count=sum(len(field.bounding_boxes) for field in field_decisions),
         ),
         summary=WorkspaceSummary(
@@ -480,6 +480,27 @@ def _workspace_actions_for_status(session_status: str) -> list[WorkspaceAction]:
         WorkspaceAction(action_id="can_reject", label="Reject", enabled=pending_human_review),
         WorkspaceAction(action_id="can_manual_review", label="Manual Review", enabled=pending_human_review),
     ]
+
+
+def _workspace_safe_warnings(raw_warnings: Any) -> list[str]:
+    if not isinstance(raw_warnings, list):
+        return []
+    return [_workspace_safe_warning(item) for item in raw_warnings[:8]]
+
+
+def _workspace_safe_warning(item: Any) -> str:
+    if isinstance(item, dict):
+        item = item.get("code") or item.get("type") or "WORKSPACE_WARNING"
+    text = str(item or "").strip()
+    if not text:
+        return "WORKSPACE_WARNING"
+    upper_text = text.upper()
+    if "RAW" in upper_text or "SECRET" in upper_text or "PRIVATE" in upper_text:
+        return "WORKSPACE_WARNING_REDACTED"
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ_:-")
+    if len(text) <= 80 and text == upper_text and all(character in allowed for character in text):
+        return text
+    return "WORKSPACE_WARNING_REDACTED"
 
 
 def _workspace_verifier_result(result: VerificationTaskResult) -> VerifierResult:

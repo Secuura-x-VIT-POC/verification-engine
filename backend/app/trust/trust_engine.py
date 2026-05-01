@@ -235,14 +235,22 @@ def _normalize_verifier_results(connector_result: dict | list[dict] | None) -> l
         if "task_status" in item or "audit_status" in item or "executed_provider_key" in item:
             verifier_results.append(_verifier_result_from_task_result(item))
             continue
+        status, malformed = _normalize_provider_status(item.get("status"))
+        confidence, confidence_malformed = _safe_float(
+            item.get("verification_confidence"),
+            default=1.0 if not malformed else 0.0,
+        )
+        reason_codes = list(item.get("reason_codes") or [])
+        if malformed or confidence_malformed:
+            reason_codes = list(dict.fromkeys([*reason_codes, "PROVIDER_RESULT_MALFORMED"]))
         verifier_results.append(
             VerifierResult(
                 task_id=str(item.get("task_id") or "connector"),
                 field_id=str(item.get("field_id") or "dummy"),
                 connector_id=str(item.get("connector_id") or item.get("provider_key") or "provider"),
-                status=str(item.get("status") or "ERROR").upper(),
-                verification_confidence=float(item.get("verification_confidence") or 1.0),
-                reason_codes=list(item.get("reason_codes") or []),
+                status=status,
+                verification_confidence=confidence,
+                reason_codes=reason_codes,
                 high_assurance=item.get("assurance_class") == "HIGH",
             )
         )
@@ -254,19 +262,19 @@ def _verifier_result_from_task_result(item: dict[str, Any]) -> VerifierResult:
     task_status = str(item.get("task_status") or "").upper()
     if audit_status == "VERIFIED":
         status = "VERIFIED"
-        confidence = item.get("confidence", 0.95)
+        confidence, confidence_malformed = _safe_float(item.get("confidence"), default=0.95)
     elif audit_status == "MISMATCH":
         status = "MISMATCH"
-        confidence = item.get("confidence", 0.0)
+        confidence, confidence_malformed = _safe_float(item.get("confidence"), default=0.0)
     elif task_status == "SKIPPED":
         status = "SKIPPED"
-        confidence = item.get("confidence", 0.0)
+        confidence, confidence_malformed = _safe_float(item.get("confidence"), default=0.0)
     elif "TIMEOUT" in set(item.get("reason_codes") or []):
         status = "TIMEOUT"
-        confidence = item.get("confidence", 0.2)
+        confidence, confidence_malformed = _safe_float(item.get("confidence"), default=0.2)
     else:
         status = "ERROR"
-        confidence = item.get("confidence", 0.35)
+        confidence, confidence_malformed = _safe_float(item.get("confidence"), default=0.35)
 
     connector_id = (
         item.get("executed_provider_key")
@@ -274,13 +282,16 @@ def _verifier_result_from_task_result(item: dict[str, Any]) -> VerifierResult:
         or item.get("verifier_key")
         or "provider"
     )
+    reason_codes = list(item.get("reason_codes") or [])
+    if confidence_malformed:
+        reason_codes = list(dict.fromkeys([*reason_codes, "PROVIDER_RESULT_MALFORMED"]))
     return VerifierResult(
         task_id=str(item.get("task_id") or ""),
         field_id=str(item.get("credential_id") or item.get("field_id") or "dummy"),
         connector_id=str(connector_id),
         status=status,
         verification_confidence=float(confidence or 0.0),
-        reason_codes=list(item.get("reason_codes") or []),
+        reason_codes=reason_codes,
         source_api=str(connector_id),
         audit_message=str(item.get("explanation") or ""),
         high_assurance=item.get("planned_provider_key") == "entra_verified_id",
@@ -293,6 +304,23 @@ def _normalize_connector_results(connector_result: dict | list[dict] | None) -> 
     if isinstance(connector_result, list):
         return [item for item in connector_result if isinstance(item, dict)]
     return []
+
+
+def _normalize_provider_status(value: Any) -> tuple[str, bool]:
+    normalized = str(value or "").upper()
+    allowed = {"VERIFIED", "MISMATCH", "TIMEOUT", "ERROR", "SKIPPED", "NOT_APPLICABLE"}
+    if normalized in allowed:
+        return normalized, False
+    return "ERROR", True
+
+
+def _safe_float(value: Any, *, default: float) -> tuple[float, bool]:
+    if value in (None, ""):
+        return float(default), False
+    try:
+        return float(value), False
+    except (TypeError, ValueError):
+        return 0.0, True
 
 
 def _normalize_trust_fields(trust_input: dict, policy: dict) -> dict[str, dict[str, Any]]:

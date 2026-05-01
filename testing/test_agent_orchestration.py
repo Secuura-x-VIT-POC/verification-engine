@@ -16,8 +16,10 @@ from backend.app.agent_orchestration.schemas import (
     GeminiDocumentUnderstanding,
     GeminiNormalizedField,
     GeminiNormalizedFieldCollection,
+    SemanticNormalizedClaimCollection,
     WorkspacePayload,
 )
+from backend.app.agent_orchestration.semantic_normalization import normalize_claims_semantically
 from backend.app.agent_orchestration.service import normalize_extraction_payload
 
 
@@ -172,6 +174,61 @@ class GeminiNormalizationTests(unittest.TestCase):
                 audit_message="invalid",
                 bounding_boxes=[],
             )
+
+    def test_semantic_normalization_deterministic_fallback_is_generic(self):
+        claims = [
+            {"claim_id": "degree", "label": "Degree", "value": "Bachelor of Science in Physics", "confidence": 0.8},
+            {"claim_id": "certificate", "label": "Certificate", "value": "ISO 27001 Lead Auditor", "confidence": 0.7},
+            {"claim_id": "identity", "label": "Identity", "value": "Asha Rao"},
+            {"claim_id": "employment", "label": "Employment", "value": "Senior Analyst"},
+            {"claim_id": "misc", "value": "   Unknown   Claim   "},
+        ]
+
+        normalized = normalize_claims_semantically(claims, llm=None)
+
+        self.assertEqual(len(normalized), 5)
+        self.assertEqual(normalized[0]["normalized_value"], "Bachelor of Science in Physics")
+        self.assertEqual(normalized[1]["normalized_value"], "ISO 27001 Lead Auditor")
+        self.assertEqual(normalized[4]["normalized_value"], "Unknown Claim")
+        self.assertTrue(all(item["normalization_source"] == "deterministic_fallback" for item in normalized))
+        self.assertTrue(all("raw_value" not in item or item["raw_value"] is None for item in normalized))
+
+    def test_semantic_normalization_accepts_mocked_gemini_output(self):
+        fake_llm = _FakeLlm(
+            SemanticNormalizedClaimCollection(
+                claims=[
+                    {
+                        "claim_id": "cert-1",
+                        "field_id": "credential",
+                        "raw_value": "ISO 27001 Lead Auditor",
+                        "normalized_value": "ISO 27001 Lead Auditor",
+                        "claim_type": "professional_certificate",
+                        "canonical_label": "Credential",
+                        "confidence": 0.91,
+                        "normalization_source": "gemini",
+                        "requires_verification": True,
+                    }
+                ]
+            )
+        )
+
+        normalized = normalize_claims_semantically(
+            [{"claim_id": "cert-1", "label": "Credential", "raw_value": "ISO 27001 Lead Auditor"}],
+            llm=fake_llm,
+        )
+
+        self.assertEqual(normalized[0]["normalization_source"], "gemini")
+        self.assertEqual(normalized[0]["claim_type"], "professional_certificate")
+        self.assertNotIn("raw_value", normalized[0])
+
+    def test_semantic_normalization_falls_back_on_malformed_gemini_output(self):
+        normalized = normalize_claims_semantically(
+            [{"claim_id": "generic", "label": "Claim", "value": "  Generic   Evidence  "}],
+            llm=_FakeLlm("not structured"),
+        )
+
+        self.assertEqual(normalized[0]["normalization_source"], "deterministic_fallback")
+        self.assertEqual(normalized[0]["normalized_value"], "Generic Evidence")
 
 
 if __name__ == "__main__":

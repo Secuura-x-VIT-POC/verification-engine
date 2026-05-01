@@ -23,6 +23,7 @@ class GeneralizedVerificationState(TypedDict, total=False):
     
     # Structured Graph State (Passed between nodes)
     document_understanding: dict[str, Any]
+    semantic_claims: list[dict[str, Any]]
     normalized_fields: list[dict[str, Any]]
     credential_groups: list[dict[str, Any]]
     verification_tasks: list[dict[str, Any]]

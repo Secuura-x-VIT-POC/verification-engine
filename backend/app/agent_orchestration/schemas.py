@@ -60,6 +60,28 @@ class GeminiNormalizedFieldCollection(BaseModel):
     fields: list[GeminiNormalizedField] = Field(default_factory=list)
 
 
+class SemanticNormalizedClaim(BaseModel):
+    claim_id: str
+    field_id: str | None = None
+    raw_value: str | None = None
+    normalized_value: str = ""
+    claim_type: str = "generic_claim"
+    canonical_label: str | None = None
+    document_context: str | None = None
+    confidence: float = 0.0
+    normalization_source: Literal["gemini", "deterministic_fallback"] = "deterministic_fallback"
+    requires_verification: bool = True
+    reason: str | None = None
+
+    _confidence_fields = field_validator("confidence", mode="before")(
+        lambda cls, value: _clamp(value or 0.0)
+    )
+
+
+class SemanticNormalizedClaimCollection(BaseModel):
+    claims: list[SemanticNormalizedClaim] = Field(default_factory=list)
+
+
 class GeminiCredentialGroup(BaseModel):
     group_id: str
     label: str

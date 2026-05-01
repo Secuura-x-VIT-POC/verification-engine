@@ -86,6 +86,10 @@ class WorkspaceSanitizationTests(unittest.TestCase):
                     "level": "INFO",
                     "timestamp": "2026-01-01T00:00:00Z",
                     "agent_raw_output": "raw gemini output",
+                    "full_prompt": "full prompt should not leak",
+                    "full_response": "full response should not leak",
+                    "gemini_raw_response": "raw gemini response should not leak",
+                    "private_reasoning": "private reasoning should not leak",
                 }
             ],
             "actions": [],
@@ -114,6 +118,10 @@ class WorkspaceSanitizationTests(unittest.TestCase):
             "response_body",
             "provider_raw_response",
             "request_body",
+            "full_prompt",
+            "full_response",
+            "gemini_raw_response",
+            "private_reasoning",
         }:
             self.assertNotIn(f'"{key}"', serialized)
 
@@ -124,6 +132,10 @@ class WorkspaceSanitizationTests(unittest.TestCase):
             "raw verifier response",
             "raw provider body",
             "raw gemini output",
+            "full prompt should not leak",
+            "full response should not leak",
+            "raw gemini response should not leak",
+            "private reasoning should not leak",
             "student.demo@example.com",
             "Student Demo",
         }:

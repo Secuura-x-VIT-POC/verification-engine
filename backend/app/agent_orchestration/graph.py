@@ -33,6 +33,7 @@ from .schemas import (
     WorkspaceSummary,
     WorkspaceVerifierStatus,
 )
+from .semantic_normalization import normalize_claims_semantically, safe_normalized_string
 from .state import GeneralizedVerificationState
 
 LOGGER = logging.getLogger(__name__)
@@ -114,9 +115,14 @@ def _gemini_field_normalization(
     runtime_policy: AgentRuntimePolicy,
 ) -> dict[str, Any]:
     extraction_payload = state.get("extraction_payload") or {}
-    fallback = GeminiNormalizedFieldCollection(fields=_deterministic_normalized_fields(extraction_payload))
+    semantic_claims = normalize_claims_semantically(
+        _claims_from_extraction_payload(extraction_payload),
+        document_profile=state.get("document_understanding") or {},
+        llm=None,
+    )
+    fallback = GeminiNormalizedFieldCollection(fields=_deterministic_normalized_fields(extraction_payload, semantic_claims))
     
-    return _invoke_gemini_with_fallback(
+    result = _invoke_gemini_with_fallback(
         runtime_policy=runtime_policy,
         schema=GeminiNormalizedFieldCollection,
         prompt=_build_field_normalization_prompt(
@@ -128,6 +134,8 @@ def _gemini_field_normalization(
         stage_name="gemini_field_normalization",
         state_key="normalized_fields",
     )
+    result["semantic_claims"] = semantic_claims
+    return result
 
 def _gemini_credential_grouping(
     state: GeneralizedVerificationState,
@@ -561,7 +569,34 @@ def _fallback_document_understanding(extraction_payload: dict[str, Any]) -> Gemi
         risk_flags=warnings,
     )
 
-def _deterministic_normalized_fields(extraction_payload: dict[str, Any]) -> list[GeminiNormalizedField]:
+def _claims_from_extraction_payload(extraction_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    view = extraction_payload.get("view") or {}
+    claims = [
+        dict(item)
+        for item in list(view.get("field_details") or [])
+        if isinstance(item, dict)
+    ]
+    if claims:
+        return claims
+    trust_input = extraction_payload.get("trust_input") or {}
+    return [
+        {
+            "claim_id": str(field.get("name") or f"claim-{index}"),
+            "field_id": field.get("name"),
+            "label": str(field.get("name") or "").replace("_", " ").title(),
+            "value": field.get("value"),
+            "confidence": field.get("confidence"),
+            "requires_verification": field.get("is_mandatory", True),
+        }
+        for index, field in enumerate(list(trust_input.get("fields") or []), start=1)
+        if isinstance(field, dict)
+    ]
+
+
+def _deterministic_normalized_fields(
+    extraction_payload: dict[str, Any],
+    semantic_claims: list[dict[str, Any]] | None = None,
+) -> list[GeminiNormalizedField]:
     trust_input = extraction_payload.get("trust_input") or {}
     view = extraction_payload.get("view") or {}
     detail_by_key = {
@@ -569,19 +604,25 @@ def _deterministic_normalized_fields(extraction_payload: dict[str, Any]) -> list
         for detail in list(view.get("field_details") or [])
         if isinstance(detail, dict)
     }
+    semantic_by_field = {
+        str(claim.get("field_id") or claim.get("claim_id") or ""): claim
+        for claim in list(semantic_claims or [])
+        if isinstance(claim, dict)
+    }
     normalized_fields: list[GeminiNormalizedField] = []
     for field in list(trust_input.get("fields") or []):
         field_name = str(field.get("name") or "")
         if not field_name:
             continue
         detail = detail_by_key.get(field_name, {})
+        semantic_claim = semantic_by_field.get(field_name, {})
         boxes = detail.get("bounding_boxes") or []
         normalized_fields.append(
             GeminiNormalizedField(
                 field_id=field_name,
-                label=str(detail.get("label") or field_name.replace("_", " ").title()),
-                extracted_value=str(field.get("value") or ""),
-                normalized_value=str(field.get("value") or ""),
+                label=str(semantic_claim.get("canonical_label") or detail.get("label") or field_name.replace("_", " ").title()),
+                extracted_value=safe_normalized_string(field.get("value")),
+                normalized_value=safe_normalized_string(semantic_claim.get("normalized_value") or field.get("value")),
                 ai_confidence=float(field.get("confidence") or 0.0),
                 grounding_confidence=1.0 if boxes or field.get("is_grounded") else 0.0,
                 mandatory=bool(field.get("is_mandatory")),

@@ -1,4 +1,5 @@
 import os
+import inspect
 import sys
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from backend.app.db.database import Base
 from backend.app.sessions.constants import SessionState
 from backend.app.sessions.models import Session as SessionModel
 from backend.app.workflow import repository
+from backend.app.workflow import runtime as workflow_runtime
 from backend.app.workflow.state_machine import InvalidStateTransitionError, validate_transition
 from backend.app.workflow.service import (
     WORKER_PHASE_CONNECTOR_EVAL,
@@ -489,6 +491,57 @@ class WorkflowRuntimeFailureTests(unittest.TestCase):
         self.assertIsNone(session.extraction_payload)
         self.assertIsNone(session.connector_payload)
         db.close()
+
+    def test_runtime_does_not_define_or_call_degree_canonicalizer(self):
+        source = inspect.getsource(workflow_runtime)
+
+        self.assertNotIn("def _normalize_degree", source)
+        self.assertNotIn("_normalize_degree(", source)
+        self.assertNotIn("Bachelor of Engineering", source)
+        self.assertNotIn("Bachelor of Technology", source)
+
+    def test_runtime_preserves_non_academic_credential_values(self):
+        raw_result = {
+            "is_successful": True,
+            "page_count": 1,
+            "used_ocr": False,
+            "fields": {
+                "candidate_name": {"value": "  Asha   Rao  ", "confidence": 0.9, "bounding_boxes": []},
+                "institution": {"value": "  Example   Issuer ", "confidence": 0.8, "bounding_boxes": []},
+                "credential_type": {"value": " ISO   27001 Lead Auditor ", "confidence": 0.85, "bounding_boxes": []},
+                "document_id": {"value": " CERT-001 ", "confidence": 0.8, "bounding_boxes": []},
+            },
+            "field_candidates": [],
+        }
+        with patch("backend.app.workflow.runtime._load_extraction_result", return_value=raw_result), patch(
+            "backend.app.workflow.runtime._resolve_page_count",
+            return_value=1,
+        ):
+            payload = workflow_runtime.extract_document_payload(Path("demo.pdf"))
+
+        self.assertEqual(payload["connector_input"]["degree"], "ISO 27001 Lead Auditor")
+        self.assertEqual(payload["connector_input"]["credential"], "ISO 27001 Lead Auditor")
+        self.assertEqual(payload["connector_input"]["issuer"], "Example Issuer")
+        self.assertEqual(payload["connector_input"]["institution"], "Example Issuer")
+
+    def test_runtime_preserves_unknown_credential_values(self):
+        raw_result = {
+            "is_successful": True,
+            "page_count": 1,
+            "used_ocr": False,
+            "fields": {
+                "credential_type": {"value": " Bachelor   of Science in Physics ", "confidence": 0.85, "bounding_boxes": []},
+            },
+            "field_candidates": [],
+        }
+        with patch("backend.app.workflow.runtime._load_extraction_result", return_value=raw_result), patch(
+            "backend.app.workflow.runtime._resolve_page_count",
+            return_value=1,
+        ):
+            payload = workflow_runtime.extract_document_payload(Path("demo.pdf"))
+
+        self.assertEqual(payload["connector_input"]["degree"], "Bachelor of Science in Physics")
+        self.assertNotEqual(payload["connector_input"]["degree"], "BTech")
 
     def _create_session(self, db, *, session_id: str, status: str) -> SessionModel:
         file_path = self._write_document(f"{session_id}.pdf")

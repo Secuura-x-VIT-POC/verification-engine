@@ -28,12 +28,20 @@ if str(REPO_ROOT) not in sys.path:
 LOGGER = logging.getLogger(__name__)
 
 
-TRUST_FIELD_CONFIG = [
-    ("candidate_name", "name", "Candidate Name", True),
-    ("institution", "institution", "Institution", True),
-    ("credential_type", "credential", "Credential", True),
-    ("issue_date", "date", "Issue Date", False),
-    ("document_id", "id", "Document ID", True),
+COMPATIBILITY_FIELD_ALIASES = {
+    "name": {"name", "candidate_name", "holder", "subject", "full_name"},
+    "issuer": {"issuer", "institution", "organization", "authority", "provider"},
+    "credential": {"credential", "credential_type", "title", "certificate", "license", "claim"},
+    "date": {"date", "issue_date", "issued_at", "expiry_date"},
+    "id": {"id", "document_id", "identifier", "registration_number", "license_number"},
+}
+
+COMPATIBILITY_TRUST_FIELDS = [
+    ("name", True),
+    ("issuer", False),
+    ("credential", False),
+    ("date", False),
+    ("id", False),
 ]
 
 PROCESSING_STATES = {
@@ -255,8 +263,10 @@ def extract_document_payload(file_path: Path) -> dict[str, Any]:
         },
         "connector_input": {
             "name": semantic_aliases.get("name", {}).get("value", ""),
-            "degree": _normalize_degree(semantic_aliases.get("credential", {}).get("value", "")),
-            "institution": semantic_aliases.get("institution", {}).get("value", ""),
+            "degree": semantic_aliases.get("credential", {}).get("value", ""),
+            "credential": semantic_aliases.get("credential", {}).get("value", ""),
+            "institution": semantic_aliases.get("issuer", {}).get("value", ""),
+            "issuer": semantic_aliases.get("issuer", {}).get("value", ""),
             "document_id": semantic_aliases.get("id", {}).get("value", ""),
         },
     }
@@ -332,25 +342,39 @@ def _build_generalized_view_payload(
 def _build_semantic_aliases(raw_result: dict[str, Any]) -> dict[str, dict[str, Any]]:
     semantic_aliases: dict[str, dict[str, Any]] = {}
     fields = raw_result.get("fields") or {}
-    for source_key, api_key, _, _ in TRUST_FIELD_CONFIG:
-        field = fields.get(source_key) or {}
+    for source_key, field in fields.items():
         if not isinstance(field, dict):
             continue
-        value = _normalize_string(field.get("value"))
-        boxes = field.get("bounding_boxes") or []
-        converted_boxes = [_convert_box(box) for box in boxes if isinstance(box, dict)]
-        semantic_aliases[api_key] = {
-            "value": value,
-            "confidence": round(float(field.get("confidence") or 0), 2) if value else 0,
-            "bounding_boxes": converted_boxes,
-            "is_grounded": bool(converted_boxes),
-        }
+        api_key = _compatibility_api_key(source_key)
+        if not api_key:
+            continue
+        _set_semantic_alias(semantic_aliases, api_key, field)
+
+    for entry in _collect_generalized_view_entries(raw_result):
+        api_key = _compatibility_api_key(
+            entry.get("category")
+            or entry.get("label")
+            or entry.get("key")
+            or entry.get("credential_id")
+            or ""
+        )
+        if not api_key:
+            continue
+        _set_semantic_alias(
+            semantic_aliases,
+            api_key,
+            {
+                "value": entry.get("value") if "value" in entry else entry.get("normalized_value") or entry.get("raw_value"),
+                "confidence": entry.get("confidence"),
+                "bounding_boxes": entry.get("bounding_boxes") or ([entry.get("bounding_box")] if isinstance(entry.get("bounding_box"), dict) else []),
+            },
+        )
     return semantic_aliases
 
 
 def _build_trust_fields(semantic_aliases: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     trust_fields: list[dict[str, Any]] = []
-    for _, api_key, _, is_mandatory in TRUST_FIELD_CONFIG:
+    for api_key, is_mandatory in COMPATIBILITY_TRUST_FIELDS:
         alias = semantic_aliases.get(api_key, {})
         value = alias.get("value") or ""
         trust_fields.append(
@@ -363,6 +387,42 @@ def _build_trust_fields(semantic_aliases: dict[str, dict[str, Any]]) -> list[dic
             }
         )
     return trust_fields
+
+
+def _compatibility_api_key(value: Any) -> str | None:
+    normalized = _slug(_normalize_string(value)).replace("-", "_")
+    for api_key, aliases in COMPATIBILITY_FIELD_ALIASES.items():
+        if normalized == api_key or normalized in aliases:
+            return api_key
+    if any(token in normalized for token in ("issuer", "institution", "university", "authority", "organization")):
+        return "issuer"
+    if any(token in normalized for token in ("credential", "degree", "certificate", "license", "claim")):
+        return "credential"
+    if normalized.endswith("_id") or any(token in normalized for token in ("document_number", "identifier", "registration_number")):
+        return "id"
+    if "date" in normalized:
+        return "date"
+    if any(token in normalized for token in ("name", "holder", "subject")):
+        return "name"
+    return None
+
+
+def _set_semantic_alias(
+    semantic_aliases: dict[str, dict[str, Any]],
+    api_key: str,
+    field: dict[str, Any],
+) -> None:
+    value = _normalize_string(field.get("value"))
+    if not value and semantic_aliases.get(api_key, {}).get("value"):
+        return
+    boxes = field.get("bounding_boxes") or []
+    converted_boxes = [_convert_box(box) for box in boxes if isinstance(box, dict)]
+    semantic_aliases[api_key] = {
+        "value": value,
+        "confidence": round(float(field.get("confidence") or 0), 2) if value else 0,
+        "bounding_boxes": converted_boxes,
+        "is_grounded": bool(converted_boxes),
+    }
 
 
 def _resolve_document_type(raw_result: dict[str, Any]) -> str:
@@ -390,7 +450,7 @@ def _resolve_document_type(raw_result: dict[str, Any]) -> str:
         return "certificate_document"
     if any(token in lowered_text for token in ("invoice", "tax", "balance", "account")):
         return "financial_document"
-    return "academic_credential"
+    return "generic_document"
 
 
 def _map_summary_document_type(value: str) -> str:
@@ -407,13 +467,13 @@ def _map_summary_document_type(value: str) -> str:
         return "financial_document"
     if normalized:
         return normalized
-    return "academic_credential"
+    return "generic_document"
 
 
 def _normalize_string(value: Any) -> str:
     if value in (None, ""):
         return ""
-    return str(value).strip()
+    return re.sub(r"\s+", " ", str(value)).strip()
 
 
 def _slug(value: str) -> str:
@@ -553,17 +613,6 @@ def _fallback_extract_document(file_path: Path) -> dict[str, Any]:
         "enrichment_metadata": None,
         "error_message": None,
     }
-
-
-def _normalize_degree(value: str) -> str:
-    normalized = value.lower().replace(".", "").replace(" ", "")
-    if normalized in {"btech", "bacheloroftechnology"}:
-        return "BTech"
-    if normalized in {"be", "bachelorofengineering"}:
-        return "BE"
-    if normalized in {"mtech", "masteroftechnology"}:
-        return "MTech"
-    return value.strip()
 
 
 def _convert_box(box: dict[str, Any]) -> dict[str, Any]:

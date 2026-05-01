@@ -13,9 +13,10 @@ class ProviderExecutionFailure(Exception):
 
 
 class VerifierProvider(ABC):
-    provider_key = ""
+    provider_id = ""     
+    provider_key = ""   
     provider_label = ""
-
+    provider_mode = "mock"  
     @abstractmethod
     def get_capabilities(self) -> ProviderCapability:
         ...
@@ -35,7 +36,7 @@ class VerifierProvider(ABC):
         ...
 
     @abstractmethod
-    def execute(self, request: ProviderRequest) -> ProviderResponse:
+    async def execute(self, request: ProviderRequest) -> ProviderResponse:
         ...
 
     @abstractmethod

@@ -12,6 +12,10 @@ These contracts define the stable handoff shape between API routes, workflow orc
 - AI assists document understanding, extraction normalization, grouping, verifier route recommendation, and explanations.
 - AI does not decide final trust.
 - The deterministic trust engine owns official green/amber/red system findings.
+- GREEN requires verifier-backed evidence. AI-only confidence, even high confidence, must never produce GREEN.
+- AMBER covers missing evidence, no provider, no executable provider, provider unavailable, provider capability mismatch, manual-review fallback, AI-only evidence, low confidence, and missing required claims.
+- RED covers provider mismatch, hard invalid verifier results, hard contradictions, unsafe documents, and malformed decisive failures.
+- Overall document outcome follows RED > AMBER > GREEN. Any RED claim makes the document RED; otherwise any AMBER claim makes it AMBER; GREEN is allowed only when all required claims are GREEN with verifier-backed evidence.
 - A human reviewer owns the final approve/reject/manual-review decision.
 - Persistent audit artifacts must not contain PII, raw document content, raw OCR output, full Gemini prompts/responses, or raw verifier evidence.
 - The frontend receives only a sanitized workspace payload.
@@ -90,6 +94,7 @@ PENDING_CLEANUP -> FAILED_PURGED/PURGE_COMPLETE
 ```json
 {
   "finding_id": "finding_01HZX4A9R7QK",
+  "claim_id": "credential_01HZX49Y8D2M",
   "credential_id": "credential_01HZX49Y8D2M",
   "field_id": "field_issuer_name",
   "field_label": "Issuer name",
@@ -122,6 +127,7 @@ PENDING_CLEANUP -> FAILED_PURGED/PURGE_COMPLETE
   "verifier_refs": [
     "task_result_01HZX4C1T8ZM"
   ],
+  "manual_review_required": false,
   "requires_human_attention": false
 }
 ```
@@ -134,7 +140,15 @@ AMBER
 RED
 ```
 
-Privacy note: `display_value` and `masked_value` may be shown only in the active workspace. Do not include raw OCR text, raw PDF text, full document text, full Gemini output, or raw verifier response bodies in this contract.
+Canonical Phase 6 finding rules:
+
+- GREEN means verifier-backed evidence matched the claim. `verifier_refs` or safe provider/verifier identifiers must be present.
+- AMBER means the claim needs human review because evidence is missing, unavailable, AI-only, low confidence, no executable provider exists, provider capability does not match, the provider returned manual review, or the required claim is missing.
+- RED means verifier evidence found a mismatch, hard invalid result, or hard contradiction.
+- `reason_codes` must be deterministic machine-style codes such as `VERIFIED_BY_PROVIDER`, `NO_VERIFIER_EVIDENCE`, `AI_ONLY_EVIDENCE`, `REQUIRED_CLAIM_MISSING`, or `PROVIDER_MISMATCH`. Duplicate reason codes must be removed.
+- `manual_review_required` must be true for AMBER findings and false for GREEN provider-backed findings. RED findings may still be shown to the reviewer through the normal human review workflow.
+
+Privacy note: `display_value` and `masked_value` may be shown only in the active workspace. Final persisted/audit-safe findings must not include raw OCR text, raw PDF text, raw credential values, raw normalized values, full document text, raw Gemini output, raw provider bodies, or reviewer-note plaintext.
 
 ## 6. VerificationTask contract
 
@@ -355,6 +369,8 @@ Validation:
 `WorkspacePayload` is the single frontend contract. The frontend must render from this sanitized payload instead of depending on backend internals, raw extraction output, verifier internals, or model responses.
 
 Workspace payloads must not include raw OCR text, raw PDF text, full Gemini output, raw verifier response bodies, or unredacted reviewer notes.
+
+After verification completes, `WorkspacePayload.status` remains `PENDING_HUMAN_REVIEW`. The color outcome is exposed separately through `final_verdict.outcome` and summary counts, not by moving directly to a final approval/rejection workflow state.
 
 ```json
 {

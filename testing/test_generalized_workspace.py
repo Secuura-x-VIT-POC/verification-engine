@@ -391,6 +391,139 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         reason_codes = set(payload["final_verdict"]["reason_codes"])
         self.assertTrue(reason_codes)
 
+    def test_workspace_uses_phase6_canonical_ai_only_amber_findings(self):
+        session_id, file_path = self._create_uploaded_session("session-phase6-ai-only")
+        self.addCleanup(lambda: os.path.exists(file_path) and os.remove(file_path))
+        extraction_payload = copy.deepcopy(_runtime_extraction_payload())
+        extraction_payload["view"]["raw_text"] = "RAW_PHASE6_WORKSPACE_OCR"
+        extraction_payload["trust_input"]["fields"][0]["value"] = "RAW_PHASE6_CREDENTIAL_VALUE"
+
+        with patch("backend.app.api.routes.start_verification", return_value="STARTED"), patch(
+            "backend.app.agent_orchestration.graph.extract_document_payload",
+            return_value=extraction_payload,
+        ), patch(
+            "backend.app.agent_orchestration.graph.build_connector_responses",
+            return_value=[],
+        ), patch(
+            "backend.app.agent_orchestration.workspace._build_completion_values",
+            return_value={},
+        ):
+            response = self.client.post(f"/api/v1/verification-sessions/{session_id}/run")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], SessionState.PENDING_HUMAN_REVIEW)
+        self.assertEqual(payload["final_verdict"]["outcome"], "AMBER")
+        self.assertTrue(payload["fields"])
+        self.assertTrue(any(field["status"] == "AMBER" for field in payload["fields"]))
+        self.assertTrue(any(field.get("manual_review_required") for field in payload["fields"]))
+        self.assertIn("AI_ONLY_EVIDENCE", set(payload["final_verdict"]["reason_codes"]))
+
+    def test_workspace_uses_phase6_canonical_manual_review_amber_and_privacy(self):
+        session_id, file_path = self._create_uploaded_session("session-phase6-manual")
+        self.addCleanup(lambda: os.path.exists(file_path) and os.remove(file_path))
+        extraction_payload = copy.deepcopy(_runtime_extraction_payload())
+        extraction_payload["view"]["raw_text"] = "RAW_PHASE6_WORKSPACE_OCR"
+        extraction_payload["view"]["generalized_analysis"] = {"agent_raw_output": "RAW_PHASE6_GEMINI_OUTPUT"}
+        extraction_payload["provider_raw_response"] = {"body": "RAW_PHASE6_PROVIDER_BODY"}
+        extraction_payload["trust_input"]["fields"][0]["value"] = "RAW_PHASE6_CREDENTIAL_VALUE"
+        manual_result = [
+            {
+                "task_id": "task-name",
+                "field_id": "name",
+                "connector_id": "manual_review",
+                "status": "ERROR",
+                "reason_codes": ["NO_PROVIDER_AVAILABLE"],
+                "message": "Manual review required.",
+            }
+        ]
+
+        with patch("backend.app.api.routes.start_verification", return_value="STARTED"), patch(
+            "backend.app.agent_orchestration.graph.extract_document_payload",
+            return_value=extraction_payload,
+        ), patch(
+            "backend.app.agent_orchestration.graph.build_connector_responses",
+            return_value=manual_result,
+        ), patch(
+            "backend.app.agent_orchestration.workspace._build_completion_values",
+            return_value={},
+        ):
+            response = self.client.post(f"/api/v1/verification-sessions/{session_id}/run")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        serialized = json.dumps(payload, sort_keys=True)
+        self.assertEqual(payload["status"], SessionState.PENDING_HUMAN_REVIEW)
+        self.assertEqual(payload["final_verdict"]["outcome"], "AMBER")
+        self.assertTrue(any(field["status"] == "AMBER" for field in payload["fields"]))
+        self.assertTrue(any(field.get("manual_review_required") for field in payload["fields"]))
+        self.assertIn("NO_PROVIDER_AVAILABLE", set(payload["final_verdict"]["reason_codes"]))
+        for sentinel in {
+            "RAW_PHASE6_WORKSPACE_OCR",
+            "RAW_PHASE6_CREDENTIAL_VALUE",
+            "RAW_PHASE6_PROVIDER_BODY",
+            "RAW_PHASE6_GEMINI_OUTPUT",
+        }:
+            self.assertNotIn(sentinel, serialized)
+
+    def test_phase6_final_workspace_payload_has_safe_findings_and_status(self):
+        session_id, file_path = self._create_uploaded_session("session-phase6-final")
+        self.addCleanup(lambda: os.path.exists(file_path) and os.remove(file_path))
+        extraction_payload = copy.deepcopy(_runtime_extraction_payload())
+        extraction_payload["view"]["raw_text"] = "RAW_PHASE6_FINAL_OCR"
+        extraction_payload["view"]["generalized_analysis"] = {"agent_raw_output": "RAW_PHASE6_FINAL_GEMINI"}
+        extraction_payload["provider_raw_response"] = {"body": "RAW_PHASE6_FINAL_PROVIDER_BODY"}
+        extraction_payload["trust_input"]["fields"][0]["value"] = "RAW_PHASE6_FINAL_CREDENTIAL"
+        manual_result = [
+            {
+                "task_id": "task-name",
+                "field_id": "name",
+                "connector_id": "manual_review",
+                "status": "ERROR",
+                "reason_codes": [
+                    "NO_PROVIDER_AVAILABLE",
+                    "manual review required",
+                    "RAW_PHASE6_FINAL_PROVIDER_BODY",
+                ],
+                "message": "Reviewer note RAW_PHASE6_FINAL_REVIEWER_NOTE",
+            }
+        ]
+
+        with patch("backend.app.api.routes.start_verification", return_value="STARTED"), patch(
+            "backend.app.agent_orchestration.graph.extract_document_payload",
+            return_value=extraction_payload,
+        ), patch(
+            "backend.app.agent_orchestration.graph.build_connector_responses",
+            return_value=manual_result,
+        ), patch(
+            "backend.app.agent_orchestration.workspace._build_completion_values",
+            return_value={},
+        ):
+            response = self.client.post(f"/api/v1/verification-sessions/{session_id}/run")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        serialized = json.dumps(payload, sort_keys=True)
+        self.assertEqual(payload["status"], SessionState.PENDING_HUMAN_REVIEW)
+        self.assertEqual(payload["final_verdict"]["outcome"], "AMBER")
+        self.assertTrue(payload["fields"])
+        self.assertTrue(any(field.get("manual_review_required") for field in payload["fields"]))
+        self.assertIn("NO_PROVIDER_AVAILABLE", set(payload["final_verdict"]["reason_codes"]))
+        for field in payload["fields"]:
+            for code in field["reason_codes"]:
+                self.assertRegex(code, r"^[A-Z][A-Z0-9_]*$")
+        for verifier in payload["verifiers"]:
+            for code in verifier["reason_codes"]:
+                self.assertRegex(code, r"^[A-Z][A-Z0-9_]*$")
+        for sentinel in {
+            "RAW_PHASE6_FINAL_OCR",
+            "RAW_PHASE6_FINAL_CREDENTIAL",
+            "RAW_PHASE6_FINAL_PROVIDER_BODY",
+            "RAW_PHASE6_FINAL_GEMINI",
+            "RAW_PHASE6_FINAL_REVIEWER_NOTE",
+        }:
+            self.assertNotIn(sentinel, serialized)
+
     def test_run_does_not_persist_workspace_summary_or_raw_text_fields(self):
         session_id, file_path = self._create_uploaded_session("session-safe-persist")
         self.addCleanup(lambda: os.path.exists(file_path) and os.remove(file_path))

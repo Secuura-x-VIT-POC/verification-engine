@@ -187,6 +187,8 @@ class FieldDecision(BaseModel):
     source_api: str | None = None
     audit_message: str = ""
     bounding_boxes: list[BoundingBox] = Field(default_factory=list)
+    manual_review_required: bool = False
+    verifier_refs: list[str] = Field(default_factory=list)
 
     _confidence_fields = field_validator(
         "ai_confidence",

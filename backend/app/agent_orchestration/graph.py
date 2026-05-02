@@ -15,6 +15,7 @@ from ..verification_domain.adapters import build_session_credentials, build_sess
 from ..verification_domain.contracts import SessionCredentialCollection, SessionVerificationPlan
 from ..verifier_execution.contracts import VerificationTaskResult
 from ..verifier_execution.service import build_execution_artifacts
+from ..trust.findings import build_trust_findings, normalize_reason_codes
 from ..trust.trust_engine import build_final_verdict, determine_field_decision
 from .policies import AgentRuntimePolicy, load_agent_runtime_policy, minimize_extraction_payload
 from .schemas import (
@@ -348,28 +349,39 @@ def _gemini_confidence_fusion(state: GeneralizedVerificationState) -> dict[str, 
     document_understanding = GeminiDocumentUnderstanding.model_validate(state.get("document_understanding") or {})
     normalized_fields = [GeminiNormalizedField.model_validate(item) for item in list(state.get("normalized_fields") or [])]
     verifier_results = [VerifierResult.model_validate(item) for item in list(state.get("verifier_results") or [])]
-    
-    verifier_by_field: dict[str, VerifierResult] = {}
-    for verifier in verifier_results:
-        for field_id in verifier.field_ids or [verifier.field_id]:
-            verifier_by_field[field_id] = verifier
 
     field_decisions: list[FieldDecision] = []
-    for field in normalized_fields:
-        decision = determine_field_decision(
-            field_id=field.field_id,
-            label=field.label,
-            extracted_value=field.extracted_value,
-            normalized_value=field.normalized_value,
-            extraction_confidence=_resolve_extraction_confidence(extraction_payload, field.field_id, field.extracted_value),
-            ai_confidence=field.ai_confidence,
-            grounding_confidence=field.grounding_confidence,
-            verifier_result=verifier_by_field.get(field.field_id),
-            mandatory=field.mandatory,
-            unsafe_or_malformed=document_understanding.unsafe_or_malformed,
+    if document_understanding.unsafe_or_malformed:
+        verifier_by_field: dict[str, VerifierResult] = {}
+        for verifier in verifier_results:
+            for field_id in verifier.field_ids or [verifier.field_id]:
+                verifier_by_field[field_id] = verifier
+
+        for field in normalized_fields:
+            decision = determine_field_decision(
+                field_id=field.field_id,
+                label=field.label,
+                extracted_value=field.extracted_value,
+                normalized_value=field.normalized_value,
+                extraction_confidence=_resolve_extraction_confidence(extraction_payload, field.field_id, field.extracted_value),
+                ai_confidence=field.ai_confidence,
+                grounding_confidence=field.grounding_confidence,
+                verifier_result=verifier_by_field.get(field.field_id),
+                mandatory=field.mandatory,
+                unsafe_or_malformed=True,
+            )
+            decision.bounding_boxes = list(field.bounding_boxes)
+            field_decisions.append(decision)
+    else:
+        canonical = build_trust_findings(
+            claims=[_claim_from_normalized_field(field, extraction_payload) for field in normalized_fields],
+            task_results=[_canonical_result_from_verifier(verifier) for verifier in verifier_results],
+            required_claim_ids=[field.field_id for field in normalized_fields if field.mandatory],
         )
-        decision.bounding_boxes = list(field.bounding_boxes)
-        field_decisions.append(decision)
+        field_by_id = {field.field_id: field for field in normalized_fields}
+        for finding in canonical.claim_findings:
+            field = field_by_id.get(finding.field_id or finding.credential_id or finding.claim_id)
+            field_decisions.append(_field_decision_from_claim_finding(finding, field, extraction_payload))
 
     return {
         "field_decisions": [field.model_dump(mode="json") for field in field_decisions],
@@ -392,6 +404,81 @@ def _policy_verdict(state: GeneralizedVerificationState) -> dict[str, Any]:
         "final_verdict": verdict.model_dump(mode="json"),
         "audit_log": [_audit_item("policy_verdict", f"Final verdict resolved to {verdict.outcome}.")],
     }
+
+
+def _claim_from_normalized_field(
+    field: GeminiNormalizedField,
+    extraction_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "claim_id": field.field_id,
+        "credential_id": field.field_id,
+        "field_id": field.field_id,
+        "label": field.label,
+        "claim_type": _claim_type_from_field(field),
+        "confidence": _resolve_extraction_confidence(extraction_payload, field.field_id, field.extracted_value),
+        "ai_confidence": field.ai_confidence,
+        "requires_verification": field.mandatory,
+        "bounding_boxes": [box.model_dump(mode="json") for box in field.bounding_boxes],
+    }
+
+
+def _canonical_result_from_verifier(verifier: VerifierResult) -> dict[str, Any]:
+    return {
+        "task_id": verifier.task_id,
+        "credential_id": verifier.field_id,
+        "field_id": verifier.field_id,
+        "connector_id": verifier.connector_id,
+        "status": verifier.status,
+        "reason_codes": normalize_reason_codes(verifier.reason_codes),
+        "confidence": verifier.verification_confidence,
+        "verification_confidence": verifier.verification_confidence,
+        "manual_review_recommended": any(
+            code in set(verifier.reason_codes or [])
+            for code in {
+                "NO_PROVIDER_AVAILABLE",
+                "NO_EXECUTABLE_PROVIDER",
+                "MANUAL_REVIEW_REQUIRED",
+                "MANUAL_REVIEW_PROVIDER_SELECTED",
+                "PROVIDER_NOT_REGISTERED",
+                "VERIFIER_NOT_REGISTERED",
+                "PROVIDER_UNAVAILABLE",
+            }
+        ),
+    }
+
+
+def _field_decision_from_claim_finding(
+    finding,
+    field: GeminiNormalizedField | None,
+    extraction_payload: dict[str, Any],
+) -> FieldDecision:
+    extracted_value = field.extracted_value if field is not None else ""
+    normalized_value = field.normalized_value if field is not None else ""
+    extraction_confidence = (
+        _resolve_extraction_confidence(extraction_payload, field.field_id, field.extracted_value)
+        if field is not None
+        else 0.0
+    )
+    decision = FieldDecision(
+        field_id=finding.field_id or finding.credential_id,
+        label=finding.label,
+        extracted_value=extracted_value,
+        normalized_value=normalized_value,
+        status=finding.status,
+        ai_confidence=finding.confidence.ai,
+        extraction_confidence=extraction_confidence,
+        verification_confidence=finding.confidence.verifier,
+        grounding_confidence=field.grounding_confidence if field is not None else 0.0,
+        final_confidence=finding.confidence.final,
+        reason_codes=list(finding.reason_codes),
+        source_api=finding.source_provider_id,
+        audit_message=finding.explanation,
+        bounding_boxes=list(field.bounding_boxes) if field is not None else [],
+        manual_review_required=finding.manual_review_required,
+        verifier_refs=list(finding.verifier_refs),
+    )
+    return decision
 
 def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, Any]:
     sanitized_extraction = state.get("sanitized_extraction") or {}
@@ -416,7 +503,7 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
         WorkspaceVerifierStatus(
             connector_id=result.connector_id,
             status=result.status,
-            reason_codes=result.reason_codes,
+            reason_codes=normalize_reason_codes(result.reason_codes),
             source_api=result.source_api,
             confidence=result.verification_confidence,
             optional=result.optional,
@@ -512,7 +599,7 @@ def _workspace_verifier_result(result: VerificationTaskResult) -> VerifierResult
         connector_id=provider_key,
         status=status,
         verification_confidence=_verification_confidence_from_task_result(result),
-        reason_codes=list(result.reason_codes or []),
+        reason_codes=normalize_reason_codes(result.reason_codes),
         source_api=provider_key,
         audit_message=result.explanation,
         optional=False,

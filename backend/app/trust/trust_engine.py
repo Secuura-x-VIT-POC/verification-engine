@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 from ..agent_orchestration.schemas import FieldDecision, VerifierResult, FinalVerdict
+from .findings import build_trust_findings
 
 def determine_field_decision(
     field_id: str,
@@ -226,7 +227,26 @@ def evaluate_trust(trust_input: dict, connector_result: dict | list[dict] | None
         field_decisions.append(decision)
     
     final_verdict = build_final_verdict(field_decisions, normalized_verifier_results, False, [])
-    return final_verdict.model_dump()
+    canonical = build_trust_findings(
+        claims=_claims_from_trust_fields(fields),
+        task_results=_canonical_task_results_for_trust(connector_result),
+        required_claim_ids=list(policy.get("required_fields", []) or []),
+    )
+
+    use_canonical_verdict = _has_task_result_shape(connector_result)
+    verdict_payload = (
+        canonical.final_verdict.model_dump(mode="json")
+        if use_canonical_verdict
+        else final_verdict.model_dump()
+    )
+    if verdict_payload.get("outcome") == "GREEN":
+        verdict_payload["reason_codes"] = []
+    verdict_payload["claim_findings"] = [
+        finding.model_dump(mode="json") for finding in canonical.claim_findings
+    ]
+    verdict_payload["finding_counts"] = canonical.finding_counts.model_dump(mode="json")
+    verdict_payload["verifier_backed_evidence"] = canonical.verifier_backed_evidence
+    return verdict_payload
 
 
 def _normalize_verifier_results(connector_result: dict | list[dict] | None) -> list[VerifierResult]:
@@ -355,3 +375,60 @@ def _normalize_trust_fields(trust_input: dict, policy: dict) -> dict[str, dict[s
     for field_id in required_fields:
         fields.setdefault(field_id, {"value": "", "confidence": 0.0, "mandatory": True})
     return fields
+
+
+def _claims_from_trust_fields(fields: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "claim_id": field_id,
+            "credential_id": field_id,
+            "field_id": field_id,
+            "label": field_id.replace("_", " ").title(),
+            "claim_type": "generic_claim",
+            "confidence": field.get("confidence", 0.0),
+            "ai_confidence": field.get("confidence", 0.0),
+            "requires_verification": field.get("mandatory", True),
+        }
+        for field_id, field in fields.items()
+    ]
+
+
+def _canonical_task_results_for_trust(connector_result: dict | list[dict] | None) -> list[dict[str, Any]]:
+    results = _normalize_connector_results(connector_result)
+    if not results:
+        return []
+    return [_safe_canonical_result(item) for item in results]
+
+
+def _safe_canonical_result(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in {
+            "task_id": item.get("task_id") or item.get("connector_id") or item.get("provider_key") or "connector",
+            "credential_id": item.get("credential_id") or item.get("field_id"),
+            "field_id": item.get("field_id") or item.get("credential_id"),
+            "connector_id": item.get("connector_id") or item.get("provider_key"),
+            "provider_id": item.get("provider_id"),
+            "verifier_key": item.get("verifier_key"),
+            "verifier_label": item.get("verifier_label"),
+            "executed_provider_key": item.get("executed_provider_key"),
+            "executed_provider_label": item.get("executed_provider_label"),
+            "planned_provider_key": item.get("planned_provider_key"),
+            "preferred_provider_key": item.get("preferred_provider_key"),
+            "task_status": item.get("task_status"),
+            "audit_status": item.get("audit_status") or item.get("status"),
+            "outcome_color": item.get("outcome_color"),
+            "status": item.get("status"),
+            "reason_codes": list(item.get("reason_codes") or []),
+            "confidence": item.get("confidence") if item.get("confidence") is not None else item.get("verification_confidence"),
+            "manual_review_recommended": bool(item.get("manual_review_recommended")),
+        }.items()
+        if value not in (None, "", [])
+    }
+
+
+def _has_task_result_shape(connector_result: dict | list[dict] | None) -> bool:
+    return any(
+        "task_status" in item or "audit_status" in item or "executed_provider_key" in item
+        for item in _normalize_connector_results(connector_result)
+    )

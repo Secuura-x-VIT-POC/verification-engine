@@ -291,6 +291,163 @@ class TrustEngineTests(unittest.TestCase):
         self.assertEqual(result["reason_codes"], [])
         self.assertEqual(result["connector_ids"], ["local_mock"])
 
+    def test_real_trust_path_exposes_canonical_findings_and_ai_only_amber(self):
+        result = evaluate_trust(
+            {
+                "fields": {"name": "RAW_PHASE6_CREDENTIAL_VALUE"},
+                "confidence": {"name": 1.0},
+                "raw_ocr_text": "RAW_PHASE6_WORKSPACE_OCR",
+                "gemini_raw_response": "RAW_PHASE6_GEMINI_OUTPUT",
+            },
+            None,
+            {"required_fields": ["name"]},
+        )
+        serialized = json.dumps(result, sort_keys=True)
+
+        self.assertEqual(result["outcome"], "AMBER")
+        self.assertEqual(result["claim_findings"][0]["status"], "AMBER")
+        self.assertTrue(result["claim_findings"][0]["manual_review_required"])
+        self.assertIn("AI_ONLY_EVIDENCE", result["claim_findings"][0]["reason_codes"])
+        self.assertNotIn("RAW_PHASE6_CREDENTIAL_VALUE", serialized)
+        self.assertNotIn("RAW_PHASE6_WORKSPACE_OCR", serialized)
+        self.assertNotIn("RAW_PHASE6_GEMINI_OUTPUT", serialized)
+
+    def test_real_trust_path_uses_canonical_red_dominance(self):
+        result = evaluate_trust(
+            {
+                "fields": {"name": "safe", "id": "safe"},
+                "confidence": {"name": 1.0, "id": 1.0},
+            },
+            [
+                {
+                    "task_id": "task-name",
+                    "credential_id": "name",
+                    "executed_provider_key": "local_mock",
+                    "task_status": "SUCCEEDED",
+                    "audit_status": "VERIFIED",
+                    "outcome_color": "green",
+                    "reason_codes": ["PROVIDER_VERIFIED"],
+                    "confidence": 0.99,
+                    "explanation": "Safe provider summary.",
+                },
+                {
+                    "task_id": "task-id",
+                    "credential_id": "id",
+                    "executed_provider_key": "local_mock",
+                    "task_status": "SUCCEEDED",
+                    "audit_status": "MISMATCH",
+                    "outcome_color": "red",
+                    "reason_codes": ["PROVIDER_MISMATCH"],
+                    "confidence": 0.1,
+                    "explanation": "Safe provider summary.",
+                },
+            ],
+            {"required_fields": ["name", "id"]},
+        )
+
+        self.assertEqual(result["outcome"], "RED")
+        self.assertEqual(
+            {finding["credential_id"]: finding["status"] for finding in result["claim_findings"]},
+            {"name": "GREEN", "id": "RED"},
+        )
+        self.assertIn("PROVIDER_MISMATCH", result["reason_codes"])
+
+    def test_real_trust_path_canonical_manual_review_is_amber_with_flag(self):
+        result = evaluate_trust(
+            {
+                "fields": {"name": "safe"},
+                "confidence": {"name": 1.0},
+            },
+            {
+                "task_id": "task-name",
+                "credential_id": "name",
+                "verifier_key": "manual_review",
+                "task_status": "MANUAL_REVIEW",
+                "audit_status": "MANUAL_REVIEW",
+                "outcome_color": "amber",
+                "reason_codes": ["NO_PROVIDER_AVAILABLE"],
+                "confidence": 0.0,
+                "explanation": "Manual review required.",
+                "manual_review_recommended": True,
+            },
+            {"required_fields": ["name"]},
+        )
+
+        self.assertEqual(result["outcome"], "AMBER")
+        self.assertEqual(result["claim_findings"][0]["status"], "AMBER")
+        self.assertTrue(result["claim_findings"][0]["manual_review_required"])
+        self.assertIn("NO_PROVIDER_AVAILABLE", result["claim_findings"][0]["reason_codes"])
+
+    def test_phase6_final_finding_counts_match_findings_and_outcome(self):
+        result = evaluate_trust(
+            {
+                "fields": {
+                    "verified": "RAW_PHASE6_FINAL_CREDENTIAL",
+                    "review": "safe",
+                    "mismatch": "safe",
+                },
+                "confidence": {"verified": 1.0, "review": 1.0, "mismatch": 1.0},
+                "raw_ocr_text": "RAW_PHASE6_FINAL_OCR",
+                "gemini_raw_response": "RAW_PHASE6_FINAL_GEMINI",
+            },
+            [
+                {
+                    "task_id": "task-verified",
+                    "credential_id": "verified",
+                    "executed_provider_key": "local_mock",
+                    "task_status": "SUCCEEDED",
+                    "audit_status": "VERIFIED",
+                    "outcome_color": "green",
+                    "reason_codes": ["PROVIDER_VERIFIED"],
+                    "confidence": 0.99,
+                    "raw_result_summary": {"raw_provider_body": "RAW_PHASE6_FINAL_PROVIDER_BODY"},
+                },
+                {
+                    "task_id": "task-review",
+                    "credential_id": "review",
+                    "verifier_key": "manual_review",
+                    "task_status": "MANUAL_REVIEW",
+                    "audit_status": "MANUAL_REVIEW",
+                    "outcome_color": "amber",
+                    "reason_codes": ["NO_PROVIDER_AVAILABLE"],
+                    "confidence": 0.0,
+                    "manual_review_recommended": True,
+                },
+                {
+                    "task_id": "task-mismatch",
+                    "credential_id": "mismatch",
+                    "executed_provider_key": "local_mock",
+                    "task_status": "SUCCEEDED",
+                    "audit_status": "MISMATCH",
+                    "outcome_color": "red",
+                    "reason_codes": ["PROVIDER_MISMATCH"],
+                    "confidence": 0.1,
+                    "explanation": "Reviewer note RAW_PHASE6_FINAL_REVIEWER_NOTE",
+                },
+            ],
+            {"required_fields": ["verified", "review", "mismatch"]},
+        )
+
+        findings = result["claim_findings"]
+        counts = result["finding_counts"]
+        self.assertEqual(counts["green"], sum(1 for finding in findings if finding["status"] == "GREEN"))
+        self.assertEqual(counts["amber"], sum(1 for finding in findings if finding["status"] == "AMBER"))
+        self.assertEqual(counts["red"], sum(1 for finding in findings if finding["status"] == "RED"))
+        self.assertEqual(result["outcome"], "RED")
+        self.assertGreater(counts["red"], 0)
+        self.assertTrue(result["verifier_backed_evidence"])
+        self.assertIn("PROVIDER_MISMATCH", result["reason_codes"])
+
+        serialized = json.dumps(result, sort_keys=True)
+        for sentinel in {
+            "RAW_PHASE6_FINAL_OCR",
+            "RAW_PHASE6_FINAL_CREDENTIAL",
+            "RAW_PHASE6_FINAL_PROVIDER_BODY",
+            "RAW_PHASE6_FINAL_GEMINI",
+            "RAW_PHASE6_FINAL_REVIEWER_NOTE",
+        }:
+            self.assertNotIn(sentinel, serialized)
+
 
 if __name__ == "__main__":
     unittest.main()

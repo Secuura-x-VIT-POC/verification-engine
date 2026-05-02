@@ -788,75 +788,223 @@ export function buildWorkspaceViewModel({
 	providerCapabilities,
 	demoProfile,
 }) {
-	// Use session data for core information
-	const sessionStatus = session?.status || "UNKNOWN";
-	const sessionResult = session?.result || {};
-
-	// Repurpose UI sections to show session-centric data
-	const auditDetails = []; // Empty since deprecated
-	const analysisRows = []; // Empty since deprecated
-	const highlightItems = []; // Empty since deprecated
-	const statusCounts = { green: 0, amber: 0, red: 0, manual: 0 };
-	const routingSummary = { totalCredentials: 0, routedCredentials: 0 };
-	const taskExecutionSummary = { totalTasks: 0, completedTasks: 0 };
-	const providerExecutionSummary = {
-		primaryTrustRailLabel: "Session-based",
-		primaryTrustRailEnabled: true,
-		providerTransitionNotes: [],
+	const resolvedProviderOperatingMode = providerOperatingMode || {
+		provider_operating_mode: "LIVE_DISABLED",
 	};
-	const agentUnderstandingSummary = { totalFields: 0, understoodFields: 0 };
 
-	const currentProviderOperatingMode = "SESSION_BASED";
-	const selectedCredentialId = null;
+	const resolvedDemoProfile = demoProfile || {
+		profile_label: "",
+		description: "",
+		seeded: false,
+	};
+
+	const auditDetails = buildAuditDetailViewModels(
+		credentials,
+		credentialAudits,
+		verificationPlan,
+		credentialBundles,
+		agentCredentialCandidates,
+		agentRouteRecommendations
+	);
+
+	const analysisRows = buildAnalysisRows(
+		credentials,
+		verificationPlan,
+		credentialAudits,
+		credentialBundles,
+		agentCredentialCandidates,
+		agentRouteRecommendations
+	);
+
+	const highlightItems = buildHighlightItems(
+		credentials,
+		credentialAudits,
+		verificationPlan,
+		credentialBundles,
+		agentCredentialCandidates,
+		agentRouteRecommendations
+	);
+
+	const statusCounts = buildStatusCounts(auditDetails);
+	const routingSummary = buildRoutingSummary(verificationPlan);
+
+	const taskExecutionSummary = buildTaskExecutionSummary(
+		verificationTaskResults,
+		executionStatus
+	);
+
+	const providerExecutionSummary = buildProviderExecutionSummary(
+		providerExecutionTraces,
+		providerExecutionStatus,
+		providerCapabilities
+	);
+
+	const entraPreferredInPlan = analysisRows.some(
+		(row) => row.preferredProviderKey === "entra_verified_id"
+	);
+
+	const agentUnderstandingSummary = buildAgentUnderstandingSummary(
+		agentDocumentUnderstanding,
+		agentRunStatus
+	);
+
+	const currentProviderOperatingMode =
+		resolvedProviderOperatingMode.provider_operating_mode ||
+		providerExecutionStatus.provider_operating_mode ||
+		"LIVE_DISABLED";
+
+	const selectedCredentialId =
+		highlightItems[0]?.credentialId ||
+		auditDetails[0]?.credentialId ||
+		credentials.credentials[0]?.credential_id ||
+		null;
+
+	let providerMessage = null;
+
+	if (providerExecutionStatus.provider_execution_error) {
+		providerMessage = providerExecutionStatus.provider_execution_error;
+	} else if (providerExecutionStatus.provider_execution_status === "FAILED") {
+		providerMessage =
+			"Provider-backed execution failed safely. Bounded fallback results are shown where available.";
+	} else if (currentProviderOperatingMode === "DEMO_MOCK") {
+		providerMessage = `${
+			providerExecutionSummary.primaryTrustRailLabel
+		} route selected in demo-mock mode. Seeded scenario${
+			resolvedDemoProfile.profile_label
+				? `: ${resolvedDemoProfile.profile_label}`
+				: ""
+		}.`;
+	} else if (currentProviderOperatingMode === "EXTERNAL_CONFIGURED") {
+		providerMessage = `${providerExecutionSummary.primaryTrustRailLabel} is running in live-configured mode behind the bounded provider policy layer.`;
+	} else if (
+		entraPreferredInPlan &&
+		!providerExecutionSummary.primaryTrustRailEnabled
+	) {
+		providerMessage =
+			"Microsoft Entra Verified ID is the preferred VC trust rail for some credentials, but it is not enabled in this environment. Supplementary providers or manual review are shown where applicable.";
+	} else if (currentProviderOperatingMode === "MANUAL_ONLY") {
+		providerMessage =
+			"Manual-review-only mode is active. No executable provider path is available for this session.";
+	}
+
+	const providerModeMessage =
+		providerExecutionSummary.providerTransitionNotes[0] ||
+		(resolvedDemoProfile.seeded ? resolvedDemoProfile.description : null);
 
 	return {
-		credentialItems: [],
+		credentialItems: auditDetails.map((detail) => ({
+			credentialId: detail.credentialId,
+			label: detail.label,
+			documentValue: detail.documentValue,
+			auditStatus: detail.auditStatus,
+			outcomeColor: detail.outcomeColor,
+		})),
+
 		analysisRows,
 		auditDetails,
 		highlightItems,
 		routingSummary,
 		statusCounts,
 		selectedCredentialId,
-		analysisStatusLabel:
-			sessionStatus === "VERIFYING" ? "Processing" : "Complete",
-		executionStatusLabel: sessionStatus,
-		providerExecutionStatusLabel: "Session-based",
-		providerOperatingModeLabel: "Session Centric",
-		agentStatusLabel: "Session Polling",
+
+		analysisStatusLabel: buildAnalysisStatusLabel(
+			analysisStatus.generalized_analysis_status
+		),
+
+		executionStatusLabel: buildExecutionStatusLabel(
+			executionStatus.verification_execution_status
+		),
+
+		providerExecutionStatusLabel: buildProviderExecutionStatusLabel(
+			providerExecutionStatus.provider_execution_status
+		),
+
+		providerOperatingModeLabel: buildProviderOperatingModeLabel(
+			currentProviderOperatingMode
+		),
+
+		agentStatusLabel: buildAgentStatusLabel(agentRunStatus.agent_run_status),
+
 		agentUnderstandingSummary,
 		taskExecutionSummary,
 		providerExecutionSummary,
-		overallOutcome: sessionResult?.outcome || null,
+
+		overallOutcome:
+			verificationSummary.overall_outcome || session.trust_outcome || null,
+
 		summaryStats: [
-			{ label: "Status", value: sessionStatus },
-			{ label: "Outcome", value: sessionResult?.outcome || "Pending" },
-			{ label: "Connectors", value: session?.connectors_used?.length || 0 },
-			{ label: "Timestamp", value: session?.updated_at || "N/A" },
+			{
+				label: "Credentials",
+				value:
+					verificationSummary.total_credentials_found ||
+					credentials.credentials.length,
+			},
+			{
+				label: "Verified",
+				value: verificationSummary.total_credentials_verified,
+			},
+			{
+				label: "Green",
+				value: verificationSummary.green_count,
+			},
+			{
+				label: "Amber",
+				value: verificationSummary.amber_count,
+			},
+			{
+				label: "Red",
+				value: verificationSummary.red_count,
+			},
+			{
+				label: "Manual review",
+				value: verificationSummary.manual_review_count,
+			},
 		],
+
 		messages: {
-			analysis: null,
-			agent: null,
-			provider:
-				sessionStatus === "VERIFYING"
-					? "Verification in progress..."
-					: "Verification completed",
-			providerMode: null,
-			document: !session?.document_available
+			analysis:
+				analysisStatus.generalized_analysis_status !== "READY"
+					? analysisStatus.generalized_analysis_error ||
+						"Generalized analysis is not fully ready yet. Read-only fallbacks are shown where possible."
+					: null,
+
+			agent:
+				agentRunStatus.agent_run_error ||
+				(agentRunStatus.agent_run_status !== "READY" &&
+				agentRunStatus.agent_run_status !== "NOT_STARTED"
+					? "Agent-assisted enrichment is not fully ready yet. Deterministic planning remains active."
+					: null),
+
+			provider: providerMessage,
+			providerMode: providerModeMessage,
+
+			document: !session.document_available
 				? "No PDF is currently stored for this session."
-				: null,
-			credentials: null,
-			audits: null,
+				: highlightItems.length
+					? null
+					: "No overlay-ready bounding boxes are available for the current credentials.",
+
+			credentials: credentials.credentials.length
+				? null
+				: "No credentials were extracted for this session from the currently available artifacts.",
+
+			audits: auditDetails.length
+				? null
+				: "No credential audits are available yet.",
 		},
+
 		flags: {
-			hasDocument: Boolean(session?.document_available),
-			hasCredentials: false, // Deprecated
-			hasAudits: false, // Deprecated
-			hasHighlights: false, // Deprecated
-			analysisReady: true,
-			agentReady: true,
-			providerReady: true,
+			hasDocument: Boolean(session.document_available),
+			hasCredentials: credentials.credentials.length > 0,
+			hasAudits: auditDetails.length > 0,
+			hasHighlights: highlightItems.length > 0,
+			analysisReady: analysisStatus.generalized_analysis_status === "READY",
+			agentReady: agentRunStatus.agent_run_status === "READY",
+			providerReady:
+				providerExecutionStatus.provider_execution_status === "READY",
 		},
-		profileNotes: [],
+
+		profileNotes: documentProfile.notes,
 	};
 }
 

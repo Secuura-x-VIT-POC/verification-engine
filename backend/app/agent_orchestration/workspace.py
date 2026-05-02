@@ -78,6 +78,7 @@ def run_generalized_verification_session(
                     "outcome": final_verdict.outcome,
                     "reason_codes": final_verdict.reason_codes,
                     "connector_ids": final_verdict.connector_ids,
+                    "finding_counts": _finding_counts_from_workspace_summary(workspace.summary),
                 },
             )
         except Exception as exc:  # pragma: no cover - audit backend may be unavailable in tests
@@ -216,5 +217,15 @@ def _default_actions(session_status: str = "") -> list[WorkspaceAction]:
         WorkspaceAction(action_id="can_reject", label="Reject", enabled=pending_human_review),
         WorkspaceAction(action_id="can_manual_review", label="Manual Review", enabled=pending_human_review),
     ]
+
+
+def _finding_counts_from_workspace_summary(summary: WorkspaceSummary) -> dict[str, int]:
+    return {
+        "green": max(0, int(summary.green_count or 0)),
+        "amber": max(0, int(summary.amber_count or 0)),
+        "red": max(0, int(summary.red_count or 0)),
+    }
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()

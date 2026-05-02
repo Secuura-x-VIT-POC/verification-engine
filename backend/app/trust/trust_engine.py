@@ -388,6 +388,7 @@ def _claims_from_trust_fields(fields: dict[str, dict[str, Any]]) -> list[dict[st
             "confidence": field.get("confidence", 0.0),
             "ai_confidence": field.get("confidence", 0.0),
             "requires_verification": field.get("mandatory", True),
+            "has_extracted_value": bool(str(field.get("value") or "").strip()),
         }
         for field_id, field in fields.items()
     ]

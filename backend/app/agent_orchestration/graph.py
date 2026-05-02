@@ -300,7 +300,10 @@ def _run_verifier_apis(state: GeneralizedVerificationState) -> dict[str, Any]:
             if not isinstance(item, dict):
                 continue
             connector_id = str(item.get("connector_id") or item.get("provider_key") or "provider")
-            status = str(item.get("status") or "ERROR").upper()
+            status, reason_codes = _normalize_legacy_verifier_status_and_reasons(
+                item.get("status"),
+                item.get("reason_codes"),
+            )
             verifier_results.append(
                 VerifierResult(
                     task_id=str(item.get("task_id") or connector_id),
@@ -308,7 +311,7 @@ def _run_verifier_apis(state: GeneralizedVerificationState) -> dict[str, Any]:
                     connector_id=connector_id,
                     status=status,
                     verification_confidence=_verification_confidence_from_status(status),
-                    reason_codes=list(item.get("reason_codes") or []),
+                    reason_codes=reason_codes,
                     source_api=connector_id,
                     audit_message=_verifier_audit_message(connector_id, status, item),
                     optional=bool(item.get("optional", False)),
@@ -419,6 +422,7 @@ def _claim_from_normalized_field(
         "confidence": _resolve_extraction_confidence(extraction_payload, field.field_id, field.extracted_value),
         "ai_confidence": field.ai_confidence,
         "requires_verification": field.mandatory,
+        "has_extracted_value": bool(str(field.extracted_value or field.normalized_value or "").strip()),
         "bounding_boxes": [box.model_dump(mode="json") for box in field.bounding_boxes],
     }
 
@@ -1093,6 +1097,14 @@ def _verification_confidence_from_status(status: str) -> float:
     if normalized == "ERROR":
         return 0.1
     return 0.0
+
+def _normalize_legacy_verifier_status_and_reasons(status: Any, reason_codes: Any) -> tuple[str, list[str]]:
+    normalized = str(status or "").upper()
+    allowed = {"VERIFIED", "MISMATCH", "TIMEOUT", "ERROR", "SKIPPED", "NOT_APPLICABLE"}
+    reasons = list(reason_codes) if isinstance(reason_codes, list) else []
+    if normalized in allowed:
+        return normalized, reasons
+    return "ERROR", list(dict.fromkeys([*reasons, "PROVIDER_RESULT_MALFORMED"]))
 
 def _verifier_audit_message(connector_id: str, status: str, raw_result: dict[str, Any]) -> str:
     normalized = str(status or "").upper()

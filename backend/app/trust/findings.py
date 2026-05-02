@@ -23,6 +23,7 @@ MANUAL_REVIEW_REASON_CODES = {
     "NO_TASK_RESULT",
     "NO_VERIFIER_EVIDENCE",
     "PROVIDER_CAPABILITY_MISMATCH",
+    "PROVIDER_RESULT_MALFORMED",
     "PROVIDER_NOT_REGISTERED",
     "PROVIDER_UNAVAILABLE",
     "REQUIRED_CLAIM_MISSING",
@@ -148,20 +149,22 @@ def build_trust_findings(
 def _build_claim_finding(*, claim: dict[str, Any], result: dict[str, Any] | None) -> ClaimFinding:
     claim_id = str(claim.get("claim_id") or claim.get("credential_id") or claim.get("field_id") or "")
     credential_id = str(claim.get("credential_id") or claim_id)
-    status, default_reasons = _status_and_reasons(claim, result)
+    missing_required_claim = _is_required_claim_missing(claim)
+    evidence_result = None if missing_required_claim else result
+    status, default_reasons = _status_and_reasons(claim, evidence_result)
     explicit_reasons = _dedupe(
         [
             *_safe_reason_codes(claim.get("reason_codes")),
-            *_safe_reason_codes(result.get("reason_codes") if result else []),
+            *_safe_reason_codes(evidence_result.get("reason_codes") if evidence_result else []),
         ]
     )
-    if result is None:
+    if evidence_result is None or missing_required_claim:
         reason_codes = _dedupe([*explicit_reasons, *default_reasons])
     else:
         reason_codes = explicit_reasons or _dedupe(default_reasons)
     provider_id = _safe_string(
         _first_present(
-            result,
+            evidence_result,
             "executed_provider_key",
             "planned_provider_key",
             "preferred_provider_key",
@@ -172,21 +175,21 @@ def _build_claim_finding(*, claim: dict[str, Any], result: dict[str, Any] | None
     )
     provider_label = _safe_string(
         _first_present(
-            result,
+            evidence_result,
             "executed_provider_label",
             "planned_provider_label",
             "preferred_provider_label",
             "verifier_label",
         )
     )
-    verifier_refs = [str(result["task_id"])] if result and result.get("task_id") else []
+    verifier_refs = [str(evidence_result["task_id"])] if evidence_result and evidence_result.get("task_id") else []
     ai_confidence = _clamp(
         _first_present(claim, "ai_confidence", "confidence", "extraction_confidence")
     )
-    verifier_confidence = _clamp(result.get("confidence") if result else 0.0)
-    if result and "confidence" not in result:
-        verifier_confidence = _clamp(result.get("verification_confidence"))
-    final_confidence = verifier_confidence if result else min(ai_confidence, 0.79)
+    verifier_confidence = _clamp(evidence_result.get("confidence") if evidence_result else 0.0)
+    if evidence_result and "confidence" not in evidence_result:
+        verifier_confidence = _clamp(evidence_result.get("verification_confidence"))
+    final_confidence = verifier_confidence if evidence_result else min(ai_confidence, 0.79)
 
     return ClaimFinding(
         finding_id=f"finding-{claim_id or credential_id}",
@@ -202,11 +205,11 @@ def _build_claim_finding(*, claim: dict[str, Any], result: dict[str, Any] | None
             final=final_confidence,
         ),
         reason_codes=reason_codes,
-        explanation=_safe_explanation(status, result),
+        explanation=_safe_explanation(status, evidence_result),
         source_provider_id=provider_id,
         source_provider_label=provider_label,
         verifier_refs=verifier_refs,
-        manual_review_required=_requires_manual_review(status, reason_codes, result),
+        manual_review_required=_requires_manual_review(status, reason_codes, evidence_result),
         bounding_boxes=_safe_bounding_boxes(claim.get("bounding_boxes") or claim.get("bounding_box")),
     )
 
@@ -246,6 +249,9 @@ def _status_and_reasons(
     claim: dict[str, Any],
     result: dict[str, Any] | None,
 ) -> tuple[ClaimFindingStatus, list[str]]:
+    if _is_required_claim_missing(claim):
+        return "AMBER", ["REQUIRED_CLAIM_MISSING", "MANUAL_REVIEW_REQUIRED"]
+
     if result is None:
         reasons = ["NO_VERIFIER_EVIDENCE", "AI_ONLY_EVIDENCE", "LOW_CONFIDENCE_REVIEW_REQUIRED"]
         return "AMBER", reasons
@@ -270,6 +276,13 @@ def _status_and_reasons(
     if task_status in {"FAILED", "ERROR", "TIMEOUT"} or verifier_status in {"ERROR", "TIMEOUT", "UNAVAILABLE"}:
         return "AMBER", ["PROVIDER_UNAVAILABLE"]
     return "AMBER", ["NO_VERIFIER_EVIDENCE"]
+
+
+def _is_required_claim_missing(claim: dict[str, Any]) -> bool:
+    return (
+        bool(claim.get("requires_verification", True))
+        and claim.get("has_extracted_value") is False
+    )
 
 
 def _build_result(

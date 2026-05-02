@@ -142,18 +142,17 @@ def _decision_timestamp(receipt: AuditReceiptRecord) -> str | None:
 
 
 def _build_finding_counts(session: SessionModel) -> dict:
+    summary = _summary_from_payload(getattr(session, "workspace_payload", None))
+    counts = _counts_from_summary(summary)
+    if counts is not None:
+        return counts
+
     summary = {}
     if isinstance(session.verification_execution_summary_payload, dict):
         summary = session.verification_execution_summary_payload.get("summary") or {}
-
-    if isinstance(summary, dict):
-        counts = {
-            "green": _coerce_count(summary.get("green_count")),
-            "amber": _coerce_count(summary.get("amber_count")),
-            "red": _coerce_count(summary.get("red_count")),
-        }
-        if any(count is not None for count in counts.values()):
-            return {key: value or 0 for key, value in counts.items()}
+    counts = _counts_from_summary(summary)
+    if counts is not None:
+        return counts
 
     outcome = str(session.trust_outcome or "").upper()
     if outcome in {"GREEN", "AMBER", "RED"}:
@@ -169,6 +168,26 @@ def _build_finding_counts(session: SessionModel) -> dict:
         "red": 0,
         "unknown": True,
     }
+
+
+def _summary_from_payload(payload) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    summary = payload.get("summary")
+    return summary if isinstance(summary, dict) else {}
+
+
+def _counts_from_summary(summary) -> dict | None:
+    if not isinstance(summary, dict):
+        return None
+    counts = {
+        "green": _coerce_count(summary.get("green_count")),
+        "amber": _coerce_count(summary.get("amber_count")),
+        "red": _coerce_count(summary.get("red_count")),
+    }
+    if any(count is not None for count in counts.values()):
+        return {key: value or 0 for key, value in counts.items()}
+    return None
 
 
 def _coerce_count(value) -> int | None:

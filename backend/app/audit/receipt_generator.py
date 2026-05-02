@@ -35,6 +35,9 @@ def generate_receipt(
         "issued_at": issued_at,
         "key_version": key_version,
         "receipt_hash": receipt_hash,
+        "reviewer_decision": trust_result.get("reviewer_decision"),
+        "reviewer_note_hash": trust_result.get("reviewer_note_hash"),
+        "finding_counts": trust_result.get("finding_counts"),
     }
 
 

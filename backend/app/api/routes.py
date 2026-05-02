@@ -157,7 +157,7 @@ def _completed_review_workspace(workspace: WorkspacePayload | dict) -> Workspace
 
 
 def _persist_workspace_contract(db: Session, session: SessionModel, workspace: WorkspacePayload) -> None:
-    workspace = _completed_review_workspace(workspace)
+    workspace = sanitize_workspace_payload(_completed_review_workspace(workspace))
     session.status = SessionState.PENDING_HUMAN_REVIEW
     session.worker_phase = "COMPLETED"
     session.trust_outcome = workspace.final_verdict.outcome
@@ -532,7 +532,9 @@ def get_generalized_workspace_route(
     return sanitize_workspace_payload(WorkspacePayload.model_validate(session.workspace_payload)).model_dump(mode="json")
 
 def build_workspace_response(session):
-    workspace = session.workspace_payload or {}
+    # Compatibility-only response helper for older callers. The canonical
+    # frontend contract is WorkspacePayload from the /workspace endpoint.
+    workspace = sanitize_workspace_payload(session.workspace_payload or {})
 
     document = workspace.get("document", {})
     summary = workspace.get("summary", {})
@@ -546,7 +548,7 @@ def build_workspace_response(session):
         {
             "field_id": f.get("field_id"),
             "label": f.get("label"),
-            "value": f.get("normalized_value"),
+            "value": f.get("extracted_value"),
             "status": f.get("status"),
             "confidence": f.get("final_confidence"),
             "reason_codes": f.get("reason_codes", []),

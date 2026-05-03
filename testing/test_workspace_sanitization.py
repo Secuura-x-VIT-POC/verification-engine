@@ -165,7 +165,7 @@ class WorkspaceSanitizationTests(unittest.TestCase):
         self.assertEqual(field["extraction_confidence"], 0.9)
         self.assertEqual(field["bounding_boxes"][0]["page"], 1)
         self.assertIn("***", field["extracted_value"])
-        self.assertNotIn("normalized_value", field)
+        self.assertIn("***", field["normalized_value"])
 
 
 if __name__ == "__main__":

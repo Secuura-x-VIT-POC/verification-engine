@@ -254,16 +254,18 @@ def extract_document_payload(file_path: Path) -> dict[str, Any]:
             "confidence": confidence,
             "bounding_boxes": bounding_boxes,
             "field_details": field_details,
-            "raw_text": raw_result.get("raw_text"),
             "warnings": raw_result.get("warnings") or [],
             "reason_code": raw_result.get("reason_code"),
             "metadata": raw_result.get("metadata"),
             "ocr_metadata": raw_result.get("ocr_metadata"),
+            "engine_metadata": raw_result.get("engine_metadata"),
             "enrichment_metadata": raw_result.get("enrichment_metadata"),
             "safety_report": raw_result.get("safety_report"),
             "spatial_text_map": raw_result.get("spatial_text_map") or [],
             "evidence_lines": raw_result.get("evidence_lines") or [],
             "field_candidates": raw_result.get("field_candidates") or [],
+            "layout_blocks": raw_result.get("layout_blocks") or [],
+            "table_cells": raw_result.get("table_cells") or [],
             "generalized_analysis": raw_result.get("generalized_analysis"),
             "error_message": raw_result.get("error_message"),
         },
@@ -309,10 +311,12 @@ def _build_generalized_view_payload(
         value = _normalize_string(
             entry.get("value")
             if "value" in entry
-            else entry.get("raw_value") or entry.get("normalized_value")
+            else entry.get("extracted_value")
+            or entry.get("masked_value")
+            or entry.get("raw_value")
+            or entry.get("normalized_value")
         )
-        source_text = _normalize_string(entry.get("source_text"))
-        if not value and not source_text:
+        if not value:
             continue
 
         label = _normalize_string(entry.get("label")) or f"Credential {index}"
@@ -320,18 +324,29 @@ def _build_generalized_view_payload(
             _slug(label or _normalize_string(entry.get("category")) or _normalize_string(entry.get("credential_id")) or f"field-{index}"),
             seen_keys,
         )
-        box = _first_box(entry.get("bounding_boxes")) or entry.get("bounding_box")
+        box = _first_box(entry.get("bounding_boxes")) or entry.get("bounding_box") or entry.get("bbox")
         converted_boxes = [_convert_box(box)] if isinstance(box, dict) else []
+        if not converted_boxes and isinstance(box, list):
+            converted_boxes = [_convert_box({"bbox": box, "page_number": entry.get("page_number") or entry.get("page")})]
         page = converted_boxes[0]["page"] if converted_boxes else _coerce_int(entry.get("page"))
+        page_number = _coerce_int(entry.get("page_number")) or page
         detail = {
             "key": key,
+            "field_id": entry.get("field_id") or key,
             "label": label,
             "value": value,
+            "extracted_value": value,
+            "masked_value": entry.get("masked_value"),
+            "normalized_value": _normalize_string(entry.get("normalized_value")) or value,
             "confidence": round(float(entry.get("confidence") or 0), 2) if value else 0,
             "is_mandatory": bool(entry.get("requires_verification")),
             "is_grounded": bool(converted_boxes),
             "bounding_boxes": converted_boxes,
-            "source_text": source_text,
+            "bbox": converted_boxes[0].get("bbox") if converted_boxes else entry.get("bbox"),
+            "polygon": entry.get("polygon") or (converted_boxes[0].get("polygon") if converted_boxes else None),
+            "page_number": page_number,
+            "coordinate_space": entry.get("coordinate_space") or (converted_boxes[0].get("coordinate_space") if converted_boxes else None),
+            "evidence_ref": entry.get("evidence_ref") or entry.get("evidence_line_id"),
             "extraction_method": entry.get("extraction_method"),
             "category": entry.get("category"),
             "is_pii": bool(entry.get("is_pii")),
@@ -375,7 +390,7 @@ def _build_semantic_aliases(raw_result: dict[str, Any]) -> dict[str, dict[str, A
             semantic_aliases,
             api_key,
             {
-                "value": entry.get("value") if "value" in entry else entry.get("normalized_value") or entry.get("raw_value"),
+                "value": entry.get("value") if "value" in entry else entry.get("extracted_value") or entry.get("normalized_value") or entry.get("raw_value") or entry.get("masked_value"),
                 "confidence": entry.get("confidence"),
                 "bounding_boxes": entry.get("bounding_boxes") or ([entry.get("bounding_box")] if isinstance(entry.get("bounding_box"), dict) else []),
             },
@@ -450,17 +465,6 @@ def _resolve_document_type(raw_result: dict[str, Any]) -> str:
         if mapped:
             return mapped
 
-    lowered_text = str(raw_result.get("raw_text") or "").lower()
-    if any(token in lowered_text for token in ("report card", "marksheet", "mark sheet", "grade report")):
-        return "report_card"
-    if any(token in lowered_text for token in ("transcript", "semester", "cgpa", "student")):
-        return "academic_credential"
-    if any(token in lowered_text for token in ("aadhaar", "pan", "passport", "date of birth")):
-        return "identity_document"
-    if any(token in lowered_text for token in ("certificate", "course completion")):
-        return "certificate_document"
-    if any(token in lowered_text for token in ("invoice", "tax", "balance", "account")):
-        return "financial_document"
     return "generic_document"
 
 
@@ -575,32 +579,20 @@ def _raise_on_processing_connector_failure(connector_responses: list[dict[str, A
 
 def _load_extraction_result(file_path: Path) -> dict[str, Any]:
     try:
-        from extraction.parser.document_parser import extract_document_data
-    except Exception as exc:  # pragma: no cover - fallback path is environment-dependent
-        try:
-            fallback = _fallback_extract_document(file_path)
-        except Exception as fallback_exc:
-            raise WorkflowProcessingError(
-                "malformed_document",
-                message=str(fallback_exc),
-            ) from fallback_exc
-
-        fallback["error_message"] = f"Extraction pipeline unavailable: {exc}"
-        return fallback
+        from extraction.pipeline import extract_document_data
+    except Exception as exc:  # pragma: no cover - environment-dependent
+        raise WorkflowProcessingError(
+            "extraction_configuration_error",
+            message=f"PP-ChatOCRv4 extraction pipeline unavailable: {_safe_error(exc)}",
+        ) from exc
 
     try:
         result = extract_document_data(str(file_path))
     except Exception as exc:
-        try:
-            fallback = _fallback_extract_document(file_path)
-        except Exception as fallback_exc:
-            raise WorkflowProcessingError(
-                "malformed_document",
-                message=str(fallback_exc),
-            ) from fallback_exc
-
-        fallback["error_message"] = str(exc)
-        return fallback
+        raise WorkflowProcessingError(
+            "extraction_failed",
+            message=f"PP-ChatOCRv4 extraction failed: {_safe_error(exc)}",
+        ) from exc
 
     if hasattr(result, "model_dump"):
         return result.model_dump(mode="json")
@@ -610,35 +602,35 @@ def _load_extraction_result(file_path: Path) -> dict[str, Any]:
 
 
 def _fallback_extract_document(file_path: Path) -> dict[str, Any]:
-    if PdfReader is None:
-        raise WorkflowProcessingError(
-            "dependency_unavailable",
-            message="PDF parser dependency is not available",
-        )
-    reader = PdfReader(str(file_path))
-    raw_text = "\n".join((page.extract_text() or "") for page in reader.pages)
-    return {
-        "is_successful": bool(raw_text.strip()),
-        "page_count": len(reader.pages),
-        "used_ocr": False,
-        "fields": {},
-        "raw_text": raw_text,
-        "field_candidates": [],
-        "generalized_analysis": None,
-        "ocr_metadata": None,
-        "enrichment_metadata": None,
-        "error_message": None,
-    }
+    raise WorkflowProcessingError(
+        "extraction_configuration_error",
+        message="PP-ChatOCRv4 extraction is required; no OCR fallback is configured.",
+    )
 
 
 def _convert_box(box: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(box.get("bbox"), list) and len(box["bbox"]) >= 4:
+        x0, y0, x1, y1 = box["bbox"][:4]
+    else:
+        x0, y0, x1, y1 = box.get("x0", 0), box.get("y0", 0), box.get("x1", 0), box.get("y1", 0)
+    page = int(box.get("page") or box.get("page_number") or 1)
     return {
-        "page": int(box.get("page", 1)),
-        "x0": float(box.get("x0", 0)),
-        "y0": float(box.get("y0", 0)),
-        "x1": float(box.get("x1", 0)),
-        "y1": float(box.get("y1", 0)),
+        "page": page,
+        "page_number": page,
+        "x0": float(x0),
+        "y0": float(y0),
+        "x1": float(x1),
+        "y1": float(y1),
+        "bbox": [float(x0), float(y0), float(x1), float(y1)],
+        "polygon": box.get("polygon"),
+        "coordinate_space": box.get("coordinate_space"),
+        "source": box.get("source"),
+        "confidence": box.get("confidence"),
     }
+
+
+def _safe_error(exc: Exception) -> str:
+    return re.sub(r"\s+", " ", str(exc)).strip()[:300]
 
 
 def _serialize_dt(value: datetime | None) -> str | None:

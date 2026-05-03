@@ -19,6 +19,7 @@ from ..trust.findings import build_trust_findings, normalize_reason_codes
 from ..trust.trust_engine import build_final_verdict, determine_field_decision
 from .policies import AgentRuntimePolicy, load_agent_runtime_policy, minimize_extraction_payload
 from .schemas import (
+    BoundingBox,
     FieldDecision,
     GeminiCredentialGroup,
     GeminiCredentialGroupCollection,
@@ -87,7 +88,6 @@ def _load_extraction_state(
         extraction_payload = extract_document_payload(Path(str(state.get("file_path") or "")))
 
     sanitized_extraction = copy.deepcopy(extraction_payload)
-    raw_text = str(((sanitized_extraction.get("view") or {}).get("raw_text")) or "")
     if isinstance(sanitized_extraction.get("view"), dict):
         sanitized_extraction["view"] = dict(sanitized_extraction["view"])
         sanitized_extraction["view"].pop("raw_text", None)
@@ -97,7 +97,7 @@ def _load_extraction_state(
         "policy": build_policy(extraction_payload),
         "extraction_payload": extraction_payload,
         "sanitized_extraction": sanitized_extraction,
-        "raw_text": raw_text,
+        "raw_text": "",
         "sanitized_workspace_fragment": minimize_extraction_payload(
             sanitized_extraction,
             max_fields=runtime_policy.max_fields_for_provider,
@@ -912,6 +912,17 @@ def _deterministic_normalized_fields(
 ) -> list[GeminiNormalizedField]:
     trust_input = extraction_payload.get("trust_input") or {}
     view = extraction_payload.get("view") or {}
+    source_claims = [
+        dict(item)
+        for item in list(view.get("field_details") or [])
+        if isinstance(item, dict)
+    ]
+    if not source_claims:
+        source_claims = [
+            dict(item)
+            for item in list(view.get("field_candidates") or [])
+            if isinstance(item, dict)
+        ]
     detail_by_key = {
         str(detail.get("key") or ""): detail
         for detail in list(view.get("field_details") or [])
@@ -923,6 +934,34 @@ def _deterministic_normalized_fields(
         if isinstance(claim, dict)
     }
     normalized_fields: list[GeminiNormalizedField] = []
+    if source_claims:
+        for index, claim in enumerate(source_claims, start=1):
+            field_id = str(claim.get("field_id") or claim.get("key") or claim.get("claim_id") or f"field-{index}")
+            semantic_claim = semantic_by_field.get(field_id, {})
+            value = (
+                claim.get("extracted_value")
+                or claim.get("value")
+                or claim.get("normalized_value")
+                or claim.get("masked_value")
+                or claim.get("value_preview")
+                or ""
+            )
+            boxes = _boxes_from_claim(claim)
+            normalized_fields.append(
+                GeminiNormalizedField(
+                    field_id=field_id,
+                    label=str(semantic_claim.get("canonical_label") or claim.get("label") or field_id.replace("_", " ").title()),
+                    extracted_value=safe_normalized_string(value),
+                    normalized_value=safe_normalized_string(semantic_claim.get("normalized_value") or claim.get("normalized_value") or value),
+                    ai_confidence=float(claim.get("confidence") or 0.0),
+                    grounding_confidence=1.0 if boxes else 0.0,
+                    mandatory=bool(claim.get("requires_verification", True)),
+                    verifier_hint=None,
+                    bounding_boxes=boxes,
+                )
+            )
+        return normalized_fields
+
     for field in list(trust_input.get("fields") or []):
         field_name = str(field.get("name") or "")
         if not field_name:
@@ -962,6 +1001,50 @@ def _deterministic_normalized_fields(
                 )
             )
     return normalized_fields
+
+
+def _boxes_from_claim(claim: dict[str, Any]) -> list[BoundingBox]:
+    raw_boxes = []
+    if isinstance(claim.get("bounding_boxes"), list):
+        raw_boxes.extend(claim.get("bounding_boxes") or [])
+    if isinstance(claim.get("bounding_box"), dict):
+        raw_boxes.append(claim["bounding_box"])
+    if isinstance(claim.get("bbox"), list):
+        raw_boxes.append(
+            {
+                "bbox": claim.get("bbox"),
+                "page": claim.get("page") or claim.get("page_number") or 1,
+                "page_number": claim.get("page_number") or claim.get("page") or 1,
+                "polygon": claim.get("polygon"),
+                "coordinate_space": claim.get("coordinate_space"),
+                "source": claim.get("source"),
+                "confidence": claim.get("confidence"),
+            }
+        )
+    boxes: list[BoundingBox] = []
+    for raw in raw_boxes:
+        if not isinstance(raw, dict):
+            continue
+        if isinstance(raw.get("bbox"), list) and len(raw["bbox"]) >= 4:
+            x0, y0, x1, y1 = raw["bbox"][:4]
+        else:
+            x0, y0, x1, y1 = raw.get("x0", 0), raw.get("y0", 0), raw.get("x1", 0), raw.get("y1", 0)
+        boxes.append(
+            BoundingBox(
+                page=int(raw.get("page") or raw.get("page_number") or 1),
+                page_number=int(raw.get("page_number") or raw.get("page") or 1),
+                x0=float(x0),
+                y0=float(y0),
+                x1=float(x1),
+                y1=float(y1),
+                bbox=[float(x0), float(y0), float(x1), float(y1)],
+                polygon=raw.get("polygon"),
+                coordinate_space=raw.get("coordinate_space"),
+                source=raw.get("source"),
+                confidence=raw.get("confidence"),
+            )
+        )
+    return boxes
 
 def _deterministic_credential_groups(
     extraction_payload: dict[str, Any],

@@ -3,12 +3,20 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from .confidence_scorer import score_candidate
-from .cross_field_validator import validate_cross_fields
-from .deduplication import fuzzy_deduplicate
-from .field_detector import extract_field_candidates
-from .layout_analyzer import build_evidence_lines, extract_tables_from_lines
-from .models import ExtractionResult, ExtractionWarning
+from .models import (
+    BoundingBox,
+    EvidenceLine,
+    ExtractionResult,
+    ExtractionWarning,
+    FieldCandidate,
+    OCRMetadata,
+    SpatialTextToken,
+)
+from .ocr.pp_chatocr_v4 import (
+    PPChatOCRConfigurationError,
+    PPChatOCRExtractionError,
+    run_pp_chatocr_v4_extraction,
+)
 from .output_builder import (
     build_canonical_schema,
     build_credential_candidates,
@@ -17,8 +25,7 @@ from .output_builder import (
     build_processing_result,
     build_workspace_view,
 )
-from .pii_classifier import apply_verifier_feedback, classify_pii, redact_source_snippet
-from .router import route_extraction
+from .pii_classifier import apply_verifier_feedback, classify_pii
 from .security_gate import DocumentSafetyError, validate_document_intake
 
 
@@ -71,12 +78,11 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
             error_message=str(exc),
         )
 
-    raw_text = "\n".join(bundle["processing_result"].raw_text_per_page[page] for page in sorted(bundle["processing_result"].raw_text_per_page))
     return ExtractionResult(
         is_successful=True,
         used_ocr=bundle["processing_result"].ocr_metadata.ocr_applied,
         fields=bundle["canonical_schema"],
-        raw_text=raw_text,
+        raw_text="",
         raw_text_per_page=bundle["processing_result"].raw_text_per_page,
         spatial_text_map=bundle["spatial_text_map"],
         evidence_lines=bundle["evidence_lines"],
@@ -88,51 +94,39 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
         warnings=bundle["warnings"],
         processing_result=bundle["processing_result"],
         workspace_view=bundle["workspace_view"],
+        extraction_method="pp_chatocr_v4",
+        ocr_performed=True,
+        advanced_ocr_performed=True,
+        layout_blocks=bundle["layout_blocks"],
+        table_cells=bundle["table_cells"],
+        page_count=bundle["processing_result"].page_count,
+        field_count=len(bundle["processing_result"].field_candidates),
+        engine_metadata=bundle["engine_metadata"],
     )
 
 
 def _run_extraction_bundle(session_id: str, pdf_path: str, llm_client=None, strategy: str = "auto") -> dict:
+    del llm_client, strategy
     path = Path(pdf_path)
     safety_report = validate_document_intake(str(path))
-    warnings: list[ExtractionWarning] = []
-    routed = route_extraction(str(path), strategy=strategy)
-    evidence_lines = build_evidence_lines(routed.spatial_tokens)
-    merged_tables = dict(routed.tables_by_page)
-    heuristic_tables = extract_tables_from_lines(evidence_lines)
-    for page, tables in heuristic_tables.items():
-        merged_tables.setdefault(page, [])
-        merged_tables[page].extend(tables)
-
-    document_type_hint = _infer_document_type_hint(routed.page_texts)
-    candidates = extract_field_candidates(
-        raw_text_per_page=routed.page_texts,
-        evidence_lines=evidence_lines,
-        spatial_text_map=routed.spatial_tokens,
-        page_confidence=routed.page_confidence,
-        page_methods=routed.page_methods,
-        tables_by_page=merged_tables,
-        document_type_hint=document_type_hint,
-        llm_client=llm_client,
-    )
-    candidates = [score_candidate(classify_pii(candidate)) for candidate in candidates]
-    candidates = validate_cross_fields(candidates)
-    candidates = fuzzy_deduplicate(candidates)
-    sanitized_candidates = []
-    for candidate in candidates:
-        sanitized_candidates.append(
-            candidate.model_copy(
-                update={
-                    "source_text": redact_source_snippet(candidate.source_text, candidate.raw_value, candidate.sensitivity),
-                }
-            )
-        )
+    document_type_hint = "generic"
+    pp_payload = run_pp_chatocr_v4_extraction(str(path), document_type_hint=document_type_hint)
+    warnings = [
+        ExtractionWarning(code=str(code).upper(), message=str(code))
+        for code in list(pp_payload.get("warnings") or [])
+    ]
+    spatial_text_map = [_spatial_token_from_payload(item) for item in list(pp_payload.get("spatial_text_map") or [])]
+    evidence_lines = [_evidence_line_from_payload(item) for item in list(pp_payload.get("evidence_lines") or [])]
+    candidates = [_candidate_from_payload(item) for item in list(pp_payload.get("field_candidates") or [])]
+    sanitized_candidates = [classify_pii(candidate) for candidate in candidates]
     credential_candidates = build_credential_candidates(sanitized_candidates, document_type_hint)
+    ocr_metadata = OCRMetadata.model_validate(_coerce_ocr_metadata(pp_payload.get("ocr_metadata") or {}, page_count=int(pp_payload.get("page_count") or 0)))
     processing_result = build_processing_result(
         session_id=session_id,
         candidates=sanitized_candidates,
         credential_candidates=credential_candidates,
-        ocr_metadata=routed.ocr_metadata,
-        raw_text_per_page=routed.page_texts,
+        ocr_metadata=ocr_metadata,
+        raw_text_per_page={page: "" for page in range(1, int(pp_payload.get("page_count") or 1) + 1)},
         document_type_hint=document_type_hint,
     )
     workspace_view = build_workspace_view(processing_result)
@@ -153,9 +147,131 @@ def _run_extraction_bundle(session_id: str, pdf_path: str, llm_client=None, stra
         "metadata": metadata,
         "safety_report": safety_report,
         "warnings": warnings,
-        "spatial_text_map": routed.spatial_tokens,
+        "spatial_text_map": spatial_text_map,
         "evidence_lines": evidence_lines,
+        "layout_blocks": list(pp_payload.get("layout_blocks") or []),
+        "table_cells": list(pp_payload.get("table_cells") or []),
+        "engine_metadata": dict(pp_payload.get("engine_metadata") or {}),
     }
+
+
+def _candidate_from_payload(item: dict) -> FieldCandidate:
+    bbox = item.get("bounding_box") or _box_from_bbox(item)
+    boxes = [BoundingBox.model_validate(bbox)] if isinstance(bbox, dict) and bbox.get("bbox") else []
+    value = item.get("extracted_value") or item.get("normalized_value") or item.get("masked_value") or ""
+    return FieldCandidate(
+        field_id=str(item.get("field_id") or item.get("label") or "field"),
+        label=str(item.get("label") or "Field"),
+        raw_value=str(value),
+        extracted_value=str(value),
+        masked_value=item.get("masked_value"),
+        normalized_value=str(item.get("normalized_value") or value),
+        category=item.get("category") if item.get("category") in FieldCandidate.model_fields["category"].annotation.__args__ else "other",
+        page=int(item.get("page_number") or item.get("page") or 1),
+        page_number=int(item.get("page_number") or item.get("page") or 1),
+        bbox=item.get("bbox"),
+        polygon=item.get("polygon"),
+        coordinate_space=item.get("coordinate_space"),
+        source="pp_chatocr_v4",
+        evidence_ref=item.get("evidence_ref"),
+        evidence_line_id=item.get("evidence_line_id"),
+        ocr_performed=True,
+        advanced_ocr_performed=True,
+        bounding_boxes=boxes,
+        confidence=float(item.get("confidence") or 0.0),
+        source_text=None,
+        extraction_method="pp_chatocr_v4",
+        detected_by=["layout"] if boxes else [],
+        requires_verification=bool(item.get("requires_verification", True)),
+    )
+
+
+def _spatial_token_from_payload(item: dict) -> SpatialTextToken:
+    bbox = item.get("bbox") or [0, 0, 0, 0]
+    return SpatialTextToken(
+        text=str(item.get("text_preview") or item.get("text") or ""),
+        bbox=[float(value) for value in bbox],
+        page=int(item.get("page_number") or item.get("page") or 1),
+        source="pp_chatocr_v4",
+        confidence=float(item.get("confidence") or 0.0),
+        polygon=item.get("polygon"),
+    )
+
+
+def _evidence_line_from_payload(item: dict) -> EvidenceLine:
+    box = item.get("bbox") or [0, 0, 0, 0]
+    page = int(item.get("page_number") or item.get("page") or 1)
+    return EvidenceLine(
+        page=page,
+        text=str(item.get("text_preview") or ""),
+        bbox=BoundingBox(
+            page=page,
+            x0=float(box[0]),
+            y0=float(box[1]),
+            x1=float(box[2]),
+            y1=float(box[3]),
+            page_number=page,
+            bbox=[float(value) for value in box],
+            polygon=item.get("polygon"),
+            coordinate_space=item.get("coordinate_space"),
+            source="pp_chatocr_v4",
+            confidence=item.get("confidence"),
+        ),
+        source="pp_chatocr_v4",
+    )
+
+
+def _box_from_bbox(item: dict) -> dict | None:
+    bbox = item.get("bbox")
+    if not bbox:
+        return None
+    page = int(item.get("page_number") or item.get("page") or 1)
+    return {
+        "page": page,
+        "page_number": page,
+        "x0": float(bbox[0]),
+        "y0": float(bbox[1]),
+        "x1": float(bbox[2]),
+        "y1": float(bbox[3]),
+        "bbox": [float(value) for value in bbox],
+        "polygon": item.get("polygon"),
+        "coordinate_space": item.get("coordinate_space"),
+        "source": "pp_chatocr_v4",
+        "confidence": item.get("confidence"),
+    }
+
+
+def _coerce_ocr_metadata(payload: dict, *, page_count: int) -> dict:
+    base = {
+        "method_used": "pp_chatocr_v4",
+        "fallback_triggered": False,
+        "total_pages": page_count,
+        "ocr_pages": list(range(1, page_count + 1)),
+        "avg_confidence": payload.get("avg_confidence") or payload.get("average_confidence") or 0.0,
+        "language_detected": None,
+        "engine_used": "pp_chatocr_v4",
+        "engines_used": ["pp_chatocr_v4"],
+        "native_text_used": False,
+        "ocr_applied": True,
+        "fallback_used": False,
+        "average_confidence": payload.get("average_confidence") or payload.get("avg_confidence"),
+        "preprocessing_applied": [],
+        "pages_ocrd": list(range(1, page_count + 1)),
+        "page_metadata": [
+            {
+                "page": page,
+                "engine": "pp_chatocr_v4",
+                "used_native_text": False,
+                "average_confidence": payload.get("average_confidence") or payload.get("avg_confidence"),
+                "preprocessing_applied": [],
+                "warning_codes": [],
+            }
+            for page in range(1, page_count + 1)
+        ],
+        "warning_codes": payload.get("warning_codes") or [],
+    }
+    base.update({key: value for key, value in payload.items() if key in base})
+    return base
 
 
 def _infer_document_type_hint(raw_text_per_page: dict[int, str]) -> str:

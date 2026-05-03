@@ -19,6 +19,12 @@ class BoundingBox(BaseModel):
     y0: float = 0.0
     x1: float = 0.0
     y1: float = 0.0
+    page_number: int | None = None
+    bbox: list[float] | None = None
+    polygon: list[list[float]] | None = None
+    coordinate_space: str | None = None
+    source: str | None = None
+    confidence: float | None = None
 
 
 class GeminiDocumentUnderstanding(BaseModel):

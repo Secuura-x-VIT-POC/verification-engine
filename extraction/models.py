@@ -26,10 +26,20 @@ class BoundingBox(BaseModel):
     y1: float
     width: float = Field(default=0.0)
     height: float = Field(default=0.0)
+    page_number: Optional[int] = None
+    bbox: Optional[list[float]] = None
+    polygon: Optional[list[list[float]]] = None
+    coordinate_space: Optional[str] = None
+    source: Optional[str] = None
+    confidence: Optional[float] = None
 
     def model_post_init(self, __context: Any) -> None:
         object.__setattr__(self, "width", round(float(self.x1) - float(self.x0), 2))
         object.__setattr__(self, "height", round(float(self.y1) - float(self.y0), 2))
+        if self.page_number is None:
+            object.__setattr__(self, "page_number", self.page)
+        if self.bbox is None:
+            object.__setattr__(self, "bbox", [self.x0, self.y0, self.x1, self.y1])
 
 
 class SpatialTextToken(BaseModel):
@@ -74,7 +84,7 @@ FieldCategory = Literal[
 ]
 
 
-ExtractionMethod = Literal["native", "paddleocr", "tesseract"]
+ExtractionMethod = Literal["native", "paddleocr", "tesseract", "pp_chatocr_v4"]
 
 
 DetectedBy = Literal["regex", "layout", "llm", "ner", "table"]
@@ -84,9 +94,20 @@ class FieldCandidate(BaseModel):
     field_id: str
     label: str
     raw_value: Optional[str] = None
+    extracted_value: Optional[str] = None
+    masked_value: Optional[str] = None
     normalized_value: Optional[str] = None
     category: FieldCategory
     page: int
+    page_number: Optional[int] = None
+    bbox: Optional[list[float]] = None
+    polygon: Optional[list[list[float]]] = None
+    coordinate_space: Optional[str] = None
+    source: Optional[str] = None
+    evidence_ref: Optional[str] = None
+    evidence_line_id: Optional[str] = None
+    ocr_performed: bool = False
+    advanced_ocr_performed: bool = False
     bounding_boxes: list[BoundingBox] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     signals: ExtractionSignals = Field(default_factory=ExtractionSignals)
@@ -97,6 +118,14 @@ class FieldCandidate(BaseModel):
     source_text: Optional[str] = None
     extraction_method: ExtractionMethod = "native"
     detected_by: list[DetectedBy] = Field(default_factory=list)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.page_number is None:
+            object.__setattr__(self, "page_number", self.page)
+        if self.raw_value is None and self.extracted_value is not None:
+            object.__setattr__(self, "raw_value", self.extracted_value)
+        if self.extracted_value is None and self.raw_value is not None:
+            object.__setattr__(self, "extracted_value", self.raw_value)
 
 
 CredentialDocumentType = Literal[
@@ -263,6 +292,14 @@ class ExtractionResult(BaseModel):
     error_message: Optional[str] = None
     processing_result: Optional[ProcessingExtractionResult] = None
     workspace_view: Optional[WorkspaceExtractionView] = None
+    extraction_method: Optional[str] = None
+    ocr_performed: bool = False
+    advanced_ocr_performed: bool = False
+    layout_blocks: list[dict[str, Any]] = Field(default_factory=list)
+    table_cells: list[dict[str, Any]] = Field(default_factory=list)
+    page_count: int = 0
+    field_count: int = 0
+    engine_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RoutedExtraction(BaseModel):

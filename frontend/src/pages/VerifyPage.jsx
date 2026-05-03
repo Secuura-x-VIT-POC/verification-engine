@@ -115,6 +115,10 @@ function getFieldValue(field) {
 		field.valuePreview ||
 		field.masked_value ||
 		field.maskedValue ||
+		field.extracted_value ||
+		field.extractedValue ||
+		field.normalized_value ||
+		field.normalizedValue ||
 		"Hidden"
 	);
 }
@@ -158,6 +162,10 @@ function getAuditObject(workspace) {
 }
 
 function normalizeBoxToPercent(box) {
+	const coordinateSpace = box.coordinate_space || box.coordinateSpace;
+	if (coordinateSpace === "pp_chatocr_image_pixels") {
+		return null;
+	}
 	const rawX0 = box.x0 ?? box.left ?? box.x ?? 0;
 	const rawY0 = box.y0 ?? box.top ?? box.y ?? 0;
 	const rawX1 = box.x1;
@@ -188,15 +196,7 @@ function normalizeBoxToPercent(box) {
 		return null;
 	}
 
-	if (left > 100 || top > 100 || width > 100 || height > 100) {
-		const PDF_BASE_WIDTH = 612;
-		const PDF_BASE_HEIGHT = 792;
-
-		left = (left / PDF_BASE_WIDTH) * 100;
-		top = (top / PDF_BASE_HEIGHT) * 100;
-		width = (width / PDF_BASE_WIDTH) * 100;
-		height = (height / PDF_BASE_HEIGHT) * 100;
-	}
+	if (left > 100 || top > 100 || width > 100 || height > 100) return null;
 
 	return {
 		left: Math.max(0, Math.min(100, left)),
@@ -204,6 +204,47 @@ function normalizeBoxToPercent(box) {
 		width: Math.max(1, Math.min(100, width)),
 		height: Math.max(1, Math.min(100, height)),
 	};
+}
+
+function normalizeAbsoluteBox(box) {
+	const rawBox = Array.isArray(box.bbox) ? box.bbox : null;
+	const rawX0 = rawBox ? rawBox[0] : box.x0 ?? box.left ?? box.x ?? 0;
+	const rawY0 = rawBox ? rawBox[1] : box.y0 ?? box.top ?? box.y ?? 0;
+	const rawX1 = rawBox ? rawBox[2] : box.x1;
+	const rawY1 = rawBox ? rawBox[3] : box.y1;
+	const left = Number(rawX0);
+	const top = Number(rawY0);
+	const width =
+		box.width !== undefined
+			? Number(box.width)
+			: rawX1 !== undefined
+				? Number(rawX1) - left
+				: null;
+	const height =
+		box.height !== undefined
+			? Number(box.height)
+			: rawY1 !== undefined
+				? Number(rawY1) - top
+				: null;
+
+	if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+		return null;
+	}
+
+	return { left, top, width, height };
+}
+
+function boxFromPolygon(polygon) {
+	const points = asArray(polygon).filter((point) => Array.isArray(point) && point.length >= 2);
+	if (!points.length) return null;
+	const xValues = points.map((point) => Number(point[0])).filter(Number.isFinite);
+	const yValues = points.map((point) => Number(point[1])).filter(Number.isFinite);
+	if (!xValues.length || !yValues.length) return null;
+	const x0 = Math.min(...xValues);
+	const y0 = Math.min(...yValues);
+	const x1 = Math.max(...xValues);
+	const y1 = Math.max(...yValues);
+	return { x0, y0, x1, y1, bbox: [x0, y0, x1, y1], polygon };
 }
 
 function getFieldBoxes(field) {
@@ -215,9 +256,17 @@ function getFieldBoxes(field) {
 		...asArray(field.geometryBoxes),
 		...(field.bounding_box ? [field.bounding_box] : []),
 		...(field.boundingBox ? [field.boundingBox] : []),
+		...(field.bbox ? [{ bbox: field.bbox }] : []),
+		...(field.polygon ? [boxFromPolygon(field.polygon)] : []),
 		...(field.geometry ? [field.geometry] : []),
 		...(field.box ? [field.box] : []),
-	];
+	].filter(Boolean).map((box) => ({
+		...box,
+		polygon: box.polygon || field.polygon,
+		page: box.page || field.page || field.page_number || field.pageNumber || 1,
+		page_number: box.page_number || box.pageNumber || field.page_number || field.pageNumber || box.page || field.page || 1,
+		coordinate_space: box.coordinate_space || box.coordinateSpace || field.coordinate_space || field.coordinateSpace,
+	}));
 }
 
 function buildHighlightItems(fields) {
@@ -232,8 +281,9 @@ function buildHighlightItems(fields) {
 		return rawBoxes
 			.map((box, boxIndex) => {
 				const relativeBox = normalizeBoxToPercent(box || {});
+				const absoluteBox = normalizeAbsoluteBox(box || {});
 
-				if (!relativeBox) {
+				if (!relativeBox && !absoluteBox) {
 					return null;
 				}
 
@@ -243,10 +293,13 @@ function buildHighlightItems(fields) {
 					label: getFieldLabel(field),
 					documentValue: getFieldValue(field),
 					explanation: getFieldExplanation(field),
-					page: box.page || field.page || 1,
+					page: box.page_number || box.pageNumber || box.page || field.page_number || field.pageNumber || field.page || 1,
 					auditStatus: status,
 					outcomeColor,
 					relativeBox,
+					absoluteBox,
+					polygon: box.polygon || field.polygon,
+					coordinateSpace: box.coordinate_space || box.coordinateSpace || field.coordinate_space || field.coordinateSpace,
 				};
 			})
 			.filter(Boolean);

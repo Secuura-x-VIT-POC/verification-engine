@@ -4,9 +4,10 @@ pytesseract==0.3.10
 Pillow==10.2.0
 pydantic==2.5.3
 
-# Optional local OCR acceleration
-paddleocr>=2.8.0
-paddlepaddle>=2.6.0
+# Required production OCR engine
+paddleocr>=3.5.0
+paddlex>=3.5.1
+paddlepaddle>=3.3.1
 
 # Optional NLP enrichment
 spacy>=3.7.0

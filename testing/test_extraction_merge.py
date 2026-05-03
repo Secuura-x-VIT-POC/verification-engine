@@ -29,20 +29,24 @@ class ExtractionPipelineMergeTests(unittest.TestCase):
                 ],
             )
 
-            result = extract_document_data(str(file_path))
+            with patch(
+                "extraction.pipeline.run_pp_chatocr_v4_extraction",
+                return_value=_pp_chatocr_payload(),
+            ):
+                result = extract_document_data(str(file_path))
 
         self.assertTrue(result.is_successful)
-        self.assertFalse(result.used_ocr)
+        self.assertTrue(result.used_ocr)
         self.assertIsNotNone(result.fields.candidate_name)
         self.assertEqual(result.fields.candidate_name.value, "Asha Rao")
         self.assertIsNotNone(result.fields.document_id)
-        self.assertTrue(any(candidate.category == "person_name" for candidate in result.field_candidates))
-        self.assertTrue(any(candidate.category == "national_identifier" for candidate in result.field_candidates))
+        self.assertTrue(any(candidate.category == "personal_name" for candidate in result.field_candidates))
+        self.assertTrue(any(candidate.category == "identifier" for candidate in result.field_candidates))
         self.assertGreater(len(result.evidence_lines), 0)
         self.assertIsNotNone(result.metadata)
         self.assertIsNotNone(result.ocr_metadata)
-        self.assertEqual(result.ocr_metadata.engine_used, "native_text")
-        self.assertFalse(result.ocr_metadata.ocr_applied)
+        self.assertEqual(result.ocr_metadata.engine_used, "pp_chatocr_v4")
+        self.assertTrue(result.ocr_metadata.ocr_applied)
         self.assertIsNotNone(result.safety_report)
         self.assertEqual(result.metadata.page_count, 1)
 
@@ -490,6 +494,84 @@ def _write_text_pdf(path: Path, lines: list[str]) -> None:
         y += 20
     document.save(str(path))
     document.close()
+
+
+def _pp_chatocr_payload() -> dict:
+    return {
+        "extraction_method": "pp_chatocr_v4",
+        "ocr_performed": True,
+        "advanced_ocr_performed": True,
+        "page_count": 1,
+        "field_count": 2,
+        "warnings": [],
+        "ocr_metadata": {
+            "method_used": "pp_chatocr_v4",
+            "engine_used": "pp_chatocr_v4",
+            "engines_used": ["pp_chatocr_v4"],
+            "ocr_applied": True,
+            "advanced_ocr_performed": True,
+            "native_text_used": False,
+            "fallback_used": False,
+            "fallback_triggered": False,
+            "total_pages": 1,
+            "ocr_pages": [1],
+            "pages_ocrd": [1],
+            "avg_confidence": 0.95,
+            "average_confidence": 0.95,
+            "warning_codes": [],
+        },
+        "field_candidates": [
+            {
+                "field_id": "holder_name",
+                "label": "Holder Name",
+                "extracted_value": "Asha Rao",
+                "normalized_value": "Asha Rao",
+                "confidence": 0.96,
+                "page_number": 1,
+                "page": 1,
+                "bbox": [10, 10, 90, 25],
+                "polygon": [[10, 10], [90, 10], [90, 25], [10, 25]],
+                "coordinate_space": "pp_chatocr_image_pixels",
+                "source": "pp_chatocr_v4",
+                "category": "personal_name",
+                "extraction_method": "pp_chatocr_v4",
+                "ocr_performed": True,
+                "advanced_ocr_performed": True,
+                "requires_verification": True,
+                "bounding_box": {"page": 1, "page_number": 1, "x0": 10, "y0": 10, "x1": 90, "y1": 25, "bbox": [10, 10, 90, 25], "coordinate_space": "pp_chatocr_image_pixels"},
+                "bounding_boxes": [{"page": 1, "page_number": 1, "x0": 10, "y0": 10, "x1": 90, "y1": 25, "bbox": [10, 10, 90, 25], "coordinate_space": "pp_chatocr_image_pixels"}],
+            },
+            {
+                "field_id": "aadhaar_number",
+                "label": "Aadhaar Number",
+                "extracted_value": "1234 5678 9012",
+                "normalized_value": "1234 5678 9012",
+                "confidence": 0.94,
+                "page_number": 1,
+                "page": 1,
+                "bbox": [10, 30, 140, 45],
+                "polygon": [[10, 30], [140, 30], [140, 45], [10, 45]],
+                "coordinate_space": "pp_chatocr_image_pixels",
+                "source": "pp_chatocr_v4",
+                "category": "identifier",
+                "extraction_method": "pp_chatocr_v4",
+                "ocr_performed": True,
+                "advanced_ocr_performed": True,
+                "requires_verification": True,
+                "bounding_box": {"page": 1, "page_number": 1, "x0": 10, "y0": 30, "x1": 140, "y1": 45, "bbox": [10, 30, 140, 45], "coordinate_space": "pp_chatocr_image_pixels"},
+                "bounding_boxes": [{"page": 1, "page_number": 1, "x0": 10, "y0": 30, "x1": 140, "y1": 45, "bbox": [10, 30, 140, 45], "coordinate_space": "pp_chatocr_image_pixels"}],
+            },
+        ],
+        "evidence_lines": [
+            {"evidence_line_id": "ev-1", "text_preview": "Holder Name Asha Rao", "page_number": 1, "bbox": [10, 10, 90, 25], "source": "pp_chatocr_v4"}
+        ],
+        "spatial_text_map": [
+            {"text_preview": "Asha Rao", "page_number": 1, "bbox": [10, 10, 90, 25], "polygon": [[10, 10], [90, 10], [90, 25], [10, 25]], "confidence": 0.96}
+        ],
+        "layout_blocks": [],
+        "table_cells": [],
+        "engine_metadata": {"source": "pp_chatocr_v4"},
+    }
 
 
 if __name__ == "__main__":

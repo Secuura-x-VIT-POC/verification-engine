@@ -332,6 +332,13 @@ def _resolve_provider_operating_mode(*, requested_mode: str | None, live_provide
         PROVIDER_OPERATING_MODE_MANUAL_ONLY,
     }
     normalized_requested_mode = str(requested_mode or "").strip().upper()
+    if live_provider_enabled and normalized_requested_mode in {
+        "",
+        PROVIDER_OPERATING_MODE_LOCAL_MOCK,
+        PROVIDER_OPERATING_MODE_LIVE_DISABLED,
+        PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED,
+    }:
+        return PROVIDER_OPERATING_MODE_EXTERNAL_CONFIGURED
     if normalized_requested_mode in allowed:
         return normalized_requested_mode
     if live_provider_enabled:

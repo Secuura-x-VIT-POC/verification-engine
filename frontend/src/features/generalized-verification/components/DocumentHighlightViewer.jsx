@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import HighlightOverlay from "./HighlightOverlay";
 
@@ -46,24 +46,70 @@ export default function DocumentHighlightViewer({
           const pageHighlights = highlightItems.filter((item) => Number(item.page || 1) === pageNumber);
 
           return (
-            <div key={pageNumber} className="gv-document-page">
-              <div className="gv-document-page-meta">Page {pageNumber}</div>
-              <div className="gv-document-page-frame">
-                <Page
-                  pageNumber={pageNumber}
-                  renderAnnotationLayer={false}
-                  renderTextLayer={false}
-                />
-                <HighlightOverlay
-                  highlightItems={pageHighlights}
-                  activeCredentialId={activeCredentialId}
-                  onSelectCredential={onSelectCredential}
-                />
-              </div>
-            </div>
+            <PageFrame
+              key={pageNumber}
+              pageNumber={pageNumber}
+              pageHighlights={pageHighlights}
+              activeCredentialId={activeCredentialId}
+              onSelectCredential={onSelectCredential}
+            />
           );
         })}
       </Document>
+    </div>
+  );
+}
+
+function PageFrame({
+  pageNumber,
+  pageHighlights,
+  activeCredentialId,
+  onSelectCredential,
+}) {
+  const frameRef = useRef(null);
+  const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return undefined;
+    const update = () => {
+      const canvas = frame.querySelector("canvas");
+      const target = canvas || frame;
+      setPageSize({
+        width: target.clientWidth || frame.clientWidth || 0,
+        height: target.clientHeight || frame.clientHeight || 0,
+      });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div className="gv-document-page">
+      <div className="gv-document-page-meta">Page {pageNumber}</div>
+      <div className="gv-document-page-frame" ref={frameRef}>
+        <Page
+          pageNumber={pageNumber}
+          renderAnnotationLayer={false}
+          renderTextLayer={false}
+          onRenderSuccess={() => {
+            const frame = frameRef.current;
+            const canvas = frame?.querySelector("canvas");
+            setPageSize({
+              width: canvas?.clientWidth || frame?.clientWidth || 0,
+              height: canvas?.clientHeight || frame?.clientHeight || 0,
+            });
+          }}
+        />
+        <HighlightOverlay
+          highlightItems={pageHighlights}
+          activeCredentialId={activeCredentialId}
+          onSelectCredential={onSelectCredential}
+          pageSize={pageSize}
+        />
+      </div>
     </div>
   );
 }

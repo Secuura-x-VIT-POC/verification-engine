@@ -540,6 +540,47 @@ class GeneralizedVerificationRoutingTests(unittest.TestCase):
         self.assertEqual(supplementary_decision.planned_provider_key, "identity_http")
         self.assertIn("supplementary provider", supplementary_decision.route_reason.lower())
 
+    def test_rule_based_router_external_config_ignores_stale_local_mock_mode(self):
+        identity = ExtractedCredential(
+            credential_id="credential-identity",
+            label="Candidate Name",
+            category="identity",
+            value="Kanak Sharma",
+            normalized_value="Kanak Sharma",
+            requires_verification=True,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "VERIFIER_PROVIDER_OPERATING_MODE": "LOCAL_MOCK",
+            },
+            clear=True,
+        ):
+            local_router = RuleBasedVerifierRouter()
+            local_decision = local_router.route(identity)
+
+        with patch.dict(
+            os.environ,
+            {
+                "VERIFIER_PROVIDER_OPERATING_MODE": "LOCAL_MOCK",
+                "VERIFIER_EXTERNAL_PROVIDER_ENABLED": "1",
+                "VERIFIER_ENABLED_PROVIDERS": "entra_verified_id,identity_http,local_mock",
+                "VERIFIER_PROVIDER_ENTRA_VERIFIED_ID_ENABLED": "1",
+                "VERIFIER_PROVIDER_ENTRA_VERIFIED_ID_BASE_URL": "https://entra.example.com",
+                "VERIFIER_PROVIDER_IDENTITY_HTTP_ENABLED": "1",
+                "VERIFIER_PROVIDER_IDENTITY_HTTP_BASE_URL": "https://identity.example.com",
+            },
+            clear=True,
+        ):
+            entra_router = RuleBasedVerifierRouter()
+            entra_decision = entra_router.route(identity)
+
+        self.assertEqual(local_decision.planned_provider_key, "local_mock")
+        self.assertEqual(entra_decision.preferred_provider_key, "entra_verified_id")
+        self.assertEqual(entra_decision.planned_provider_key, "entra_verified_id")
+        self.assertEqual(entra_decision.planned_execution_mode, "LIVE_PROVIDER")
+
 
 class GeneralizedVerificationContractTests(unittest.TestCase):
     def test_contract_models_serialize_cleanly(self):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from .evidence_graph import build_evidence_graph_from_pp_chatocr
 from .models import (
     BoundingBox,
     EvidenceLine,
@@ -102,6 +103,7 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
         page_count=bundle["processing_result"].page_count,
         field_count=len(bundle["processing_result"].field_candidates),
         engine_metadata=bundle["engine_metadata"],
+        evidence_graph=bundle["evidence_graph"],
     )
 
 
@@ -111,6 +113,7 @@ def _run_extraction_bundle(session_id: str, pdf_path: str, llm_client=None, stra
     safety_report = validate_document_intake(str(path))
     document_type_hint = "generic"
     pp_payload = run_pp_chatocr_v4_extraction(str(path), document_type_hint=document_type_hint)
+    evidence_graph = build_evidence_graph_from_pp_chatocr(pp_payload)
     warnings = [
         ExtractionWarning(code=str(code).upper(), message=str(code))
         for code in list(pp_payload.get("warnings") or [])
@@ -152,6 +155,7 @@ def _run_extraction_bundle(session_id: str, pdf_path: str, llm_client=None, stra
         "layout_blocks": list(pp_payload.get("layout_blocks") or []),
         "table_cells": list(pp_payload.get("table_cells") or []),
         "engine_metadata": dict(pp_payload.get("engine_metadata") or {}),
+        "evidence_graph": evidence_graph,
     }
 
 

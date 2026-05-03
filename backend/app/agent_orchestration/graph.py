@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from ..trust.trust_engine import build_final_verdict, determine_field_decision
 from .policies import AgentRuntimePolicy, load_agent_runtime_policy, minimize_extraction_payload
 from .schemas import (
     BoundingBox,
+    DynamicDocumentSchema,
     FieldDecision,
     GeminiCredentialGroup,
     GeminiCredentialGroupCollection,
@@ -53,6 +55,7 @@ def build_generalized_verification_graph(
     graph = StateGraph(GeneralizedVerificationState)
     
     graph.add_node("load_extraction_state", lambda state: _load_extraction_state(state, runtime_policy))
+    graph.add_node("gemini_dynamic_schema_discovery", lambda state: _gemini_dynamic_schema_discovery(state, runtime_policy))
     graph.add_node("gemini_document_understanding", lambda state: _gemini_document_understanding(state, runtime_policy))
     graph.add_node("gemini_field_normalization", lambda state: _gemini_field_normalization(state, runtime_policy))
     graph.add_node("gemini_credential_grouping", lambda state: _gemini_credential_grouping(state, runtime_policy))
@@ -65,7 +68,8 @@ def build_generalized_verification_graph(
     graph.add_node("build_workspace_payload", _build_workspace_payload)
     
     graph.add_edge(START, "load_extraction_state")
-    graph.add_edge("load_extraction_state", "gemini_document_understanding")
+    graph.add_edge("load_extraction_state", "gemini_dynamic_schema_discovery")
+    graph.add_edge("gemini_dynamic_schema_discovery", "gemini_document_understanding")
     graph.add_edge("gemini_document_understanding", "gemini_field_normalization")
     graph.add_edge("gemini_field_normalization", "gemini_credential_grouping")
     graph.add_edge("gemini_credential_grouping", "route_recommendation")
@@ -126,6 +130,73 @@ def _gemini_document_understanding(
     )
     result["document_profile"] = result.get("document_understanding") or fallback.model_dump(mode="json")
     return result
+
+
+def _gemini_dynamic_schema_discovery(
+    state: GeneralizedVerificationState,
+    runtime_policy: AgentRuntimePolicy,
+) -> dict[str, Any]:
+    extraction_payload = copy.deepcopy(state.get("extraction_payload") or {})
+    view = extraction_payload.get("view") if isinstance(extraction_payload.get("view"), dict) else {}
+    evidence_graph = view.get("evidence_graph") or extraction_payload.get("evidence_graph") or {}
+    if not isinstance(evidence_graph, dict) or not evidence_graph.get("evidence"):
+        return {
+            "dynamic_schema": DynamicDocumentSchema(warnings=["NO_PP_EVIDENCE"]).model_dump(mode="json"),
+            "dynamic_claims": [],
+            "audit_log": [_audit_item("gemini_dynamic_schema_discovery", "No PP evidence graph was available.", level="WARNING")],
+        }
+
+    schema_payload: dict[str, Any]
+    warnings: list[str] = []
+    if _gemini_enabled(runtime_policy):
+        try:
+            llm = _build_structured_gemini_llm(
+                runtime_policy=runtime_policy,
+                schema=DynamicDocumentSchema,
+                stage_name="gemini_dynamic_schema_discovery",
+            )
+            response = llm.invoke(_build_dynamic_schema_prompt(evidence_graph))
+            schema_payload = _validated_payload(DynamicDocumentSchema, response)
+        except Exception as exc:
+            LOGGER.warning(
+                "Gemini dynamic schema inference failed",
+                extra={"stage_name": "gemini_dynamic_schema_discovery", "exception_class": exc.__class__.__name__},
+            )
+            schema_payload = DynamicDocumentSchema(warnings=["SCHEMA_INFERENCE_FAILED"]).model_dump(mode="json")
+            warnings.append("SCHEMA_INFERENCE_FAILED")
+    else:
+        schema_payload = DynamicDocumentSchema(warnings=["SCHEMA_INFERENCE_FAILED"]).model_dump(mode="json")
+        warnings.append("SCHEMA_INFERENCE_FAILED")
+
+    grounded_claims = _ground_dynamic_claims(schema_payload, evidence_graph)
+    if not grounded_claims and evidence_graph.get("evidence") and "SCHEMA_INFERENCE_FAILED" not in warnings:
+        warnings.append("NO_DYNAMIC_CLAIMS_EXTRACTED")
+        schema_payload.setdefault("warnings", []).append("NO_DYNAMIC_CLAIMS_EXTRACTED")
+
+    updated_payload = _payload_with_dynamic_claims(extraction_payload, schema_payload, grounded_claims, warnings)
+    sanitized = copy.deepcopy(updated_payload)
+    if isinstance(sanitized.get("view"), dict):
+        sanitized["view"] = dict(sanitized["view"])
+        sanitized["view"].pop("raw_text", None)
+    return {
+        "dynamic_schema": schema_payload,
+        "dynamic_claims": grounded_claims,
+        "extraction_payload": updated_payload,
+        "sanitized_extraction": sanitized,
+        "sanitized_workspace_fragment": minimize_extraction_payload(
+            sanitized,
+            max_fields=runtime_policy.max_fields_for_provider,
+            max_value_chars=runtime_policy.max_value_chars,
+        ) or {},
+        "gemini_fallback_used": bool(warnings),
+        "audit_log": [
+            _audit_item(
+                "gemini_dynamic_schema_discovery",
+                f"Dynamic schema produced {len(grounded_claims)} claim(s).",
+                level="WARNING" if warnings else "INFO",
+            )
+        ],
+    }
 
 def _gemini_field_normalization(
     state: GeneralizedVerificationState,
@@ -376,6 +447,7 @@ def _gemini_confidence_fusion(state: GeneralizedVerificationState) -> dict[str, 
                 unsafe_or_malformed=True,
             )
             decision.bounding_boxes = list(field.bounding_boxes)
+            _attach_dynamic_decision_metadata(decision, extraction_payload, field.field_id)
             field_decisions.append(decision)
     else:
         canonical = build_trust_findings(
@@ -397,6 +469,21 @@ def _policy_verdict(state: GeneralizedVerificationState) -> dict[str, Any]:
     document_understanding = GeminiDocumentUnderstanding.model_validate(state.get("document_understanding") or {})
     field_decisions = [FieldDecision.model_validate(item) for item in list(state.get("field_decisions") or [])]
     verifier_results = [VerifierResult.model_validate(item) for item in list(state.get("verifier_results") or [])]
+    dynamic_schema = state.get("dynamic_schema") if isinstance(state.get("dynamic_schema"), dict) else {}
+    schema_warnings = set(dynamic_schema.get("warnings") or [])
+    if schema_warnings.intersection({"SCHEMA_INFERENCE_FAILED", "NO_DYNAMIC_CLAIMS_EXTRACTED"}) and not field_decisions:
+        warning = "SCHEMA_INFERENCE_FAILED" if "SCHEMA_INFERENCE_FAILED" in schema_warnings else "NO_DYNAMIC_CLAIMS_EXTRACTED"
+        verdict = FinalVerdict(
+            outcome="AMBER",
+            reason_codes=[warning, "MANUAL_REVIEW_REQUIRED"],
+            connector_ids=[],
+            explanation="Dynamic schema inference did not produce verifier-ready claims; manual review is required.",
+            risk_level="MEDIUM",
+        )
+        return {
+            "final_verdict": verdict.model_dump(mode="json"),
+            "audit_log": [_audit_item("policy_verdict", "Manual-review verdict applied for schema inference failure.", level="WARNING")],
+        }
     
     verdict = build_final_verdict(
         field_decisions=field_decisions,
@@ -415,12 +502,13 @@ def _claim_from_normalized_field(
     field: GeminiNormalizedField,
     extraction_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    dynamic_claim = _dynamic_claim_by_field_id(extraction_payload).get(field.field_id) or {}
     return {
         "claim_id": field.field_id,
         "credential_id": field.field_id,
         "field_id": field.field_id,
         "label": field.label,
-        "claim_type": _claim_type_from_field(field),
+        "claim_type": _claim_type_from_dynamic_claim(dynamic_claim) or _claim_type_from_field(field),
         "confidence": _resolve_extraction_confidence(extraction_payload, field.field_id, field.extracted_value),
         "ai_confidence": field.ai_confidence,
         "requires_verification": field.mandatory,
@@ -484,6 +572,7 @@ def _field_decision_from_claim_finding(
         manual_review_required=finding.manual_review_required,
         verifier_refs=list(finding.verifier_refs),
     )
+    _attach_dynamic_decision_metadata(decision, extraction_payload, decision.field_id)
     return decision
 
 def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, Any]:
@@ -808,6 +897,238 @@ def _build_document_understanding_prompt(
         f"{raw_text_block}"
     )
 
+
+def _build_dynamic_schema_prompt(evidence_graph: dict[str, Any]) -> str:
+    minimized = dict(evidence_graph or {})
+    minimized["evidence"] = list(minimized.get("evidence") or [])[:400]
+    return (
+        "Infer dynamic document schema and claims from PP-ChatOCR visual evidence only. "
+        "Return strict JSON only and cite evidence_ids for every claim. "
+        "Do not use hardcoded document templates or fixed admit-card/CET/marksheet/certificate fields. "
+        "Allowed data_type values: person_name, organization, date, identifier, amount, address, status, score, category, free_text, unknown. "
+        "Allowed importance values: critical, important, optional. "
+        "Allowed verification_intent values: identity, academic, employment, financial, address, date_validity, issuer_authenticity, generic_record, manual_review.\n"
+        f"PP evidence graph:\n{json.dumps(minimized, default=str)}"
+    )
+
+
+def _payload_with_dynamic_claims(
+    extraction_payload: dict[str, Any],
+    schema_payload: dict[str, Any],
+    grounded_claims: list[dict[str, Any]],
+    warnings: list[str],
+) -> dict[str, Any]:
+    payload = copy.deepcopy(extraction_payload)
+    view = dict(payload.get("view") or {})
+    existing_warnings = list(view.get("warnings") or [])
+    view.update(
+        {
+            "document_type": schema_payload.get("document_type") or view.get("document_type") or "unknown",
+            "dynamic_schema": schema_payload,
+            "dynamic_claims": grounded_claims,
+            "field_details": grounded_claims,
+            "fields": {str(claim.get("field_id") or claim.get("claim_id")): claim.get("extracted_value") or "" for claim in grounded_claims},
+            "warnings": list(dict.fromkeys([*existing_warnings, *warnings, *list(schema_payload.get("warnings") or [])])),
+        }
+    )
+    payload["view"] = view
+    payload["dynamic_schema"] = schema_payload
+    return payload
+
+
+def _ground_dynamic_claims(schema_payload: dict[str, Any], evidence_graph: dict[str, Any]) -> list[dict[str, Any]]:
+    evidence_items = [item for item in list(evidence_graph.get("evidence") or []) if isinstance(item, dict)]
+    evidence_by_id = {str(item.get("evidence_id")): item for item in evidence_items if item.get("evidence_id")}
+    grounded: list[dict[str, Any]] = []
+    for index, raw_claim in enumerate(list(schema_payload.get("claims") or []), start=1):
+        if not isinstance(raw_claim, dict):
+            continue
+        claim = dict(raw_claim)
+        claim_id = str(claim.get("claim_id") or f"claim-{index}")
+        value = safe_normalized_string(claim.get("value") or claim.get("normalized_value"))
+        evidence_ids = [str(item) for item in list(claim.get("evidence_ids") or []) if str(item) in evidence_by_id]
+        reason_codes = list(claim.get("reason_codes") or [])
+        if not evidence_ids and value:
+            evidence_ids = _match_evidence_ids_for_value(value, evidence_items)
+        if not evidence_ids:
+            grounding_status = "unresolved"
+            reason_codes = list(dict.fromkeys([*reason_codes, "GROUNDING_UNRESOLVED"]))
+            boxes: list[BoundingBox] = []
+            bbox = None
+            polygon = None
+            coordinate_space = None
+            source_width = None
+            source_height = None
+            page_number = int(claim.get("page_number") or 1)
+            grounding_confidence = 0.0
+        else:
+            matched = [evidence_by_id[item] for item in evidence_ids if item in evidence_by_id]
+            grounding_status = "grounded"
+            merged = _merge_evidence_geometry(matched)
+            bbox = merged.get("bbox")
+            polygon = merged.get("polygon")
+            coordinate_space = merged.get("coordinate_space")
+            source_width = merged.get("source_width")
+            source_height = merged.get("source_height")
+            page_number = int(claim.get("page_number") or merged.get("page_number") or 1)
+            boxes = [_box_from_dynamic_geometry(page_number, bbox, polygon, coordinate_space, merged.get("confidence"))] if bbox else []
+            grounding_confidence = 1.0 if boxes else 0.0
+
+        field_id = claim_id
+        normalized_value = safe_normalized_string(claim.get("normalized_value") or value)
+        grounded.append(
+            {
+                "claim_id": claim_id,
+                "field_id": field_id,
+                "key": field_id,
+                "label": safe_normalized_string(claim.get("label")) or field_id,
+                "value": value,
+                "extracted_value": value,
+                "masked_value": _mask_dynamic_value(value),
+                "normalized_value": normalized_value,
+                "confidence": float(claim.get("confidence") or 0.0),
+                "ai_confidence": float(claim.get("confidence") or 0.0),
+                "grounding_confidence": grounding_confidence,
+                "data_type": claim.get("data_type") or "unknown",
+                "category": claim.get("data_type") or "unknown",
+                "importance": claim.get("importance") or "important",
+                "requires_verification": bool(claim.get("requires_verification", True)),
+                "verification_intent": claim.get("verification_intent") or "manual_review",
+                "verification_reason": claim.get("reason") or "",
+                "reason": claim.get("reason") or "",
+                "reason_codes": reason_codes,
+                "evidence_ids": evidence_ids,
+                "evidence_ref": evidence_ids[0] if evidence_ids else None,
+                "bbox": bbox,
+                "polygon": polygon,
+                "page": page_number,
+                "page_number": page_number,
+                "coordinate_space": coordinate_space,
+                "source_width": source_width,
+                "source_height": source_height,
+                "grounding_status": grounding_status,
+                "bounding_box": boxes[0].model_dump(mode="json") if boxes else None,
+                "bounding_boxes": [box.model_dump(mode="json") for box in boxes],
+                "extraction_method": "pp_chatocr_v4",
+                "source": "pp_chatocr_v4",
+            }
+        )
+    return grounded
+
+
+def _match_evidence_ids_for_value(value: str, evidence_items: list[dict[str, Any]]) -> list[str]:
+    wanted = _norm_text(value)
+    if not wanted:
+        return []
+    exact = [str(item.get("evidence_id")) for item in evidence_items if _norm_text(item.get("text_preview")) == wanted and item.get("evidence_id")]
+    if exact:
+        return exact[:3]
+    partial = [
+        str(item.get("evidence_id"))
+        for item in evidence_items
+        if item.get("evidence_id") and wanted and (wanted in _norm_text(item.get("text_preview")) or _norm_text(item.get("text_preview")) in wanted)
+    ]
+    return partial[:3]
+
+
+def _merge_evidence_geometry(items: list[dict[str, Any]]) -> dict[str, Any]:
+    boxes = [item.get("bbox") for item in items if isinstance(item.get("bbox"), list) and len(item.get("bbox")) >= 4]
+    polygons = [point for item in items for point in list(item.get("polygon") or []) if isinstance(point, list)]
+    bbox = None
+    if polygons:
+        bbox = [
+            round(min(point[0] for point in polygons), 2),
+            round(min(point[1] for point in polygons), 2),
+            round(max(point[0] for point in polygons), 2),
+            round(max(point[1] for point in polygons), 2),
+        ]
+    elif boxes:
+        bbox = [
+            round(min(box[0] for box in boxes), 2),
+            round(min(box[1] for box in boxes), 2),
+            round(max(box[2] for box in boxes), 2),
+            round(max(box[3] for box in boxes), 2),
+        ]
+    return {
+        "bbox": bbox,
+        "polygon": polygons or None,
+        "page_number": items[0].get("page_number") if items else 1,
+        "coordinate_space": (items[0].get("coordinate_space") if items else None) or "pp_chatocr_image_pixels",
+        "source_width": next((item.get("source_width") for item in items if item.get("source_width")), None),
+        "source_height": next((item.get("source_height") for item in items if item.get("source_height")), None),
+        "confidence": _average_dynamic_confidence(items),
+    }
+
+
+def _attach_dynamic_decision_metadata(decision: FieldDecision, extraction_payload: dict[str, Any], field_id: str) -> None:
+    claim = _dynamic_claim_by_field_id(extraction_payload).get(str(field_id or ""))
+    if not claim:
+        return
+    decision.masked_value = claim.get("masked_value")
+    decision.data_type = claim.get("data_type") or decision.data_type
+    decision.importance = claim.get("importance") or decision.importance
+    decision.verification_intent = claim.get("verification_intent") or decision.verification_intent
+    decision.evidence_ids = list(claim.get("evidence_ids") or [])
+    decision.bbox = claim.get("bbox")
+    decision.polygon = claim.get("polygon")
+    decision.page_number = claim.get("page_number") or claim.get("page")
+    decision.coordinate_space = claim.get("coordinate_space")
+    decision.source_width = claim.get("source_width")
+    decision.source_height = claim.get("source_height")
+    decision.grounding_status = claim.get("grounding_status") or decision.grounding_status
+    decision.reason_codes = list(dict.fromkeys([*decision.reason_codes, *list(claim.get("reason_codes") or [])]))
+
+
+def _dynamic_claim_by_field_id(extraction_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    claims = (extraction_payload.get("view") or {}).get("dynamic_claims") or []
+    return {
+        str(claim.get("field_id") or claim.get("claim_id")): claim
+        for claim in list(claims)
+        if isinstance(claim, dict)
+    }
+
+
+def _box_from_dynamic_geometry(page_number: int, bbox: list[float] | None, polygon: list[list[float]] | None, coordinate_space: str | None, confidence: float | None) -> BoundingBox:
+    x0, y0, x1, y1 = bbox or [0, 0, 0, 0]
+    return BoundingBox(
+        page=page_number,
+        page_number=page_number,
+        x0=float(x0),
+        y0=float(y0),
+        x1=float(x1),
+        y1=float(y1),
+        bbox=[float(x0), float(y0), float(x1), float(y1)],
+        polygon=polygon,
+        coordinate_space=coordinate_space,
+        source="pp_chatocr_v4",
+        confidence=confidence,
+    )
+
+
+def _average_dynamic_confidence(items: list[dict[str, Any]]) -> float | None:
+    values = []
+    for item in items:
+        try:
+            values.append(float(item.get("confidence")))
+        except (TypeError, ValueError):
+            pass
+    return round(sum(values) / len(values), 4) if values else None
+
+
+def _mask_dynamic_value(value: str) -> str:
+    if not value:
+        return ""
+    digits = re.sub(r"\D", "", value)
+    if len(digits) >= 4:
+        return f"****{digits[-4:]}"
+    if len(value) <= 4:
+        return "***"
+    return f"{value[:2]}***{value[-2:]}"
+
+
+def _norm_text(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
 def _build_field_normalization_prompt(
     *,
     extraction_payload: dict[str, Any],
@@ -878,6 +1199,13 @@ def _fallback_document_understanding(extraction_payload: dict[str, Any]) -> Gemi
 
 def _claims_from_extraction_payload(extraction_payload: dict[str, Any]) -> list[dict[str, Any]]:
     view = extraction_payload.get("view") or {}
+    dynamic_claims = [
+        dict(item)
+        for item in list(view.get("dynamic_claims") or [])
+        if isinstance(item, dict)
+    ]
+    if dynamic_claims:
+        return dynamic_claims
     claims = [
         dict(item)
         for item in list(view.get("field_details") or [])
@@ -928,6 +1256,11 @@ def _deterministic_normalized_fields(
         for detail in list(view.get("field_details") or [])
         if isinstance(detail, dict)
     }
+    trust_field_by_name = {
+        str(field.get("name") or ""): field
+        for field in list(trust_input.get("fields") or [])
+        if isinstance(field, dict)
+    }
     semantic_by_field = {
         str(claim.get("field_id") or claim.get("claim_id") or ""): claim
         for claim in list(semantic_claims or [])
@@ -938,12 +1271,14 @@ def _deterministic_normalized_fields(
         for index, claim in enumerate(source_claims, start=1):
             field_id = str(claim.get("field_id") or claim.get("key") or claim.get("claim_id") or f"field-{index}")
             semantic_claim = semantic_by_field.get(field_id, {})
+            trust_field = trust_field_by_name.get(field_id, {})
             value = (
                 claim.get("extracted_value")
                 or claim.get("value")
                 or claim.get("normalized_value")
                 or claim.get("masked_value")
                 or claim.get("value_preview")
+                or trust_field.get("value")
                 or ""
             )
             boxes = _boxes_from_claim(claim)
@@ -953,9 +1288,9 @@ def _deterministic_normalized_fields(
                     label=str(semantic_claim.get("canonical_label") or claim.get("label") or field_id.replace("_", " ").title()),
                     extracted_value=safe_normalized_string(value),
                     normalized_value=safe_normalized_string(semantic_claim.get("normalized_value") or claim.get("normalized_value") or value),
-                    ai_confidence=float(claim.get("confidence") or 0.0),
+                    ai_confidence=float(claim.get("confidence") or trust_field.get("confidence") or 0.0),
                     grounding_confidence=1.0 if boxes else 0.0,
-                    mandatory=bool(claim.get("requires_verification", True)),
+                    mandatory=bool(claim.get("requires_verification", trust_field.get("is_mandatory", True))),
                     verifier_hint=None,
                     bounding_boxes=boxes,
                 )
@@ -1050,10 +1385,11 @@ def _deterministic_credential_groups(
     extraction_payload: dict[str, Any],
     normalized_fields: list[GeminiNormalizedField],
 ) -> list[GeminiCredentialGroup]:
-    del extraction_payload
+    dynamic_by_field = _dynamic_claim_by_field_id(extraction_payload)
     fields_by_claim_type: dict[str, list[GeminiNormalizedField]] = {}
     for field in normalized_fields:
-        fields_by_claim_type.setdefault(_claim_type_from_field(field), []).append(field)
+        dynamic_claim = dynamic_by_field.get(field.field_id) or {}
+        fields_by_claim_type.setdefault(_claim_type_from_dynamic_claim(dynamic_claim) or _claim_type_from_field(field), []).append(field)
 
     groups: list[GeminiCredentialGroup] = []
     for index, (claim_type, fields) in enumerate(fields_by_claim_type.items(), start=1):
@@ -1145,6 +1481,38 @@ def _provider_candidates_for_claim_type(claim_type: str, assurance_required: str
         pass
 
     candidates: list[dict[str, Any]] = []
+    if normalized in {"identity", "identity_document", "person_name"}:
+        candidates.append(
+            {
+                "provider_id": "identity_db",
+                "provider_label": "Identity Verifier",
+                "provider_mode": "architectural_candidate",
+            }
+        )
+    if normalized in {"academic", "academic_degree", "academic_credential", "identifier_academic", "score_academic"}:
+        candidates.append(
+            {
+                "provider_id": "academic_registry",
+                "provider_label": "Academic Registry",
+                "provider_mode": "architectural_candidate",
+            }
+        )
+    if normalized in {"issuer_authenticity", "organization_issuer_authenticity"}:
+        candidates.append(
+            {
+                "provider_id": "issuer_verifier",
+                "provider_label": "Issuer Verifier",
+                "provider_mode": "architectural_candidate",
+            }
+        )
+    if normalized in {"date_validity", "date_date_validity"}:
+        candidates.append(
+            {
+                "provider_id": "date_validity",
+                "provider_label": "Date Validity Check",
+                "provider_mode": "local_rule",
+            }
+        )
     if normalized in {"identity", "identity_document", "certificate", "certificate_document", "academic", "academic_degree", "academic_credential"}:
         candidates.append(
             {
@@ -1169,6 +1537,20 @@ def _provider_candidates_for_claim_type(claim_type: str, assurance_required: str
             }
         )
     return candidates
+
+
+def _claim_type_from_dynamic_claim(claim: dict[str, Any]) -> str | None:
+    if not claim:
+        return None
+    intent = str(claim.get("verification_intent") or "").lower()
+    data_type = str(claim.get("data_type") or "").lower()
+    if intent in {"identity", "academic", "employment", "financial", "address", "date_validity", "issuer_authenticity", "manual_review"}:
+        if intent in {"date_validity", "issuer_authenticity"} and data_type:
+            return f"{data_type}_{intent}"
+        return intent
+    if data_type:
+        return data_type
+    return None
 
 
 def _claim_type_from_field(field: GeminiNormalizedField) -> str:

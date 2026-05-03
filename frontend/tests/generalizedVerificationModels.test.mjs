@@ -325,6 +325,52 @@ export const checks = [
     },
   },
   {
+    name: "buildHighlightItems scales PP image-pixel boxes with source dimensions",
+    run() {
+      const credentials = normalizeCredentialCollection(
+        {
+          session_id: "session-pp",
+          credentials: [
+            {
+              credential_id: "dynamic-claim",
+              label: "Dynamic Claim",
+              category: "identifier",
+              value: "PX-991",
+              requires_verification: true,
+              bounding_box: {
+                page: 1,
+                x0: 100,
+                y0: 200,
+                x1: 300,
+                y1: 260,
+                bbox: [100, 200, 300, 260],
+                coordinate_space: "pp_chatocr_image_pixels",
+                source_width: 1000,
+                source_height: 2000,
+                source: "pp_chatocr_v4",
+              },
+            },
+          ],
+        },
+        "session-pp"
+      );
+      const highlights = buildHighlightItems(
+        credentials,
+        createEmptyCredentialAuditCollection("session-pp"),
+        createEmptyVerificationPlan("session-pp")
+      );
+
+      assert.equal(highlights.length, 1);
+      assert.equal(highlights[0].coordinateSpace, "pp_chatocr_image_pixels");
+      assert.equal(highlights[0].sourceWidth, 1000);
+      assert.equal(highlights[0].sourceHeight, 2000);
+      assert.equal(highlights[0].relativeBox.left, 10);
+      assert.equal(highlights[0].relativeBox.top, 10);
+      assert.equal(highlights[0].relativeBox.width, 20);
+      assert.equal(highlights[0].relativeBox.height, 3);
+    },
+  },
+  {
     name: "buildAuditDetailViewModels falls back safely when audit evidence is missing",
     run() {
       const credentials = normalizeCredentialCollection(

@@ -1,9 +1,8 @@
 FROM python:3.11-slim-bookworm
 
-# Install system dependencies and local Tesseract for OCR fallback
-# We use 'libgl1' instead of 'libgl1-mesa-glx' for modern Debian compatibility
+# Install system dependencies for PP-ChatOCR image/PDF processing.
+# Text and boxes come only from PP-ChatOCR; PyMuPDF is used only for PDF rasterization.
 RUN apt-get update && apt-get install -y \
-    tesseract-ocr \
     libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*

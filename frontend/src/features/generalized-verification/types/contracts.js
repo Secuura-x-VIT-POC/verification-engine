@@ -1,4 +1,4 @@
-export const DOCUMENT_COORDINATE_BASE = Object.freeze({
+export const LEGACY_DOCUMENT_COORDINATE_BASE = Object.freeze({
   width: 600,
   height: 800,
 });

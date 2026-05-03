@@ -121,6 +121,23 @@ def minimize_extraction_payload(
             )
 
     if not fields:
+        for index, claim in enumerate(list(view_payload.get("dynamic_claims") or [])[:max_fields]):
+            if not isinstance(claim, dict):
+                continue
+            fields.append(
+                {
+                    "key": str(claim.get("field_id") or claim.get("claim_id") or ""),
+                    "label": str(claim.get("label") or ""),
+                    "value": _truncate_text(claim.get("masked_value") or claim.get("extracted_value") or claim.get("value"), max_value_chars),
+                    "confidence": claim.get("confidence"),
+                    "page": claim.get("page") or claim.get("page_number"),
+                    "category": claim.get("data_type") or claim.get("category"),
+                    "verification_intent": claim.get("verification_intent"),
+                    "evidence_ids": list(claim.get("evidence_ids") or []),
+                }
+            )
+
+    if not fields:
         for index, candidate in enumerate(list(view_payload.get("field_candidates") or [])[:max_fields]):
             if not isinstance(candidate, dict):
                 continue

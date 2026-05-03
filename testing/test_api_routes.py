@@ -117,6 +117,18 @@ class WorkflowApiRouteTests(unittest.TestCase):
         self.assertTrue("processing" in response.json())
         self.assertIsNone(response.json()["outcome"])
 
+    def test_legacy_verify_route_returns_410_with_canonical_route(self):
+        self._create_session(
+            session_id="session-legacy-verify",
+            status=SessionState.UPLOADED_PENDING_REVIEW,
+            user_id="user-1",
+        )
+
+        response = self.client.post("/session/session-legacy-verify/verify")
+
+        self.assertEqual(response.status_code, 410)
+        self.assertIn("/api/v1/verification-sessions/session-legacy-verify/run", response.json()["detail"])
+
     def test_invalid_session_returns_404(self):
         response = self.client.get("/session/missing-session/status")
         self.assertEqual(response.status_code, 404)

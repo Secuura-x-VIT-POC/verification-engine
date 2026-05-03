@@ -87,7 +87,20 @@ export function normalizeBoundingBox(payload, fallbackPage = null) {
     y0: asNumber(box.y0),
     x1: asNumber(box.x1),
     y1: asNumber(box.y1),
+    bbox: Array.isArray(box.bbox) ? box.bbox.map(asNumber) : null,
+    polygon: Array.isArray(box.polygon) ? box.polygon : null,
+    coordinate_space: asNullableString(box.coordinate_space || box.coordinateSpace),
+    source_width: asNumber(box.source_width ?? box.sourceWidth),
+    source_height: asNumber(box.source_height ?? box.sourceHeight),
+    source: asNullableString(box.source),
   };
+
+  if (normalized.bbox && normalized.bbox.length >= 4) {
+    normalized.x0 = normalized.bbox[0];
+    normalized.y0 = normalized.bbox[1];
+    normalized.x1 = normalized.bbox[2];
+    normalized.y1 = normalized.bbox[3];
+  }
 
   if ([normalized.x0, normalized.y0, normalized.x1, normalized.y1].every((value) => value === null)) {
     return null;

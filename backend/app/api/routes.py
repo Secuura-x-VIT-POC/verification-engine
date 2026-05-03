@@ -41,16 +41,16 @@ from ..verification_domain.contracts import (
     SessionCredentialCollection,
     SessionVerificationPlan,
 )
-from ..agent_orchestration.graph import build_generalized_verification_graph
+from ..agent_orchestration import graph as orchestration_graph
 from ..agent_orchestration.sanitization import sanitize_workspace_payload
 from ..agent_orchestration.schemas import WorkspacePayload
-from ..workflow.runtime import extract_document_payload
 from ..workflow.runtime import get_result_response, get_status_response, serialize_session
 from ..workflow.service import start_verification
 
 
 router = APIRouter(tags=["workflow"])
 LOGGER = logging.getLogger(__name__)
+build_generalized_verification_graph = orchestration_graph.build_generalized_verification_graph
 
 
 ReviewDecisionValue = Literal["APPROVE", "REJECT", "NEEDS_MANUAL_REVIEW"]
@@ -107,10 +107,10 @@ def _get_session_extraction_payload(session: SessionModel) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Document not found on disk")
 
     try:
-        return extract_document_payload(file_path)
+        return orchestration_graph.extract_document_payload(file_path)
     except Exception as exc:
         LOGGER.exception("WORKSPACE_EXTRACTION_FAILED session_id=%s", session.id)
-        raise HTTPException(status_code=500, detail="Extraction payload could not be loaded") from exc
+        raise HTTPException(status_code=500, detail=f"Extraction payload could not be loaded: {str(exc)[:300]}") from exc
 
 
 def _build_workspace_payload(session: SessionModel) -> WorkspacePayload:
@@ -178,30 +178,11 @@ def verify_session_route(
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
 ) -> dict:
-    session = _get_owned_session(db, session_id, user)
-    if not session.file_path:
-        raise HTTPException(status_code=409, detail="Upload a PDF before verification")
-    if session.status in {SessionState.PENDING_CLEANUP, SessionState.PURGE_COMPLETE, SessionState.FAILED_PURGED}:
-        raise HTTPException(status_code=409, detail="Session is already closed")
-
-    if session.status not in {
-        SessionState.UPLOADED_PENDING_REVIEW,
-        SessionState.FAILED_RETRIABLE,
-    }:
-        raise HTTPException(status_code=409, detail="Session is not ready for verification")
-
-    start_result = start_verification(
-        db,
-        session.id,
-        worker_id=user,
+    del db, user
+    raise HTTPException(
+        status_code=410,
+        detail=f"Legacy verification route is retired. Use POST /api/v1/verification-sessions/{session_id}/run.",
     )
-    if start_result == "NO_OP":
-        raise HTTPException(status_code=409, detail="Verification is already in progress")
-    if start_result == "FAILED":
-        raise HTTPException(status_code=500, detail="Verification could not be started")
-
-    db.refresh(session)
-    return serialize_session(db, session)
 
 
 @router.get("/session/{session_id}/status")
@@ -459,6 +440,8 @@ def run_generalized_verification_route(
         workspace = _completed_review_workspace(_build_workspace_payload(session))
         _persist_workspace_contract(db, session, workspace)
         return workspace
+    except HTTPException:
+        raise
     except Exception as exc:
         LOGGER.exception("GENERALIZED_VERIFICATION_FAILED session_id=%s", session.id)
         raise HTTPException(status_code=500, detail="Generalized verification failed") from exc

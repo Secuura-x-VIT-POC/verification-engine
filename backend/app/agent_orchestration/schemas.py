@@ -74,6 +74,73 @@ class GeminiNormalizedFieldCollection(BaseModel):
     fields: list[GeminiNormalizedField] = Field(default_factory=list)
 
 
+DynamicClaimDataType = Literal[
+    "person_name",
+    "organization",
+    "date",
+    "identifier",
+    "amount",
+    "address",
+    "status",
+    "score",
+    "category",
+    "free_text",
+    "unknown",
+]
+DynamicClaimImportance = Literal["critical", "important", "optional"]
+DynamicVerificationIntent = Literal[
+    "identity",
+    "academic",
+    "employment",
+    "financial",
+    "address",
+    "date_validity",
+    "issuer_authenticity",
+    "generic_record",
+    "manual_review",
+]
+
+
+class DynamicMissingClaim(BaseModel):
+    label: str
+    reason: str
+    suggested_review_action: Literal["manual_review"] = "manual_review"
+
+
+class DynamicDocumentClaim(BaseModel):
+    claim_id: str
+    label: str
+    value: str | None = None
+    normalized_value: str | None = None
+    data_type: DynamicClaimDataType = "unknown"
+    importance: DynamicClaimImportance = "important"
+    requires_verification: bool = True
+    verification_intent: DynamicVerificationIntent = "manual_review"
+    evidence_ids: list[str] = Field(default_factory=list)
+    page_number: int = 1
+    confidence: float = 0.0
+    reason: str = ""
+
+    _confidence_fields = field_validator("confidence", mode="before")(
+        lambda cls, value: _clamp(value or 0.0)
+    )
+
+
+class DynamicDocumentSchema(BaseModel):
+    document_type: str = "unknown"
+    document_subtype: str | None = None
+    issuing_entity: str | None = None
+    document_purpose: str = "manual_review"
+    overall_confidence: float = 0.0
+    claims: list[DynamicDocumentClaim] = Field(default_factory=list)
+    missing_or_ambiguous_claims: list[DynamicMissingClaim] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    _confidence_fields = field_validator("overall_confidence", mode="before")(
+        lambda cls, value: _clamp(value or 0.0)
+    )
+
+
 class SemanticNormalizedClaim(BaseModel):
     claim_id: str
     field_id: str | None = None
@@ -195,6 +262,18 @@ class FieldDecision(BaseModel):
     bounding_boxes: list[BoundingBox] = Field(default_factory=list)
     manual_review_required: bool = False
     verifier_refs: list[str] = Field(default_factory=list)
+    masked_value: str | None = None
+    data_type: DynamicClaimDataType = "unknown"
+    importance: DynamicClaimImportance = "important"
+    verification_intent: DynamicVerificationIntent = "manual_review"
+    evidence_ids: list[str] = Field(default_factory=list)
+    bbox: list[float] | None = None
+    polygon: list[list[float]] | None = None
+    page_number: int | None = None
+    coordinate_space: str | None = None
+    source_width: float | None = None
+    source_height: float | None = None
+    grounding_status: Literal["grounded", "unresolved"] = "unresolved"
 
     _confidence_fields = field_validator(
         "ai_confidence",

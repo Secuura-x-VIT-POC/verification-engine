@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import inspect
 import importlib.metadata
+import io
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -13,32 +17,15 @@ COORDINATE_SPACE = "pp_chatocr_image_pixels"
 PIPELINE_NAME = "PP-ChatOCRv4-doc"
 
 DEFAULT_KEY_LIST = [
-    "Candidate Name",
-    "Student Name",
-    "Holder Name",
-    "Full Name",
-    "Issuer",
-    "Institution",
-    "Organization",
-    "Authority",
-    "Credential",
-    "Credential Type",
-    "Certificate",
-    "Degree",
-    "Document ID",
-    "Registration Number",
-    "Roll Number",
-    "License Number",
-    "Issue Date",
-    "Expiry Date",
-    "Date of Birth",
-    "Date",
-    "Grade",
-    "Result",
-    "CGPA",
-    "Score",
-    "Email",
-    "Phone",
+    "all visible key-value pairs",
+    "all named entities and labels",
+    "all document identifiers",
+    "all dates",
+    "all monetary amounts",
+    "all organizations",
+    "all people",
+    "all addresses or locations",
+    "all eligibility/status/result fields",
 ]
 
 UNRESOLVED_VALUES = {"", "no", "none", "null", "unknown", "not found", "n/a", "na", "未找到关键信息"}
@@ -79,31 +66,55 @@ def run_pp_chatocr_v4_extraction(
 
     warnings: list[str] = []
     try:
-        visual_results = list(
-            engine.visual_predict(
-                str(path),
-                use_table_recognition=config["use_table_recognition"],
-                use_seal_recognition=config["use_seal_recognition"],
-                use_doc_orientation_classify=config["use_doc_orientation_classify"],
-                use_doc_unwarping=config["use_doc_unwarping"],
+        with _prepare_pp_inputs(path) as pp_inputs:
+            visual_results = []
+            for input_item in pp_inputs:
+                with _suppress_pp_console_output():
+                    page_visual_results = list(
+                        engine.visual_predict(
+                            input_item["path"],
+                            use_table_recognition=config["use_table_recognition"],
+                            use_seal_recognition=config["use_seal_recognition"],
+                            use_doc_orientation_classify=config["use_doc_orientation_classify"],
+                            use_doc_unwarping=config["use_doc_unwarping"],
+                        )
+                    )
+                for result in page_visual_results:
+                    if isinstance(result, dict):
+                        result["_pp_page_number"] = input_item["page_number"]
+                        result["_pp_source_width"] = input_item.get("source_width")
+                        result["_pp_source_height"] = input_item.get("source_height")
+                visual_results.extend(page_visual_results)
+
+            visual_info_list = [item.get("visual_info") for item in visual_results if isinstance(item, dict) and item.get("visual_info") is not None]
+            vector_info = _call_with_supported_kwargs(
+                engine.build_vector,
+                visual_info_list,
+                retriever_config=config["retriever_config"],
             )
-        )
-        visual_info_list = [item.get("visual_info") for item in visual_results if isinstance(item, dict) and item.get("visual_info") is not None]
-        vector_info = engine.build_vector(visual_info_list)
 
-        mllm_predict_info = None
-        if path.suffix.lower() == ".pdf":
-            warnings.append("mllm_pred_skipped_pdf_unsupported")
-        else:
-            mllm_result = engine.mllm_pred(str(path), keys)
-            mllm_predict_info = _as_mapping(mllm_result).get("mllm_res")
+            mllm_predict_info = None
+            mllm_results = []
+            for input_item in pp_inputs:
+                mllm_result = _call_with_supported_kwargs(
+                    engine.mllm_pred,
+                    input_item["path"],
+                    keys,
+                    mllm_chat_bot_config=config["mllm_chat_bot_config"],
+                )
+                page_mllm = _as_mapping(mllm_result).get("mllm_res")
+                if isinstance(page_mllm, dict):
+                    mllm_results.append(page_mllm)
+            mllm_predict_info = _merge_prediction_maps(mllm_results)
 
-        chat_result = engine.chat(
-            keys,
-            visual_info_list,
-            vector_info=vector_info,
-            mllm_predict_info=mllm_predict_info,
-        )
+            chat_result = _call_with_supported_kwargs(
+                engine.chat,
+                keys,
+                visual_info_list,
+                vector_info=vector_info,
+                mllm_predict_info=mllm_predict_info,
+                chat_bot_config=config["chat_bot_config"],
+            )
     except (PPChatOCRConfigurationError, PPChatOCRExtractionError):
         raise
     except Exception as exc:
@@ -158,6 +169,9 @@ def run_pp_chatocr_v4_extraction(
             "paddleocr_version": _package_version("paddleocr"),
             "paddlex_version": _package_version("paddlex"),
             "paddlepaddle_version": _package_version("paddlepaddle"),
+            "chat_configured": bool(config["chat_bot_config"]),
+            "retriever_configured": bool(config["retriever_config"]),
+            "mllm_configured": bool(config["mllm_chat_bot_config"]),
         },
     }
 
@@ -196,7 +210,136 @@ def _load_config() -> dict[str, Any]:
         "use_seal_recognition": _parse_bool(os.getenv("PP_CHAT_OCR_ENABLE_SEAL_RECOGNITION"), default=True),
         "use_doc_orientation_classify": _parse_bool(os.getenv("PP_CHAT_OCR_ENABLE_DOC_ORIENTATION"), default=True),
         "use_doc_unwarping": _parse_bool(os.getenv("PP_CHAT_OCR_ENABLE_DOC_UNWARPING"), default=True),
+        "chat_bot_config": _build_bot_config("PP_CHAT_OCR_CHAT"),
+        "retriever_config": _build_bot_config("PP_CHAT_OCR_RETRIEVER"),
+        "mllm_chat_bot_config": _build_bot_config("PP_CHAT_OCR_MLLM"),
     }
+
+
+class _PreparedPPInputs:
+    def __init__(self, path: Path):
+        self.path = path
+        self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
+        self.items: list[dict[str, Any]] = []
+
+    def __enter__(self) -> list[dict[str, Any]]:
+        if self.path.suffix.lower() == ".pdf":
+            self._temp_dir = tempfile.TemporaryDirectory(prefix="secuura_pp_chatocr_pdf_")
+            self.items = _rasterize_pdf_to_images(self.path, Path(self._temp_dir.name))
+        else:
+            width, height = _image_size(self.path)
+            self.items = [
+                {
+                    "path": str(self.path),
+                    "page_number": 1,
+                    "source_width": width,
+                    "source_height": height,
+                }
+            ]
+        return self.items
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._temp_dir is not None:
+            self._temp_dir.cleanup()
+
+
+def _prepare_pp_inputs(path: Path) -> _PreparedPPInputs:
+    return _PreparedPPInputs(path)
+
+
+def _rasterize_pdf_to_images(path: Path, output_dir: Path) -> list[dict[str, Any]]:
+    try:
+        import fitz
+    except Exception as exc:  # pragma: no cover - environment dependent
+        raise PPChatOCRConfigurationError("PDF rasterization requires PyMuPDF for image rendering only.") from exc
+
+    items: list[dict[str, Any]] = []
+    try:
+        document = fitz.open(str(path))
+        try:
+            for page_index in range(len(document)):
+                page = document.load_page(page_index)
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                image_path = output_dir / f"page-{page_index + 1}.png"
+                pix.save(str(image_path))
+                items.append(
+                    {
+                        "path": str(image_path),
+                        "page_number": page_index + 1,
+                        "source_width": int(pix.width),
+                        "source_height": int(pix.height),
+                    }
+                )
+        finally:
+            document.close()
+    except Exception as exc:
+        raise PPChatOCRExtractionError(f"PDF rasterization for PP-ChatOCR failed: {_safe_error(exc)}") from exc
+    if not items:
+        raise PPChatOCRExtractionError("PDF rasterization for PP-ChatOCR produced no page images.")
+    return items
+
+
+def _image_size(path: Path) -> tuple[int | None, int | None]:
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            return int(image.width), int(image.height)
+    except Exception:
+        return None, None
+
+
+def _build_bot_config(prefix: str) -> dict[str, Any] | None:
+    config = {
+        "api_key": os.getenv(f"{prefix}_API_KEY", "").strip(),
+        "base_url": os.getenv(f"{prefix}_BASE_URL", "").strip(),
+        "model_name": os.getenv(f"{prefix}_MODEL_NAME", "").strip(),
+    }
+    filtered = {key: value for key, value in config.items() if value}
+    return filtered or None
+
+
+def _call_with_supported_kwargs(callable_obj, *args, **kwargs):
+    filtered_kwargs = {key: value for key, value in kwargs.items() if value is not None}
+    if not filtered_kwargs:
+        with _suppress_pp_console_output():
+            return callable_obj(*args)
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        with _suppress_pp_console_output():
+            return callable_obj(*args, **filtered_kwargs)
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
+        with _suppress_pp_console_output():
+            return callable_obj(*args, **filtered_kwargs)
+    supported = {key: value for key, value in filtered_kwargs.items() if key in signature.parameters}
+    with _suppress_pp_console_output():
+        return callable_obj(*args, **supported)
+
+
+@contextlib.contextmanager
+def _suppress_pp_console_output():
+    if _parse_bool(os.getenv("SECUURA_PP_CHAT_OCR_VERBOSE"), default=False):
+        yield
+        return
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        yield
+
+
+def _merge_prediction_maps(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    merged: dict[str, Any] = {}
+    for item in items:
+        for key, value in item.items():
+            if key not in merged or _is_unresolved_value(_sanitize_value(merged.get(key))):
+                merged[key] = value
+    return merged or None
+
+
+def _first_non_null(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
 
 def _normalize_visual_results(visual_results: list[Any]) -> dict[str, Any]:
@@ -210,12 +353,21 @@ def _normalize_visual_results(visual_results: list[Any]) -> dict[str, Any]:
         if not isinstance(result, dict):
             continue
         layout = _safe_result_mapping(result.get("layout_parsing_result"))
-        page_number = _coerce_int(layout.get("page_index") or layout.get("page_id") or layout.get("page_number"), page_index)
+        page_number = _coerce_int(result.get("_pp_page_number") or layout.get("page_index") or layout.get("page_id") or layout.get("page_number"), page_index)
+        source_width = _coerce_int(result.get("_pp_source_width"), None)
+        source_height = _coerce_int(result.get("_pp_source_height"), None)
 
         for block_index, block in enumerate(_as_list(layout.get("parsing_res_list")), start=1):
             block_map = _as_mapping(block)
             text = _sanitize_preview(block_map.get("block_content") or block_map.get("content"))
-            geom = _geometry(page_number, block_map.get("block_bbox") or block_map.get("bbox"), block_map.get("block_polygon") or block_map.get("polygon"), None)
+            geom = _geometry(
+                page_number,
+                _first_non_null(block_map.get("block_bbox"), block_map.get("bbox")),
+                _first_non_null(block_map.get("block_polygon"), block_map.get("polygon")),
+                None,
+                source_width=source_width,
+                source_height=source_height,
+            )
             layout_block = {
                 "layout_block_id": f"layout-{page_number}-{block_index}",
                 "block_label": str(block_map.get("block_label") or block_map.get("label") or "text"),
@@ -235,6 +387,8 @@ def _normalize_visual_results(visual_results: list[Any]) -> dict[str, Any]:
         _append_ocr_tokens(
             layout.get("overall_ocr_res"),
             page_number=page_number,
+            source_width=source_width,
+            source_height=source_height,
             source_kind="ocr",
             spatial_text_map=spatial_text_map,
             evidence_lines=evidence_lines,
@@ -247,13 +401,15 @@ def _normalize_visual_results(visual_results: list[Any]) -> dict[str, Any]:
                     {
                         "table_cell_id": f"table-{page_number}-{table_index}-{cell_index}",
                         "text_preview": "",
-                        **_geometry(page_number, cell_box, None, None),
+                        **_geometry(page_number, cell_box, None, None, source_width=source_width, source_height=source_height),
                     }
                 )
             _append_table_tokens(
                 table_map.get("table_ocr_pred"),
                 page_number=page_number,
                 table_index=table_index,
+                source_width=source_width,
+                source_height=source_height,
                 spatial_text_map=spatial_text_map,
                 evidence_lines=evidence_lines,
                 table_cells=table_cells,
@@ -261,6 +417,8 @@ def _normalize_visual_results(visual_results: list[Any]) -> dict[str, Any]:
             _append_ocr_tokens(
                 table_map.get("seal_ocr_res") or table_map.get("seal_res") or table_map.get("seal_ocr_pred"),
                 page_number=page_number,
+                source_width=source_width,
+                source_height=source_height,
                 source_kind="seal",
                 spatial_text_map=spatial_text_map,
                 evidence_lines=evidence_lines,
@@ -279,7 +437,7 @@ def _normalize_visual_results(visual_results: list[Any]) -> dict[str, Any]:
     }
 
 
-def _append_ocr_tokens(raw_ocr: Any, *, page_number: int, source_kind: str, spatial_text_map: list[dict[str, Any]], evidence_lines: list[dict[str, Any]]) -> None:
+def _append_ocr_tokens(raw_ocr: Any, *, page_number: int, source_width: int | None = None, source_height: int | None = None, source_kind: str, spatial_text_map: list[dict[str, Any]], evidence_lines: list[dict[str, Any]]) -> None:
     ocr = _as_mapping(raw_ocr)
     rec_texts = _as_list(ocr.get("rec_texts"))
     rec_scores = _as_list(ocr.get("rec_scores"))
@@ -291,11 +449,10 @@ def _append_ocr_tokens(raw_ocr: Any, *, page_number: int, source_kind: str, spat
         if not text:
             continue
         confidence = _coerce_float(_index_or_none(rec_scores, index - 1), _coerce_float(_index_or_none(dt_scores, index - 1), None))
-        geom = _geometry(page_number, _index_or_none(rec_boxes, index - 1), _index_or_none(rec_polys, index - 1), confidence)
+        geom = _geometry(page_number, _index_or_none(rec_boxes, index - 1), _index_or_none(rec_polys, index - 1), confidence, source_width=source_width, source_height=source_height)
         token = {
             "token_id": f"{source_kind}-{page_number}-{index}",
             "text_preview": text,
-            "text": text,
             "source_kind": source_kind,
             **geom,
         }
@@ -309,11 +466,13 @@ def _append_ocr_tokens(raw_ocr: Any, *, page_number: int, source_kind: str, spat
         )
 
 
-def _append_table_tokens(raw_table_ocr: Any, *, page_number: int, table_index: int, spatial_text_map: list[dict[str, Any]], evidence_lines: list[dict[str, Any]], table_cells: list[dict[str, Any]]) -> None:
+def _append_table_tokens(raw_table_ocr: Any, *, page_number: int, table_index: int, source_width: int | None = None, source_height: int | None = None, spatial_text_map: list[dict[str, Any]], evidence_lines: list[dict[str, Any]], table_cells: list[dict[str, Any]]) -> None:
     before_count = len(spatial_text_map)
     _append_ocr_tokens(
         raw_table_ocr,
         page_number=page_number,
+        source_width=source_width,
+        source_height=source_height,
         source_kind=f"table-{table_index}",
         spatial_text_map=spatial_text_map,
         evidence_lines=evidence_lines,
@@ -329,6 +488,8 @@ def _append_table_tokens(raw_table_ocr: Any, *, page_number: int, table_index: i
                 "coordinate_space": COORDINATE_SPACE,
                 "source": SOURCE,
                 "confidence": token.get("confidence"),
+                "source_width": token.get("source_width"),
+                "source_height": token.get("source_height"),
             }
         )
 
@@ -363,6 +524,8 @@ def _build_field_candidates(predictions: list[dict[str, str]], normalized: dict[
                 "polygon": match.get("polygon"),
                 "coordinate_space": COORDINATE_SPACE,
                 "source": SOURCE,
+                "source_width": match.get("source_width"),
+                "source_height": match.get("source_height"),
                 "evidence_ref": _find_evidence_ref(value, normalized.get("evidence_lines") or []),
                 "evidence_line_id": _find_evidence_ref(value, normalized.get("evidence_lines") or []),
                 "extraction_method": SOURCE,
@@ -434,6 +597,8 @@ def _combine_geometries(items: list[dict[str, Any]]) -> dict[str, Any] | None:
         "coordinate_space": COORDINATE_SPACE,
         "source": SOURCE,
         "confidence": _average_confidence(items),
+        "source_width": next((item.get("source_width") for item in items if item.get("source_width")), None),
+        "source_height": next((item.get("source_height") for item in items if item.get("source_height")), None),
     }
 
 
@@ -452,7 +617,7 @@ def _normalize_prediction_map(value: Any) -> list[dict[str, str]]:
     return results
 
 
-def _geometry(page_number: int, bbox: Any, polygon: Any, confidence: Any) -> dict[str, Any]:
+def _geometry(page_number: int, bbox: Any, polygon: Any, confidence: Any, *, source_width: int | None = None, source_height: int | None = None) -> dict[str, Any]:
     coerced_polygon = _coerce_polygon(polygon)
     coerced_bbox = _coerce_bbox(bbox) or (_bbox_from_points(coerced_polygon) if coerced_polygon else None)
     return {
@@ -462,6 +627,8 @@ def _geometry(page_number: int, bbox: Any, polygon: Any, confidence: Any) -> dic
         "coordinate_space": COORDINATE_SPACE,
         "source": SOURCE,
         "confidence": _coerce_float(confidence, None),
+        "source_width": source_width,
+        "source_height": source_height,
     }
 
 
@@ -481,6 +648,8 @@ def _box_dict(geom: dict[str, Any]) -> dict[str, Any] | None:
         "coordinate_space": COORDINATE_SPACE,
         "source": SOURCE,
         "confidence": geom.get("confidence"),
+        "source_width": geom.get("source_width"),
+        "source_height": geom.get("source_height"),
     }
 
 
@@ -552,6 +721,8 @@ def _copy_geometry(item: dict[str, Any]) -> dict[str, Any]:
         "coordinate_space": item.get("coordinate_space") or COORDINATE_SPACE,
         "source": SOURCE,
         "confidence": item.get("confidence"),
+        "source_width": item.get("source_width"),
+        "source_height": item.get("source_height"),
     }
 
 
@@ -559,8 +730,6 @@ def _normalize_key_list(key_list: list[str] | None, document_type_hint: str | No
     keys = [str(item).strip() for item in (key_list or []) if str(item).strip()]
     if not keys:
         keys = list(DEFAULT_KEY_LIST)
-    if document_type_hint:
-        keys.append(str(document_type_hint).replace("_", " ").title())
     return list(dict.fromkeys(keys))
 
 
@@ -672,7 +841,7 @@ def _index_or_none(items: list[Any], index: int) -> Any:
     return items[index] if 0 <= index < len(items) else None
 
 
-def _coerce_int(value: Any, default: int) -> int:
+def _coerce_int(value: Any, default: int | None) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):

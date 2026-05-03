@@ -300,6 +300,7 @@ class ExtractionResult(BaseModel):
     page_count: int = 0
     field_count: int = 0
     engine_metadata: dict[str, Any] = Field(default_factory=dict)
+    evidence_graph: dict[str, Any] = Field(default_factory=dict)
 
 
 class RoutedExtraction(BaseModel):

@@ -2,7 +2,7 @@ import {
 	AGENT_RUN_STATUS_META,
 	ANALYSIS_STATUS_META,
 	AUDIT_STATUS_META,
-	DOCUMENT_COORDINATE_BASE,
+	LEGACY_DOCUMENT_COORDINATE_BASE,
 	EXECUTION_STATUS_META,
 	PROVIDER_OPERATING_MODE_META,
 	PROVIDER_EXECUTION_STATUS_META,
@@ -608,17 +608,39 @@ export function buildHighlightItems(
 				documentValue: detail.documentValue,
 				hasAudit: !detail.isFallback,
 				agentAssisted: detail.agentAssisted,
-				relativeBox: {
-					left: clampPercent((x0 / DOCUMENT_COORDINATE_BASE.width) * 100),
-					top: clampPercent((y0 / DOCUMENT_COORDINATE_BASE.height) * 100),
-					width: clampPercent((width / DOCUMENT_COORDINATE_BASE.width) * 100),
-					height: clampPercent(
-						(height / DOCUMENT_COORDINATE_BASE.height) * 100,
-					),
-				},
+				relativeBox: buildRelativeBox(box, x0, y0, width, height),
+				absoluteBox:
+					box.coordinate_space === "pp_chatocr_image_pixels"
+						? { left: x0, top: y0, width, height }
+						: null,
+				coordinateSpace: box.coordinate_space || null,
+				sourceWidth: box.source_width || null,
+				sourceHeight: box.source_height || null,
 			};
 		})
 		.filter(Boolean);
+}
+
+function buildRelativeBox(box, x0, y0, width, height) {
+	if (box.coordinate_space === "pp_chatocr_image_pixels") {
+		const sourceWidth = Number(box.source_width || 0);
+		const sourceHeight = Number(box.source_height || 0);
+		if (!sourceWidth || !sourceHeight) {
+			return null;
+		}
+		return {
+			left: clampPercent((x0 / sourceWidth) * 100),
+			top: clampPercent((y0 / sourceHeight) * 100),
+			width: clampPercent((width / sourceWidth) * 100),
+			height: clampPercent((height / sourceHeight) * 100),
+		};
+	}
+	return {
+		left: clampPercent((x0 / LEGACY_DOCUMENT_COORDINATE_BASE.width) * 100),
+		top: clampPercent((y0 / LEGACY_DOCUMENT_COORDINATE_BASE.height) * 100),
+		width: clampPercent((width / LEGACY_DOCUMENT_COORDINATE_BASE.width) * 100),
+		height: clampPercent((height / LEGACY_DOCUMENT_COORDINATE_BASE.height) * 100),
+	};
 }
 
 export function buildStatusCounts(auditDetails) {

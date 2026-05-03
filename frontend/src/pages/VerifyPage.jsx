@@ -131,6 +131,15 @@ function getFieldReason(field) {
 		: field.reason_code || field.reasonCode || "";
 }
 
+function getFieldGroupKey(field) {
+	return [
+		field.importance || "important",
+		field.verification_intent || field.verificationIntent || "manual_review",
+		normalizeStatus(field.status || field.outcome),
+		`page ${field.page_number || field.pageNumber || field.page || 1}`,
+	].join(" | ");
+}
+
 function getFieldExplanation(field) {
 	return (
 		field.audit_message ||
@@ -266,6 +275,8 @@ function getFieldBoxes(field) {
 		page: box.page || field.page || field.page_number || field.pageNumber || 1,
 		page_number: box.page_number || box.pageNumber || field.page_number || field.pageNumber || box.page || field.page || 1,
 		coordinate_space: box.coordinate_space || box.coordinateSpace || field.coordinate_space || field.coordinateSpace,
+		source_width: box.source_width || box.sourceWidth || field.source_width || field.sourceWidth,
+		source_height: box.source_height || box.sourceHeight || field.source_height || field.sourceHeight,
 	}));
 }
 
@@ -300,6 +311,8 @@ function buildHighlightItems(fields) {
 					absoluteBox,
 					polygon: box.polygon || field.polygon,
 					coordinateSpace: box.coordinate_space || box.coordinateSpace || field.coordinate_space || field.coordinateSpace,
+					sourceWidth: box.source_width || box.sourceWidth || field.source_width || field.sourceWidth,
+					sourceHeight: box.source_height || box.sourceHeight || field.source_height || field.sourceHeight,
 				};
 			})
 			.filter(Boolean);
@@ -313,7 +326,15 @@ function FieldList({ fields, activeFieldId, onSelectField }) {
 
 	return (
 		<div className="field-list">
-			{fields.map((field, index) => {
+			{Object.entries(fields.reduce((groups, field) => {
+				const key = getFieldGroupKey(field);
+				groups[key] = groups[key] || [];
+				groups[key].push(field);
+				return groups;
+			}, {})).map(([groupLabel, groupFields]) => (
+				<div key={groupLabel} className="gv-field-group">
+					<p className="eyebrow">{groupLabel}</p>
+					{groupFields.map((field, index) => {
 				const fieldId = getFieldId(field, index);
 				const status = normalizeStatus(field.status || field.outcome);
 				const confidence = getFieldConfidence(field);
@@ -336,10 +357,21 @@ function FieldList({ fields, activeFieldId, onSelectField }) {
 
 						<p className="muted">
 							Confidence {formatPercent(confidence)}
+							{field.verification_intent || field.verificationIntent
+								? ` | Intent ${field.verification_intent || field.verificationIntent}`
+								: ""}
+							{field.data_type || field.dataType
+								? ` | Type ${field.data_type || field.dataType}`
+								: ""}
 							{field.provider_id || field.providerId
 								? ` | Provider ${field.provider_id || field.providerId}`
 								: ""}
 						</p>
+						{field.normalized_value || field.normalizedValue ? (
+							<p className="muted">
+								Normalized: {field.normalized_value || field.normalizedValue}
+							</p>
+						) : null}
 
 						{getFieldReason(field) ? (
 							<p className="muted">Reason: {getFieldReason(field)}</p>
@@ -348,7 +380,9 @@ function FieldList({ fields, activeFieldId, onSelectField }) {
 						<p className="muted">{getFieldExplanation(field)}</p>
 					</button>
 				);
-			})}
+					})}
+				</div>
+			))}
 		</div>
 	);
 }

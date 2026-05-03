@@ -5,8 +5,6 @@ export default function HighlightOverlay({ boxes, pageWidth, pageHeight }) {
     return null;
   }
 
-  const scaleX = pageWidth / 600;
-  const scaleY = pageHeight / 800;
   const normalizedBoxes = Array.isArray(boxes) ? boxes : Object.entries(boxes);
 
   return (
@@ -17,6 +15,10 @@ export default function HighlightOverlay({ boxes, pageWidth, pageHeight }) {
         const y0 = box.y0 ?? box.y1 ?? 0;
         const x1 = box.x1 ?? box.x2 ?? 0;
         const y1 = box.y1 ?? box.y2 ?? 0;
+        const sourceWidth = Number(box.source_width || box.sourceWidth || pageWidth || 1);
+        const sourceHeight = Number(box.source_height || box.sourceHeight || pageHeight || 1);
+        const scaleX = pageWidth / sourceWidth;
+        const scaleY = pageHeight / sourceHeight;
 
         return (
           <div

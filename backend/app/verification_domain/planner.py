@@ -111,6 +111,9 @@ class PlannerEntry:
     explicit_verification_reason: str | None
     explicit_is_pii: bool | None
     semantic_key: str
+    data_type: str | None = None
+    verification_intent: str | None = None
+    importance: str | None = None
 
 
 @dataclass(frozen=True)
@@ -334,6 +337,9 @@ def _build_planner_entries(
                     else None
                 ),
                 semantic_key=semantic_key,
+                data_type=normalize_value(entry.get("data_type") or entry.get("source_category")),
+                verification_intent=normalize_value(entry.get("verification_intent")),
+                importance=normalize_value(entry.get("importance")),
             )
         )
     return entries
@@ -368,6 +374,9 @@ def _determine_planning_decision(
 
     value = entry.normalized_value or ""
     semantic_key = entry.semantic_key
+    dynamic_decision = _dynamic_planning_decision(entry)
+    if dynamic_decision is not None:
+        return dynamic_decision
 
     if semantic_key == "generic_name":
         if _looks_like_name(value) and _supports_academic_name_promotion(entry, document_family, support_context):
@@ -716,6 +725,29 @@ def _supports_academic_record(document_family: str, support_context: dict[str, A
     return document_family == "academic" or bool(support_context["has_academic_anchor"])
 
 
+def _dynamic_planning_decision(entry: PlannerEntry) -> PlanningDecision | None:
+    intent = (entry.verification_intent or "").strip().lower()
+    data_type = (entry.data_type or entry.source_category or "").strip().lower()
+    importance = (entry.importance or "").strip().lower()
+    if not intent and data_type not in {"person_name", "organization", "date", "identifier", "amount", "address", "status", "score", "category", "free_text", "unknown"}:
+        return None
+
+    if intent == "identity" and data_type == "person_name":
+        return _eligible_decision(promoted_label=entry.label, category="identity", reason="Dynamic claim requests identity verification for a person-name value.")
+    if intent == "academic" and data_type in {"identifier", "score", "status", "person_name", "organization"}:
+        return _eligible_decision(promoted_label=entry.label, category="academic", reason="Dynamic claim requests academic verification based on data type and intent.")
+    if intent == "issuer_authenticity" and data_type == "organization":
+        return _eligible_decision(promoted_label=entry.label, category="issuer_authenticity", reason="Dynamic claim requests issuer authenticity verification.")
+    if intent == "date_validity" and data_type == "date":
+        return _eligible_decision(promoted_label=entry.label, category="date_validity", reason="Dynamic claim requests date validity verification.")
+    if intent in {"employment", "financial", "address", "generic_record"}:
+        category = "address" if intent == "address" else intent
+        return _eligible_decision(promoted_label=entry.label, category=category, reason="Dynamic claim has an explicit verification intent.")
+    if intent == "manual_review" or (data_type in {"unknown", "free_text"} and importance in {"critical", "important"}):
+        return _context_decision(promoted_label=entry.label, category="manual_review", reason="No executable provider is implied; route this dynamic claim to manual review.")
+    return None
+
+
 def _supports_document_identifier(
     entry: PlannerEntry,
     document_family: str,
@@ -992,6 +1024,38 @@ def _display_label_for_semantic_key(semantic_key: str) -> str:
 
 
 def _iter_generalized_entries(extraction_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    view = extraction_payload.get("view") if isinstance(extraction_payload.get("view"), dict) else {}
+    dynamic_claims = view.get("dynamic_claims") if isinstance(view, dict) else None
+    if isinstance(dynamic_claims, list) and dynamic_claims:
+        entries = []
+        for index, claim in enumerate(dynamic_claims, start=1):
+            if not isinstance(claim, dict):
+                continue
+            label = str(claim.get("label") or f"Claim {index}")
+            key = str(claim.get("field_id") or claim.get("claim_id") or _slug(label) or f"claim_{index}")
+            entries.append(
+                {
+                    "credential_id": claim.get("field_id") or claim.get("claim_id"),
+                    "key": key,
+                    "label": label,
+                    "value": claim.get("extracted_value") or claim.get("value"),
+                    "normalized_value": claim.get("normalized_value"),
+                    "confidence": claim.get("confidence"),
+                    "bounding_box": claim.get("bounding_box"),
+                    "page": claim.get("page") or claim.get("page_number"),
+                    "source_text": None,
+                    "extraction_method": claim.get("extraction_method") or "pp_chatocr_v4",
+                    "source_category": claim.get("data_type") or claim.get("category"),
+                    "data_type": claim.get("data_type"),
+                    "verification_intent": claim.get("verification_intent"),
+                    "importance": claim.get("importance"),
+                    "is_pii": claim.get("is_pii"),
+                    "requires_verification": claim.get("requires_verification"),
+                    "verification_reason": claim.get("verification_reason") or claim.get("reason"),
+                }
+            )
+        return entries
+
     generalized_analysis = extraction_payload.get("generalized_analysis") or {}
     if not generalized_analysis and isinstance(extraction_payload.get("view"), dict):
         generalized_analysis = (extraction_payload.get("view") or {}).get("generalized_analysis") or {}
@@ -1019,6 +1083,9 @@ def _iter_generalized_entries(extraction_payload: dict[str, Any]) -> list[dict[s
                     "is_pii": credential.get("is_pii"),
                     "requires_verification": credential.get("requires_verification"),
                     "verification_reason": credential.get("verification_reason"),
+                    "data_type": credential.get("data_type"),
+                    "verification_intent": credential.get("verification_intent"),
+                    "importance": credential.get("importance"),
                 }
             )
         return entries
@@ -1049,6 +1116,9 @@ def _iter_generalized_entries(extraction_payload: dict[str, Any]) -> list[dict[s
                     "is_pii": candidate.get("is_pii"),
                     "requires_verification": candidate.get("requires_verification"),
                     "verification_reason": candidate.get("verification_reason"),
+                    "data_type": candidate.get("data_type"),
+                    "verification_intent": candidate.get("verification_intent"),
+                    "importance": candidate.get("importance"),
                 }
             )
         return entries

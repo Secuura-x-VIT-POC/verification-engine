@@ -260,6 +260,11 @@ def _status_and_reasons(
     outcome_color = str(result.get("outcome_color") or "").upper()
     task_status = str(result.get("task_status") or "").upper()
     verifier_status = str(result.get("status") or "").upper()
+    result_reasons = [
+        str(code).strip().upper()
+        for code in list(result.get("reason_codes") or [])
+        if str(code).strip()
+    ]
 
     if audit_status == "MISMATCH" or outcome_color == "RED" or verifier_status in {"MISMATCH", "MISMATCHED"}:
         return "RED", ["VERIFIER_MISMATCH"]
@@ -274,6 +279,18 @@ def _status_and_reasons(
     if task_status == "SKIPPED" or audit_status == "NOT_APPLICABLE" or verifier_status in {"SKIPPED", "NOT_APPLICABLE"}:
         return "AMBER", ["NO_EXECUTABLE_PROVIDER"]
     if task_status in {"FAILED", "ERROR", "TIMEOUT"} or verifier_status in {"ERROR", "TIMEOUT", "UNAVAILABLE"}:
+        if any(
+            code in {
+                "NO_PROVIDER_AVAILABLE",
+                "NO_EXECUTABLE_PROVIDER",
+                "MANUAL_REVIEW_REQUIRED",
+                "MANUAL_REVIEW_PROVIDER_SELECTED",
+                "PROVIDER_NOT_REGISTERED",
+                "VERIFIER_NOT_REGISTERED",
+            }
+            for code in result_reasons
+        ):
+            return "AMBER", result_reasons or ["MANUAL_REVIEW_REQUIRED"]
         return "AMBER", ["PROVIDER_UNAVAILABLE"]
     return "AMBER", ["NO_VERIFIER_EVIDENCE"]
 

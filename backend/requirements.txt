@@ -1,18 +1,18 @@
-fastapi
+fastapi>=0.110,<1
 uvicorn[standard]
 
 sqlalchemy
 psycopg2-binary
 pypdf>=5.0.0
 pymupdf
-pytesseract
 pillow
-paddleocr>=2.8.0
-paddlepaddle>=2.6.0
+paddleocr>=3.5.0
+paddlex[ie,ocr]>=3.5.1
+paddlepaddle==3.2.2
 spacy>=3.7.0
 sentence-transformers>=2.6.0
 
-pydantic
+pydantic>=2.5,<3
 langgraph
 langchain-google-genai
 python-dotenv

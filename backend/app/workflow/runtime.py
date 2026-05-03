@@ -238,6 +238,14 @@ def get_result_response(session: SessionModel) -> dict[str, Any]:
 
 def extract_document_payload(file_path: Path) -> dict[str, Any]:
     raw_result = _load_extraction_result(file_path)
+    if raw_result.get("is_successful") is False:
+        reason = raw_result.get("reason_code") or "extraction_failed"
+        message = raw_result.get("error_message") or "PP-ChatOCRv4 extraction failed"
+        raise WorkflowProcessingError(
+            str(reason).lower(),
+            message=f"PP-ChatOCRv4 extraction failed: {_safe_error(Exception(str(message)))}",
+            context={"reason_code": reason},
+        )
     page_count = _resolve_page_count(file_path, raw_result)
     document_type = _resolve_document_type(raw_result)
     generalized_entries = _collect_generalized_view_entries(raw_result)
@@ -266,6 +274,7 @@ def extract_document_payload(file_path: Path) -> dict[str, Any]:
             "field_candidates": raw_result.get("field_candidates") or [],
             "layout_blocks": raw_result.get("layout_blocks") or [],
             "table_cells": raw_result.get("table_cells") or [],
+            "evidence_graph": raw_result.get("evidence_graph") or {},
             "generalized_analysis": raw_result.get("generalized_analysis"),
             "error_message": raw_result.get("error_message"),
         },
@@ -626,6 +635,8 @@ def _convert_box(box: dict[str, Any]) -> dict[str, Any]:
         "coordinate_space": box.get("coordinate_space"),
         "source": box.get("source"),
         "confidence": box.get("confidence"),
+        "source_width": box.get("source_width"),
+        "source_height": box.get("source_height"),
     }
 
 

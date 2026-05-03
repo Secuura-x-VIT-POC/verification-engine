@@ -5,14 +5,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app \
     PADDLEOCR_ENABLED=1 \
-    TESSERACT_ENABLED=1
+    TESSERACT_ENABLED=0
 
 WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        tesseract-ocr \
-        tesseract-ocr-eng \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \

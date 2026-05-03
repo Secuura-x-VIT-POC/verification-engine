@@ -39,6 +39,8 @@ UNSAFE_KEYS = {
     "raw_result_summary",
     "raw_response",
     "raw_payload",
+    "input_payload",
+    "evidence_payload",
     "request_body",
     "response_body",
     "full_gemini_prompt",

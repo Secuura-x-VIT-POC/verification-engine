@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..auth.routes import get_current_user
 from ..db.database import get_db
-from ..security.pdf_validator import PDFValidationError, validate_pdf
+from ..security.pdf_validator import PDFValidationError, validate_pdf, validate_pdf_upload_metadata
 from ..workflow import repository as workflow_repository
 from ..workflow.runtime import close_session, serialize_session
 from .constants import SessionState
@@ -109,8 +109,10 @@ def upload_file(
         raise HTTPException(status_code=401, detail="Token expired")
 
     session = _get_owned_session(db, upload_token.session_id, user)
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+    try:
+        validate_pdf_upload_metadata(file.filename, file.content_type)
+    except PDFValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     content = file.file.read()
     try:

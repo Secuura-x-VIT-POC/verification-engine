@@ -117,17 +117,12 @@ def run_generalized_verification_session(
             final_verdict.connector_ids,
             extra_values={
                 "workspace_payload": workspace.model_dump(mode="json"),
-                "verification_execution_summary_payload": workspace.model_dump(mode="json"),
+                "verification_execution_summary_payload": None,
                 "verification_execution_status": "READY",
                 "generalized_analysis_status": "READY",
                 "agent_run_status": "READY" if not state.get("gemini_fallback_used") else "FALLBACK",
-                "agent_run_summary_payload": {
-                    "provider": policy.provider_key,
-                    "model": policy.gemini_model,
-                    "fallback_used": bool(state.get("gemini_fallback_used")),
-                    "gemini_errors": list(state.get("gemini_errors") or []),
-                },
-                "provider_execution_traces_payload": [verifier.model_dump(mode="json") for verifier in workspace.verifiers],
+                "agent_run_summary_payload": None,
+                "provider_execution_traces_payload": None,
                 "provider_execution_status": "READY",
                 "provider_operating_mode": "DEMO_MOCK",
                 **completion_values,
@@ -155,7 +150,7 @@ def run_generalized_verification_session(
 
 
 def get_workspace_payload_for_session(session: SessionModel) -> WorkspacePayload:
-    persisted = session.verification_execution_summary_payload
+    persisted = session.workspace_payload or session.verification_execution_summary_payload
     if isinstance(persisted, dict):
         try:
             return sanitize_workspace_payload(WorkspacePayload.model_validate(persisted))

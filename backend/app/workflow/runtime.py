@@ -10,7 +10,10 @@ from typing import Any
 try:
     from pypdf import PdfReader
 except ImportError:  # pragma: no cover
-    from PyPDF2 import PdfReader  # type: ignore
+    try:
+        from PyPDF2 import PdfReader  # type: ignore
+    except ImportError:  # pragma: no cover
+        PdfReader = None  # type: ignore
 from sqlalchemy.orm import Session as DbSession
 
 from ..audit.service import get_latest_audit_receipt
@@ -54,6 +57,40 @@ CLEANUP_READY_STATES = HUMAN_FINAL_STATES | {
     SessionState.ABANDONED_VERIFYING,
 }
 
+SENSITIVE_SESSION_CLEANUP_VALUES = {
+    "file_path": None,
+    "filename": None,
+    "extraction_payload": None,
+    "connector_payload": None,
+    "document_profile_payload": None,
+    "generalized_credentials_payload": None,
+    "verification_plan_payload": None,
+    "verification_task_results_payload": None,
+    "credential_verification_bundles_payload": None,
+    "verification_execution_summary_payload": None,
+    "credential_audits_payload": None,
+    "verification_summary_payload": None,
+    "workspace_payload": None,
+    "generalized_analysis_status": None,
+    "generalized_analysis_error": None,
+    "agent_document_understanding_payload": None,
+    "agent_credential_candidates_payload": None,
+    "agent_route_recommendations_payload": None,
+    "agent_explanations_payload": None,
+    "agent_run_summary_payload": None,
+    "agent_run_status": None,
+    "agent_run_error": None,
+    "provider_execution_traces_payload": None,
+    "provider_execution_status": None,
+    "provider_execution_error": None,
+    "provider_operating_mode": None,
+    "demo_profile_key": None,
+    "execution_environment_label": None,
+    "provider_transition_notes": None,
+    "verification_execution_status": None,
+    "verification_execution_error": None,
+}
+
 
 def close_session(db: DbSession, session: SessionModel) -> SessionModel:
     start_cleanup(db, session.id)
@@ -80,36 +117,7 @@ def close_session(db: DbSession, session: SessionModel) -> SessionModel:
             session.id,
             SessionState.PURGE_COMPLETE,
             extra_values={
-                "file_path": None,
-                "filename": None,
-                "extraction_payload": None,
-                "connector_payload": None,
-                "document_profile_payload": None,
-                "generalized_credentials_payload": None,
-                "verification_plan_payload": None,
-                "verification_task_results_payload": None,
-                "credential_verification_bundles_payload": None,
-                "verification_execution_summary_payload": None,
-                "credential_audits_payload": None,
-                "verification_summary_payload": None,
-                "generalized_analysis_status": None,
-                "generalized_analysis_error": None,
-                "agent_document_understanding_payload": None,
-                "agent_credential_candidates_payload": None,
-                "agent_route_recommendations_payload": None,
-                "agent_explanations_payload": None,
-                "agent_run_summary_payload": None,
-                "agent_run_status": None,
-                "agent_run_error": None,
-                "provider_execution_traces_payload": None,
-                "provider_execution_status": None,
-                "provider_execution_error": None,
-                "provider_operating_mode": None,
-                "demo_profile_key": None,
-                "execution_environment_label": None,
-                "provider_transition_notes": None,
-                "verification_execution_status": None,
-                "verification_execution_error": None,
+                **SENSITIVE_SESSION_CLEANUP_VALUES,
                 "worker_phase": None,
                 "lease_holder_id": None,
                 "heartbeat_at": None,
@@ -158,6 +166,9 @@ def serialize_session(db: DbSession, session: SessionModel) -> dict[str, Any]:
             "document_commitment": audit_receipt.document_commitment,
             "connector_ids": audit_receipt.connector_ids or [],
             "key_version": audit_receipt.key_version,
+            "receipt_hash": audit_receipt.receipt_hash,
+            "signature": audit_receipt.signature,
+            "hash_chain_prev": audit_receipt.hash_chain_prev,
             "reviewer_decision": audit_receipt.reviewer_decision,
             "reviewer_note_hash": audit_receipt.reviewer_note_hash,
             "finding_counts": audit_receipt.finding_counts,
@@ -599,6 +610,11 @@ def _load_extraction_result(file_path: Path) -> dict[str, Any]:
 
 
 def _fallback_extract_document(file_path: Path) -> dict[str, Any]:
+    if PdfReader is None:
+        raise WorkflowProcessingError(
+            "dependency_unavailable",
+            message="PDF parser dependency is not available",
+        )
     reader = PdfReader(str(file_path))
     raw_text = "\n".join((page.extract_text() or "") for page in reader.pages)
     return {
@@ -639,6 +655,8 @@ def _resolve_page_count(file_path: Path, raw_result: dict[str, Any]) -> int | No
             pass
 
     try:
+        if PdfReader is None:
+            return None
         reader = PdfReader(str(file_path))
     except Exception:
         return None

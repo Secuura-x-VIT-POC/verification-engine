@@ -1,79 +1,52 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	getSessionDocumentBlob,
 	getVerificationWorkspace,
 } from "../api/generalizedVerificationApi.js";
+import { normalizeWorkspacePayload } from "../utils/workspaceNormalizer.js";
 
 const REFRESH_INTERVAL_MS = 3000;
-const TERMINAL_UI_STATUSES = new Set(["READY", "COMPLETED", "FAILED"]);
+const MAX_PENDING_RETRIES = 3;
+const TERMINAL_UI_STATUSES = new Set([
+	"READY",
+	"COMPLETED",
+	"FAILED",
+	"READY FOR HUMAN REVIEW",
+]);
+const TERMINAL_WORKFLOW_STATUSES = new Set([
+	"PENDING_HUMAN_REVIEW",
+	"HUMAN_APPROVED",
+	"HUMAN_REJECTED",
+	"MANUAL_REVIEW_REQUIRED",
+	"PENDING_CLEANUP",
+	"PURGE_COMPLETE",
+	"FAILED_PURGED",
+]);
+function shouldPoll(workspace) {
+	if (!workspace) {
+		return false;
+	}
 
-function normalizeWorkspacePayload(payload, sessionId) {
-	const workspace = payload && typeof payload === "object" ? payload : {};
-	const document = workspace.document || {};
-	const summary = workspace.summary || {};
-	const finalVerdict = workspace.final_verdict || {};
+	const uiStatus = String(workspace.uiStatus || "").trim().toUpperCase();
+	const status = String(workspace.status || "").trim().toUpperCase();
 
-	return {
-		sessionId: workspace.session_id || sessionId,
-		status: workspace.status || "UNKNOWN",
-		uiStatus: workspace.ui_status || "LOADING",
-
-		document: {
-			filename: document.filename || "",
-			documentType: document.document_type || "unknown",
-			pageCount: document.page_count ?? null,
-			usedOcr: Boolean(document.used_ocr),
-			warnings: Array.isArray(document.warnings) ? document.warnings : [],
-			highlightsCount: Number(document.highlights_count || 0),
-		},
-
-		summary: {
-			totalFields: Number(summary.total_fields || 0),
-			greenCount: Number(summary.green_count || 0),
-			amberCount: Number(summary.amber_count || 0),
-			redCount: Number(summary.red_count || 0),
-			matchingScore: Number(summary.matching_score || 0),
-			visualMatchProbability: Number(summary.visual_match_probability || 0),
-			riskLevel: summary.risk_level || "LOW",
-			activeExceptions: Array.isArray(summary.active_exceptions)
-				? summary.active_exceptions
-				: [],
-		},
-
-		fields: Array.isArray(workspace.findings) ? workspace.findings : [],
-		verifiers: Array.isArray(workspace.verification_tasks)
-			? workspace.verification_tasks
-			: [],
-
-		finalVerdict: {
-			outcome: finalVerdict.outcome || workspace.status || "AMBER",
-			reasonCodes: Array.isArray(finalVerdict.reason_codes)
-				? finalVerdict.reason_codes
-				: [],
-			connectorIds: Array.isArray(finalVerdict.connector_ids)
-				? finalVerdict.connector_ids
-				: [],
-			explanation: finalVerdict.explanation || "",
-			riskLevel: finalVerdict.risk_level || summary.risk_level || "MEDIUM",
-			matchingScore: Number(finalVerdict.matching_score || 0),
-			visualMatchProbability: Number(
-				finalVerdict.visual_match_probability || 0
-			),
-		},
-
-		audit: Array.isArray(workspace.audit_summary)
-			? workspace.audit_summary
-			: [],
-
-		actions: Array.isArray(workspace.actions) ? workspace.actions : [],
-		actionFlags: workspace.action_flags || workspace.actionFlags || {},
-		privacy: workspace.privacy || {},
-		raw: workspace,
-	};
+	return (
+		!TERMINAL_UI_STATUSES.has(uiStatus) &&
+		!TERMINAL_WORKFLOW_STATUSES.has(status)
+	);
 }
 
-function shouldPoll(workspace) {
-	return workspace ? !TERMINAL_UI_STATUSES.has(workspace.uiStatus) : false;
+function isWorkspacePendingError(error) {
+	return (
+		error?.status === 409 &&
+		String(error.message || "")
+			.toLowerCase()
+			.includes("workspace not ready")
+	);
+}
+
+function getPendingRetryDelay(attempt) {
+	return Math.min(1000 * 2 ** attempt, 8000);
 }
 
 export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
@@ -81,11 +54,79 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
 	const [documentUrl, setDocumentUrl] = useState("");
 	const [error, setError] = useState("");
 	const [isLoading, setIsLoading] = useState(true);
+	const [isWorkspacePending, setIsWorkspacePending] = useState(false);
+	const timeoutRef = useRef(null);
+
+	const clearScheduledRefresh = useCallback(() => {
+		if (timeoutRef.current) {
+			window.clearTimeout(timeoutRef.current);
+			timeoutRef.current = null;
+		}
+	}, []);
+
+	const hydrateWorkspace = useCallback(
+		(payload) => {
+			const normalizedWorkspace = normalizeWorkspacePayload(payload, sessionId);
+
+			clearScheduledRefresh();
+			setWorkspace(normalizedWorkspace);
+			setIsWorkspacePending(false);
+			setIsLoading(false);
+			setError("");
+
+			return normalizedWorkspace;
+		},
+		[clearScheduledRefresh, sessionId]
+	);
+
+	const loadWorkspace = useCallback(
+		async ({ showLoading = false, retryOnPending = false, pendingAttempt = 0 } = {}) => {
+			if (showLoading) {
+				setIsLoading(true);
+			}
+
+			setError("");
+
+			try {
+				const payload = await getVerificationWorkspace(sessionId, token);
+				const normalizedWorkspace = hydrateWorkspace(payload);
+
+				if (shouldPoll(normalizedWorkspace)) {
+					timeoutRef.current = window.setTimeout(() => {
+						loadWorkspace({ retryOnPending: true });
+					}, REFRESH_INTERVAL_MS);
+				}
+
+				return normalizedWorkspace;
+			} catch (requestError) {
+				if (isWorkspacePendingError(requestError)) {
+					setIsWorkspacePending(true);
+					setIsLoading(false);
+					setError("");
+
+					if (retryOnPending && pendingAttempt < MAX_PENDING_RETRIES) {
+						timeoutRef.current = window.setTimeout(() => {
+							loadWorkspace({
+								retryOnPending: true,
+								pendingAttempt: pendingAttempt + 1,
+							});
+						}, getPendingRetryDelay(pendingAttempt));
+					}
+
+					return null;
+				}
+
+				setError(requestError.message);
+				setIsLoading(false);
+				return null;
+			}
+		},
+		[hydrateWorkspace, sessionId, token]
+	);
 
 	useEffect(() => {
 		let isActive = true;
 		let objectUrl = "";
-		let timeoutId = null;
 
 		async function loadDocument() {
 			try {
@@ -104,68 +145,18 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
 			}
 		}
 
-		async function loadWorkspace({ showLoading = false } = {}) {
-			if (showLoading) {
-				setIsLoading(true);
-			}
-
-			setError("");
-
-			try {
-				const payload = await getVerificationWorkspace(sessionId, token);
-
-				if (!isActive) {
-					return;
-				}
-
-				const normalizedWorkspace = normalizeWorkspacePayload(payload, sessionId);
-
-				setWorkspace(normalizedWorkspace);
-				setIsLoading(false);
-				setError("");
-
-				if (shouldPoll(normalizedWorkspace)) {
-					timeoutId = window.setTimeout(() => {
-						if (isActive) {
-							loadWorkspace();
-						}
-					}, REFRESH_INTERVAL_MS);
-				}
-			} catch (requestError) {
-				if (!isActive) {
-					return;
-				}
-
-				if (requestError.message?.includes("Workspace not ready")) {
-					timeoutId = window.setTimeout(() => {
-						if (isActive) {
-							loadWorkspace();
-						}
-					}, 1000);
-
-					return;
-				}
-
-				setError(requestError.message);
-				setIsLoading(false);
-			}
-		}
-
-		loadWorkspace({ showLoading: true });
+		loadWorkspace({ showLoading: true, retryOnPending: false });
 		loadDocument();
 
 		return () => {
 			isActive = false;
-
-			if (timeoutId) {
-				window.clearTimeout(timeoutId);
-			}
+			clearScheduledRefresh();
 
 			if (objectUrl) {
 				URL.revokeObjectURL(objectUrl);
 			}
 		};
-	}, [sessionId, token]);
+	}, [clearScheduledRefresh, loadWorkspace, sessionId, token]);
 
 	const warnings = useMemo(() => {
 		if (!workspace) {
@@ -181,8 +172,11 @@ export function useGeneralizedVerificationWorkspace({ sessionId, token }) {
 	return {
 		isLoading,
 		error: workspace ? "" : error,
+		isWorkspacePending,
 		warnings,
 		documentUrl,
 		workspace,
+		hydrateWorkspace,
+		refreshWorkspace: loadWorkspace,
 	};
 }

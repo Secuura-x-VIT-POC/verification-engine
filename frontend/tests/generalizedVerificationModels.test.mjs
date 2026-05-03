@@ -44,8 +44,94 @@ import {
   createEmptyVerificationTaskResultCollection,
   createEmptyVerificationSummary,
 } from "../src/features/generalized-verification/types/contracts.js";
+import { normalizeWorkspacePayload } from "../src/features/generalized-verification/utils/workspaceNormalizer.js";
 
 export const checks = [
+  {
+    name: "generalized workspace normalization supports canonical payload safely",
+    run() {
+      const workspace = normalizeWorkspacePayload(
+        {
+          session_id: "session-1",
+          status: "PENDING_HUMAN_REVIEW",
+          ui_status: "Ready for human review",
+          document: {
+            filename: "transcript.pdf",
+            document_type: "academic",
+            used_ocr: true,
+            raw_ocr_text: "raw OCR must not reach UI state",
+          },
+          summary: {
+            total_fields: 1,
+            green_count: 1,
+            matching_score: 0.97,
+            risk_level: "LOW",
+          },
+          fields: [
+            {
+              field_id: "student-name",
+              label: "Student Name",
+              value_preview: "K*** S***",
+              raw_value: "Kanak Sharma",
+              status: "GREEN",
+            },
+          ],
+          verifiers: [
+            {
+              connector_id: "academic_registry",
+              status: "GREEN",
+              provider_raw_body: { secret: true },
+            },
+          ],
+          audit: [
+            {
+              stage: "workspace",
+              message: "Workspace generated.",
+              reviewer_note: "private reviewer note",
+              timestamp: "2026-05-03T00:00:00Z",
+            },
+          ],
+          final_verdict: {
+            outcome: "GREEN",
+            reason_codes: ["ALL_MATCHED"],
+            connector_ids: ["academic_registry"],
+            risk_level: "LOW",
+          },
+        },
+        "fallback-session"
+      );
+
+      assert.equal(workspace.sessionId, "session-1");
+      assert.equal(workspace.fields.length, 1);
+      assert.equal(workspace.verifiers.length, 1);
+      assert.equal(workspace.audit.length, 1);
+      assert.equal(workspace.finalVerdict.outcome, "GREEN");
+      assert.equal(workspace.fields[0].value_preview, "K*** S***");
+      assert.equal("raw_value" in workspace.fields[0], false);
+      assert.equal("provider_raw_body" in workspace.verifiers[0], false);
+      assert.equal("reviewer_note" in workspace.audit[0], false);
+      assert.equal("raw" in workspace, false);
+    },
+  },
+  {
+    name: "generalized workspace normalization keeps legacy payload fallbacks",
+    run() {
+      const workspace = normalizeWorkspacePayload(
+        {
+          session_id: "session-legacy",
+          findings: [{ field_id: "legacy-field" }],
+          verification_tasks: [{ connector_id: "legacy-provider" }],
+          audit_summary: [{ stage: "legacy", message: "Legacy audit." }],
+        },
+        "fallback-session"
+      );
+
+      assert.equal(workspace.sessionId, "session-legacy");
+      assert.equal(workspace.fields[0].field_id, "legacy-field");
+      assert.equal(workspace.verifiers[0].connector_id, "legacy-provider");
+      assert.equal(workspace.audit[0].stage, "legacy");
+    },
+  },
   {
     name: "provider operating mode and demo profile normalization stay stable",
     run() {

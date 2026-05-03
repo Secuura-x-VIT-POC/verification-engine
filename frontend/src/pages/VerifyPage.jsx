@@ -146,20 +146,15 @@ function getFieldConfidence(field) {
 }
 
 function getAuditObject(workspace) {
-	const rawAudit =
-		workspace?.raw?.audit ||
-		workspace?.raw?.audit_summary ||
-		workspace?.raw?.audit_receipt;
-
-	if (rawAudit && typeof rawAudit === "object" && !Array.isArray(rawAudit)) {
-		return rawAudit;
+	if (
+		workspace?.auditReceipt &&
+		typeof workspace.auditReceipt === "object" &&
+		!Array.isArray(workspace.auditReceipt)
+	) {
+		return workspace.auditReceipt;
 	}
 
-	const auditEntryWithRaw = asArray(workspace?.audit).find(
-		(entry) => entry.raw && typeof entry.raw === "object"
-	);
-
-	return auditEntryWithRaw?.raw || {};
+	return {};
 }
 
 function normalizeBoxToPercent(box) {
@@ -387,7 +382,6 @@ function AuditReceiptPanel({ workspace }) {
 		audit.final_decision ||
 		audit.reviewer_decision ||
 		audit.final_reviewer_decision ||
-		workspace?.raw?.final_decision ||
 		"Pending";
 
 	return (
@@ -458,7 +452,16 @@ export default function VerifyPage({ auth, onLogout }) {
 	const [isRunningVerification, setIsRunningVerification] = useState(false);
 	const [reviewCompleted, setReviewCompleted] = useState(false);
 
-	const { documentUrl, error, isLoading, warnings, workspace } =
+	const {
+		documentUrl,
+		error,
+		hydrateWorkspace,
+		isLoading,
+		isWorkspacePending,
+		refreshWorkspace,
+		warnings,
+		workspace,
+	} =
 		useGeneralizedVerificationWorkspace({
 			sessionId,
 			token: auth.token,
@@ -513,10 +516,15 @@ export default function VerifyPage({ auth, onLogout }) {
 		setIsRunningVerification(true);
 
 		try {
-			await runVerificationSession(sessionId, auth.token);
-			setReviewMessage(
-				"Verification refresh started. Wait a few seconds, then reload the workspace manually if needed."
-			);
+			const workspacePayload = await runVerificationSession(sessionId, auth.token);
+
+			if (workspacePayload) {
+				hydrateWorkspace(workspacePayload);
+				setReviewMessage("Verification completed. Workspace is ready for review.");
+			} else {
+				await refreshWorkspace({ retryOnPending: true });
+				setReviewMessage("Verification completed. Workspace refresh requested.");
+			}
 		} catch (requestError) {
 			setReviewError(
 				requestError.message ||
@@ -823,9 +831,30 @@ export default function VerifyPage({ auth, onLogout }) {
 			</div>
 
 			{isLoading ? <p className="muted">Loading verification workspace...</p> : null}
+			{isWorkspacePending && !workspace && !isLoading ? (
+				<div className="gv-pending-panel">
+					<div className="gv-pending-icon" aria-hidden="true">⏳</div>
+					<p className="gv-pending-title">Workspace is not ready yet.</p>
+					<p className="muted">
+						Run verification to generate the review workspace.
+					</p>
+					<button
+						id="run-verification-btn"
+						type="button"
+						className="primary-btn"
+						onClick={handleRunVerification}
+						disabled={isRunningVerification}
+					>
+						{isRunningVerification ? "Running verification..." : "Run Verification"}
+					</button>
+					{reviewError ? (
+						<p className="error-text gv-pending-error">{reviewError}</p>
+					) : null}
+				</div>
+			) : null}
 			{error ? <p className="error-text">{error}</p> : null}
 			{closeError ? <p className="error-text">{closeError}</p> : null}
-			{reviewError ? <p className="error-text">{reviewError}</p> : null}
+			{workspace && reviewError ? <p className="error-text">{reviewError}</p> : null}
 			{reviewMessage ? <p className="success-text">{reviewMessage}</p> : null}
 
 			{workspace ? (

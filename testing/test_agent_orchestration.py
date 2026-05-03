@@ -9,7 +9,7 @@ from pydantic import ValidationError
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from backend.app.agent_orchestration.graph import build_generalized_verification_graph
-from backend.app.agent_orchestration.policies import AgentRuntimePolicy
+from backend.app.agent_orchestration.policies import AgentRuntimePolicy, load_agent_runtime_policy
 from backend.app.agent_orchestration.schemas import (
     FieldDecision,
     GeminiCredentialGroupCollection,
@@ -22,6 +22,7 @@ from backend.app.agent_orchestration.schemas import (
     VerifierResult,
     WorkspacePayload,
 )
+from backend.app.agent_orchestration.providers.gemini_pool import GeminiPoolRateLimitError
 from backend.app.agent_orchestration.providers.gemini import build_gemini_llm
 from backend.app.agent_orchestration.semantic_normalization import normalize_claims_semantically
 from backend.app.agent_orchestration.service import normalize_extraction_payload
@@ -81,11 +82,119 @@ class _FakeLlm:
         return self.response
 
 
+def _gemini_balanced_graph_response(_prompt_or_messages, *, preferred_key=None, schema=None, stage_name="gemini"):
+    if stage_name == "gemini_document_understanding":
+        return GeminiDocumentUnderstanding(
+            document_type="academic_credential",
+            summary="Credential document",
+            explanation="Structured Gemini output accepted.",
+            grounding_confidence=0.9,
+            matching_score=0.8,
+            visual_match_probability=0.7,
+        )
+    if stage_name == "gemini_field_normalization":
+        return SemanticNormalizedClaimCollection(
+            claims=[
+                {
+                    "claim_id": "claim-name",
+                    "field_id": "name",
+                    "label": "Name",
+                    "canonical_label": "Name",
+                    "normalized_value": "Kanak Sharma",
+                    "claim_type": "identity",
+                    "confidence": 0.99,
+                    "normalization_source": "gemini",
+                    "requires_verification": True,
+                }
+            ]
+        )
+    if stage_name == "gemini_credential_grouping":
+        return GeminiCredentialGroupCollection(
+            groups=[
+                {
+                    "group_id": "primary-credential",
+                    "label": "Primary Credential",
+                    "field_ids": ["name"],
+                    "connector_id": "vit_registry",
+                    "claim_type": "credential",
+                    "optional": False,
+                    "high_assurance": True,
+                    "explanation": "Grouped for registry verification.",
+                }
+            ]
+        )
+    raise AssertionError(f"Unexpected Gemini stage {stage_name}")
+
+
+def _enabled_gemini_policy() -> AgentRuntimePolicy:
+    return AgentRuntimePolicy(
+        orchestration_enabled=True,
+        provider_key="gemini",
+        gemini_api_key="test-key",
+        gemini_model="gemini-2.5-flash",
+        gemini_demo_raw_text_enabled=True,
+        gemini_structured_output_enabled=True,
+    )
+
+
 class GeminiNormalizationTests(unittest.TestCase):
     def test_build_gemini_llm_raises_clear_error_without_key(self):
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""}, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_API_KEY_PRIMARY": "",
+                "GEMINI_API_KEY": "",
+                "GOOGLE_API_KEY": "",
+                "GEMINI_API_KEY_SECONDARY": "",
+            },
+            clear=False,
+        ):
             with self.assertRaisesRegex(RuntimeError, "GEMINI_API_KEY is not configured"):
                 build_gemini_llm()
+
+    def test_runtime_policy_treats_primary_only_gemini_key_as_configured(self):
+        from backend.app.agent_orchestration.graph import _gemini_enabled
+
+        with patch.dict(
+            os.environ,
+            {
+                "AGENT_PROVIDER": "gemini",
+                "GEMINI_API_KEY_PRIMARY": "primary-only-key",
+                "GEMINI_API_KEY": "",
+                "GOOGLE_API_KEY": "",
+                "GEMINI_API_KEY_SECONDARY": "",
+            },
+            clear=False,
+        ):
+            policy = load_agent_runtime_policy()
+
+        self.assertTrue(policy.gemini_primary_configured)
+        self.assertFalse(policy.gemini_secondary_configured)
+        self.assertTrue(policy.gemini_configured)
+        self.assertTrue(_gemini_enabled(policy))
+        self.assertNotEqual(policy.gemini_api_key, "primary-only-key")
+
+    def test_runtime_policy_treats_secondary_only_gemini_key_as_configured(self):
+        from backend.app.agent_orchestration.graph import _gemini_enabled
+
+        with patch.dict(
+            os.environ,
+            {
+                "AGENT_PROVIDER": "gemini",
+                "GEMINI_API_KEY_PRIMARY": "",
+                "GEMINI_API_KEY": "",
+                "GOOGLE_API_KEY": "",
+                "GEMINI_API_KEY_SECONDARY": "secondary-only-key",
+            },
+            clear=False,
+        ):
+            policy = load_agent_runtime_policy()
+
+        self.assertFalse(policy.gemini_primary_configured)
+        self.assertTrue(policy.gemini_secondary_configured)
+        self.assertTrue(policy.gemini_configured)
+        self.assertTrue(_gemini_enabled(policy))
+        self.assertNotEqual(policy.gemini_api_key, "secondary-only-key")
 
     def test_generalized_graph_accepts_mocked_gemini_structured_outputs(self):
         policy = AgentRuntimePolicy(
@@ -161,6 +270,183 @@ class GeminiNormalizationTests(unittest.TestCase):
         self.assertTrue(result["route_recommendations"])
         self.assertTrue(result["verification_tasks"])
         VerificationTask.model_validate(result["verification_tasks"][0])
+
+    def test_gemini_graph_stages_use_balanced_pool_preferred_keys(self):
+        with patch("backend.app.agent_orchestration.graph.invoke_gemini_balanced", side_effect=_gemini_balanced_graph_response) as invoke_mock:
+            result = build_generalized_verification_graph(policy=_enabled_gemini_policy()).invoke(
+                {
+                    "session_id": "session-1",
+                    "filename": "demo.pdf",
+                    "file_path": "",
+                    "extraction_payload": _runtime_payload(),
+                }
+            )
+
+        self.assertFalse(result.get("gemini_fallback_used", False))
+        observed = {
+            call.kwargs["stage_name"]: call.kwargs["preferred_key"]
+            for call in invoke_mock.call_args_list
+        }
+        self.assertEqual(observed["gemini_document_understanding"], "primary")
+        self.assertEqual(observed["gemini_field_normalization"], "secondary")
+        self.assertEqual(observed["gemini_credential_grouping"], "primary")
+
+    def test_graph_document_understanding_invokes_primary_slot(self):
+        with patch("backend.app.agent_orchestration.graph.invoke_gemini_balanced", side_effect=_gemini_balanced_graph_response) as invoke_mock:
+            build_generalized_verification_graph(policy=_enabled_gemini_policy()).invoke(
+                {
+                    "session_id": "session-document-primary",
+                    "filename": "demo.pdf",
+                    "file_path": "",
+                    "extraction_payload": _runtime_payload(),
+                }
+            )
+
+        document_calls = [
+            call for call in invoke_mock.call_args_list
+            if call.kwargs["stage_name"] == "gemini_document_understanding"
+        ]
+        self.assertEqual(len(document_calls), 1)
+        self.assertEqual(document_calls[0].kwargs["preferred_key"], "primary")
+
+    def test_graph_credential_grouping_invokes_primary_slot(self):
+        with patch("backend.app.agent_orchestration.graph.invoke_gemini_balanced", side_effect=_gemini_balanced_graph_response) as invoke_mock:
+            build_generalized_verification_graph(policy=_enabled_gemini_policy()).invoke(
+                {
+                    "session_id": "session-grouping-primary",
+                    "filename": "demo.pdf",
+                    "file_path": "",
+                    "extraction_payload": _runtime_payload(),
+                }
+            )
+
+        grouping_calls = [
+            call for call in invoke_mock.call_args_list
+            if call.kwargs["stage_name"] == "gemini_credential_grouping"
+        ]
+        self.assertEqual(len(grouping_calls), 1)
+        self.assertEqual(grouping_calls[0].kwargs["preferred_key"], "primary")
+
+    def test_graph_field_normalization_invokes_secondary_slot_when_claims_exist(self):
+        with patch("backend.app.agent_orchestration.graph.invoke_gemini_balanced", side_effect=_gemini_balanced_graph_response) as invoke_mock:
+            build_generalized_verification_graph(policy=_enabled_gemini_policy()).invoke(
+                {
+                    "session_id": "session-field-secondary",
+                    "filename": "demo.pdf",
+                    "file_path": "",
+                    "extraction_payload": _runtime_payload(),
+                }
+            )
+
+        field_calls = [
+            call for call in invoke_mock.call_args_list
+            if call.kwargs["stage_name"] == "gemini_field_normalization"
+        ]
+        self.assertEqual(len(field_calls), 1)
+        self.assertEqual(field_calls[0].kwargs["preferred_key"], "secondary")
+
+    def test_graph_field_normalization_does_not_touch_secondary_without_claims(self):
+        payload_without_claims = {
+            "view": {
+                "document_type": "academic_credential",
+                "page_count": 1,
+                "used_ocr": False,
+                "warnings": [],
+                "field_details": [],
+                "field_candidates": [],
+            },
+            "trust_input": {"fields": []},
+            "connector_input": {},
+        }
+        with patch("backend.app.agent_orchestration.graph.invoke_gemini_balanced", side_effect=_gemini_balanced_graph_response) as invoke_mock:
+            build_generalized_verification_graph(policy=_enabled_gemini_policy()).invoke(
+                {
+                    "session_id": "session-no-secondary",
+                    "filename": "demo.pdf",
+                    "file_path": "",
+                    "extraction_payload": payload_without_claims,
+                }
+            )
+
+        stages = [call.kwargs["stage_name"] for call in invoke_mock.call_args_list]
+        self.assertIn("gemini_document_understanding", stages)
+        self.assertIn("gemini_credential_grouping", stages)
+        self.assertNotIn("gemini_field_normalization", stages)
+
+    def test_field_normalization_adapter_prefers_secondary_slot(self):
+        from backend.app.agent_orchestration.graph import _build_structured_gemini_llm
+
+        policy = AgentRuntimePolicy(
+            orchestration_enabled=True,
+            provider_key="gemini",
+            gemini_api_key="test-key",
+            gemini_model="gemini-2.5-flash",
+            gemini_demo_raw_text_enabled=True,
+        )
+        response = SemanticNormalizedClaimCollection(claims=[])
+
+        with patch("backend.app.agent_orchestration.graph.invoke_gemini_balanced", return_value=response) as invoke_mock:
+            llm = _build_structured_gemini_llm(
+                runtime_policy=policy,
+                schema=SemanticNormalizedClaimCollection,
+                stage_name="gemini_field_normalization",
+            )
+            self.assertIs(llm.invoke("safe prompt"), response)
+
+        invoke_mock.assert_called_once()
+        self.assertEqual(invoke_mock.call_args.kwargs["preferred_key"], "secondary")
+        self.assertEqual(invoke_mock.call_args.kwargs["stage_name"], "gemini_field_normalization")
+
+    def test_gemini_stage_preference_mapping_includes_task_planning(self):
+        from backend.app.agent_orchestration.graph import _preferred_gemini_key_for_stage
+
+        self.assertEqual(_preferred_gemini_key_for_stage("gemini_document_understanding"), "primary")
+        self.assertEqual(_preferred_gemini_key_for_stage("gemini_field_normalization"), "secondary")
+        self.assertEqual(_preferred_gemini_key_for_stage("gemini_credential_grouping"), "primary")
+        self.assertEqual(_preferred_gemini_key_for_stage("verification_task_planning"), "secondary")
+
+    def test_gemini_pool_rate_limit_error_uses_deterministic_fallback_without_raw_leaks(self):
+        raw_payload = _runtime_payload()
+        raw_payload["view"]["raw_text"] = "RAW_GEMINI_WIRING_OCR_SECRET"
+        raw_payload["view"]["field_details"] = [
+            {
+                "key": "name",
+                "label": "Name",
+                "value": "Raw Name",
+                "source_text": "RAW_GEMINI_WIRING_CREDENTIAL_SECRET",
+            }
+        ]
+        policy = AgentRuntimePolicy(
+            orchestration_enabled=True,
+            provider_key="gemini",
+            gemini_api_key="test-key",
+            gemini_model="gemini-2.5-flash",
+            gemini_demo_raw_text_enabled=True,
+        )
+
+        with patch(
+            "backend.app.agent_orchestration.graph.invoke_gemini_balanced",
+            side_effect=GeminiPoolRateLimitError("Gemini rate limit encountered for configured key slots"),
+        ):
+            with self.assertLogs("backend.app.agent_orchestration.graph", level="WARNING") as captured:
+                result = build_generalized_verification_graph(policy=policy).invoke(
+                    {
+                        "session_id": "session-rate-limit",
+                        "filename": "demo.pdf",
+                        "file_path": "",
+                        "extraction_payload": raw_payload,
+                    }
+                )
+
+        self.assertTrue(result["gemini_fallback_used"])
+        WorkspacePayload.model_validate(result["workspace_payload"])
+        combined = "\n".join(
+            captured.output
+            + [str(result.get("gemini_errors") or ""), str(result.get("audit_log") or ""), str(result.get("workspace_payload") or "")]
+        )
+        self.assertNotIn("RAW_GEMINI_WIRING_OCR_SECRET", combined)
+        self.assertNotIn("RAW_GEMINI_WIRING_CREDENTIAL_SECRET", combined)
+        self.assertNotIn("RAW_GEMINI_WIRING_PROVIDER_SECRET", combined)
 
     def test_service_falls_back_when_gemini_dependency_or_call_fails(self):
         raw_payload = _runtime_payload()

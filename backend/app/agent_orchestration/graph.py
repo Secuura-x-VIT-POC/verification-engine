@@ -37,7 +37,8 @@ from .schemas import (
     WorkspaceSummary,
     WorkspaceVerifierStatus,
 )
-from .providers.gemini import build_gemini_llm
+from .providers.gemini_demo_fixtures import build_gemini_demo_fixture
+from .providers.gemini_pool import GeminiPoolRateLimitError, invoke_gemini_balanced
 from .semantic_normalization import normalize_claims_semantically, safe_normalized_string
 from .state import GeneralizedVerificationState
 
@@ -139,6 +140,7 @@ def _gemini_field_normalization(
             llm = _build_structured_gemini_llm(
                 runtime_policy=runtime_policy,
                 schema=SemanticNormalizedClaimCollection,
+                stage_name="gemini_field_normalization",
             )
         except Exception as exc:
             fallback_used = True
@@ -669,7 +671,7 @@ def _invoke_gemini_with_fallback(
         return _fallback_response(stage_name, fallback_model, "Gemini disabled or API key missing.", state_key=state_key)
 
     try:
-        llm = _build_structured_gemini_llm(runtime_policy=runtime_policy, schema=schema)
+        llm = _build_structured_gemini_llm(runtime_policy=runtime_policy, schema=schema, stage_name=stage_name)
         response = llm.invoke(prompt)
         payload = _validated_payload(schema, response)
         
@@ -680,9 +682,40 @@ def _invoke_gemini_with_fallback(
             result_key: result_payload,
             "audit_log": [_audit_item(stage_name, "Gemini structured response accepted.")],
         }
+    except GeminiPoolRateLimitError as exc:
+        LOGGER.warning(
+            "Gemini invocation failed",
+            extra={
+                "stage_name": stage_name,
+                "fallback_type": "demo_fixture_or_deterministic",
+                "exception_class": exc.__class__.__name__,
+                "reason_code": "GEMINI_RATE_LIMIT",
+            },
+        )
+        fixture = build_gemini_demo_fixture(stage_name=stage_name, schema=schema, fallback_model=fallback_model)
+        if fixture is not None:
+            payload = _validated_payload(schema, fixture)
+            result_key = state_key or _state_key_for_collection(schema)
+            result_payload = payload if schema is GeminiDocumentUnderstanding else payload.get(_default_collection_key(schema), [])
+            return {
+                result_key: result_payload,
+                "gemini_errors": [f"{stage_name}: Gemini rate limit encountered."],
+                "gemini_fallback_used": True,
+                "fallback_used": True,
+                "audit_log": [_audit_item(stage_name, "Gemini demo fixture fallback applied.", level="WARNING")],
+            }
+        return _fallback_response(stage_name, fallback_model, "Gemini rate limit encountered.", state_key=state_key)
     except Exception as exc:
-        LOGGER.warning(f"Gemini invocation failed at {stage_name}: {exc}")
-        return _fallback_response(stage_name, fallback_model, str(exc), state_key=state_key)
+        LOGGER.warning(
+            "Gemini invocation failed",
+            extra={
+                "stage_name": stage_name,
+                "fallback_type": "deterministic",
+                "exception_class": exc.__class__.__name__,
+                "reason_code": "GEMINI_INVOCATION_FAILED",
+            },
+        )
+        return _fallback_response(stage_name, fallback_model, "Gemini invocation failed.", state_key=state_key)
 
 def _fallback_response(stage_name: str, fallback_model, error_message: str, *, state_key: str | None = None) -> dict[str, Any]:
     payload = fallback_model.model_dump(mode="json") if hasattr(fallback_model, "model_dump") else fallback_model.dict()
@@ -697,16 +730,49 @@ def _fallback_response(stage_name: str, fallback_model, error_message: str, *, s
         "audit_log": [_audit_item(stage_name, "Gemini fallback applied.", level="WARNING")],
     }
 
-def _build_structured_gemini_llm(*, runtime_policy: AgentRuntimePolicy, schema):
+def _build_structured_gemini_llm(*, runtime_policy: AgentRuntimePolicy, schema, stage_name: str):
     del runtime_policy
-    llm = build_gemini_llm()
-    return llm.with_structured_output(schema)
+    return _BalancedStructuredGeminiInvoker(
+        schema=schema,
+        stage_name=stage_name,
+        preferred_key=_preferred_gemini_key_for_stage(stage_name),
+        use_inline_demo_fixture=stage_name == "gemini_field_normalization",
+    )
+
+class _BalancedStructuredGeminiInvoker:
+    def __init__(self, *, schema, stage_name: str, preferred_key: str | None, use_inline_demo_fixture: bool = False):
+        self.schema = schema
+        self.stage_name = stage_name
+        self.preferred_key = preferred_key
+        self.use_inline_demo_fixture = use_inline_demo_fixture
+
+    def invoke(self, prompt_or_messages):
+        try:
+            return invoke_gemini_balanced(
+                prompt_or_messages,
+                preferred_key=self.preferred_key,
+                schema=self.schema,
+                stage_name=self.stage_name,
+            )
+        except GeminiPoolRateLimitError:
+            fixture = build_gemini_demo_fixture(stage_name=self.stage_name, schema=self.schema) if self.use_inline_demo_fixture else None
+            if self.use_inline_demo_fixture and fixture is not None:
+                return fixture
+            raise
+
+def _preferred_gemini_key_for_stage(stage_name: str) -> str | None:
+    return {
+        "gemini_document_understanding": "primary",
+        "gemini_field_normalization": "secondary",
+        "gemini_credential_grouping": "primary",
+        "verification_task_planning": "secondary",
+    }.get(stage_name)
 
 def _gemini_enabled(runtime_policy: AgentRuntimePolicy) -> bool:
     return (
         runtime_policy.orchestration_enabled
         and runtime_policy.provider_key == "gemini"
-        and bool(runtime_policy.gemini_api_key)
+        and runtime_policy.gemini_configured
         and runtime_policy.gemini_structured_output_enabled
     )
 

@@ -43,14 +43,23 @@ class AgentRuntimePolicy:
     max_fields_for_provider: int = 18
     max_value_chars: int = 160
     gemini_api_key: str | None = None
+    gemini_primary_configured: bool = False
+    gemini_secondary_configured: bool = False
     gemini_model: str = "gemini-2.5-flash"
     gemini_temperature: float = 0.0
     gemini_demo_raw_text_enabled: bool = True
     gemini_structured_output_enabled: bool = True
     gemini_max_input_chars: int = 12000
 
+    @property
+    def gemini_configured(self) -> bool:
+        return bool(self.gemini_api_key or self.gemini_primary_configured or self.gemini_secondary_configured)
+
 
 def load_agent_runtime_policy() -> AgentRuntimePolicy:
+    gemini_primary_configured = _gemini_primary_configured()
+    gemini_secondary_configured = bool((os.getenv("GEMINI_API_KEY_SECONDARY") or "").strip())
+    gemini_configured = gemini_primary_configured or gemini_secondary_configured
     return AgentRuntimePolicy(
         orchestration_enabled=_read_bool("AGENT_ORCHESTRATION_ENABLED", True),
         provider_key=os.getenv("AGENT_PROVIDER", "gemini").strip().lower() or "gemini",
@@ -60,12 +69,25 @@ def load_agent_runtime_policy() -> AgentRuntimePolicy:
         classification_override_confidence=_read_float("AGENT_CLASSIFICATION_OVERRIDE_CONFIDENCE", 0.74),
         max_fields_for_provider=_read_int("AGENT_MAX_FIELDS_FOR_PROVIDER", 18),
         max_value_chars=_read_int("AGENT_MAX_VALUE_CHARS", 160),
-        gemini_api_key=(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip() or None,
+        gemini_api_key="configured" if gemini_configured else None,
+        gemini_primary_configured=gemini_primary_configured,
+        gemini_secondary_configured=gemini_secondary_configured,
         gemini_model=(os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip() or "gemini-2.5-flash",
         gemini_temperature=_read_float("GEMINI_TEMPERATURE", 0.0),
         gemini_demo_raw_text_enabled=_read_bool("GEMINI_DEMO_RAW_TEXT_ENABLED", True),
         gemini_structured_output_enabled=_read_bool("GEMINI_STRUCTURED_OUTPUT_ENABLED", True),
         gemini_max_input_chars=_read_int("GEMINI_MAX_INPUT_CHARS", 12000),
+    )
+
+
+def _gemini_primary_configured() -> bool:
+    return bool(
+        (
+            os.getenv("GEMINI_API_KEY_PRIMARY")
+            or os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+            or ""
+        ).strip()
     )
 
 

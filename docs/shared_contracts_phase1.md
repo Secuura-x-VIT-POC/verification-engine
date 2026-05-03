@@ -20,6 +20,15 @@ These contracts define the stable handoff shape between API routes, workflow orc
 - Persistent audit artifacts must not contain PII, raw document content, raw OCR output, full Gemini prompts/responses, or raw verifier evidence.
 - The frontend receives only a sanitized workspace payload.
 
+Gemini demo resilience:
+
+- Gemini may use `GEMINI_API_KEY_PRIMARY` and `GEMINI_API_KEY_SECONDARY`; `GEMINI_API_KEY` and `GOOGLE_API_KEY` remain backward-compatible primary-key fallbacks.
+- `GEMINI_MODEL` and `GEMINI_TEMPERATURE` configure the active Gemini client.
+- `GEMINI_DEMO_FIXTURE_ENABLED` defaults to `0`; when enabled, fixtures are a rate-limit resilience path only, not production verification evidence.
+- Primary and secondary keys are resilience slots. Keys from the same Google project may share quota; separate projects/accounts can improve demo continuity but do not replace deterministic fallback.
+- If Gemini calls are rate-limited or unavailable, deterministic/demo-safe fallback must keep the session moving to `PENDING_HUMAN_REVIEW`.
+- AI-only or demo fixture output must never produce GREEN without verifier-backed evidence.
+
 ## 3. Ownership
 
 Owners: Person A + Person B + Person D

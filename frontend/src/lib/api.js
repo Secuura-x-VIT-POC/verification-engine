@@ -50,13 +50,17 @@ export async function apiRequest(path, options = {}) {
 
 	if (!response.ok) {
 		let message = `Request failed with status ${response.status}`;
+		let payload = null;
 		try {
-			const payload = await response.json();
+			payload = await response.json();
 			message = payload.detail || payload.message || message;
 		} catch {
 			// Keep the default fallback.
 		}
-		throw new Error(message);
+		const error = new Error(message);
+		error.status = response.status;
+		error.payload = payload;
+		throw error;
 	}
 
 	const contentType = response.headers.get("content-type") || "";

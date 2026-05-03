@@ -81,7 +81,19 @@ Default containerized behavior:
 - OCR precedence is `native PDF text -> PaddleOCR -> Tesseract fallback`.
 - Local mock verification is enabled by default.
 - Microsoft Entra Verified ID remains the preferred trust rail architecturally, but live outbound execution is disabled by default.
-- Gemini/LangGraph enrichment is the active LLM path when `GEMINI_API_KEY` is configured; deterministic fallback remains available without a key.
+- Gemini/LangGraph enrichment is the active LLM path when Gemini keys are configured; deterministic fallback remains available without a key.
+
+## Gemini Demo Resilience
+
+Gemini clients support primary/secondary resilience slots:
+
+- `GEMINI_API_KEY_PRIMARY` is tried first when set.
+- `GEMINI_API_KEY_SECONDARY` is a fallback slot for rate-limit resilience.
+- `GEMINI_API_KEY` and `GOOGLE_API_KEY` remain backward-compatible primary-key fallbacks.
+- `GEMINI_MODEL` and `GEMINI_TEMPERATURE` control the LangGraph Gemini client.
+- `GEMINI_DEMO_FIXTURE_ENABLED=0` is the default. When enabled, demo fixtures are used only after Gemini rate-limit exhaustion and are not production verification evidence.
+
+Do not commit real keys. Two keys from the same Google project may share quota; separate projects or accounts can improve demo resilience but are not a substitute for deterministic fallback. If Gemini is unavailable or both keys are exhausted, the workflow should still complete through deterministic/demo-safe fallback and reach `PENDING_HUMAN_REVIEW`. AI-only or demo fixture fallback must not create `GREEN` without verifier-backed evidence.
 
 Default local URLs:
 

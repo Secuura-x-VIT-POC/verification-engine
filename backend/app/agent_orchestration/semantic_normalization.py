@@ -12,10 +12,11 @@ def normalize_claims_semantically(
     llm: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Normalize claim meaning without making verifier or trust decisions."""
-    if llm is not None:
+    sanitized_claims = [claim for claim in claims if isinstance(claim, dict)]
+    if llm is not None and sanitized_claims:
         try:
             prompt_payload = {
-                "claims": [_claim_without_raw_value(claim) for claim in claims if isinstance(claim, dict)],
+                "claims": [_claim_without_raw_value(claim) for claim in sanitized_claims],
                 "document_profile": dict(document_profile or {}),
             }
             response = llm.invoke(prompt_payload)
@@ -32,8 +33,7 @@ def normalize_claims_semantically(
 
     return [
         _without_raw_value(_fallback_claim(index, claim).model_dump(mode="json"))
-        for index, claim in enumerate(claims, start=1)
-        if isinstance(claim, dict)
+        for index, claim in enumerate(sanitized_claims, start=1)
     ]
 
 

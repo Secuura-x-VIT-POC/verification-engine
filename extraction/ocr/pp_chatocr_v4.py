@@ -8,7 +8,9 @@ import io
 import logging
 import os
 import re
+import threading
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,8 @@ SOURCE = "pp_chatocr_v4"
 COORDINATE_SPACE = "pp_chatocr_image_pixels"
 PIPELINE_NAME = "PP-ChatOCRv4-doc"
 LOGGER = logging.getLogger(__name__)
+_ENGINE_CACHE_LOCK = threading.Lock()
+_ENGINE_CACHE: dict[tuple[Any, ...], Any] = {}
 
 DEFAULT_KEY_LIST = [
     "all visible key-value pairs",
@@ -50,24 +54,11 @@ def run_pp_chatocr_v4_extraction(
     config = _load_config()
     keys = _normalize_key_list(key_list, document_type_hint)
 
-    try:
-        from paddleocr import PPChatOCRv4Doc
-    except Exception as exc:  # pragma: no cover - environment dependent
-        raise PPChatOCRConfigurationError("PP-ChatOCRv4-doc is unavailable: paddleocr.PPChatOCRv4Doc could not be imported.") from exc
-
-    try:
-        engine = PPChatOCRv4Doc(
-            device=config["device"],
-            use_table_recognition=config["use_table_recognition"],
-            use_seal_recognition=config["use_seal_recognition"],
-            use_doc_orientation_classify=config["use_doc_orientation_classify"],
-            use_doc_unwarping=config["use_doc_unwarping"],
-        )
-    except Exception as exc:  # pragma: no cover - model init is environment dependent
-        raise PPChatOCRConfigurationError(f"PP-ChatOCRv4-doc could not initialize: {_safe_error(exc)}") from exc
+    engine, cached_engine = _get_pp_chatocr_engine(config)
 
     warnings: list[str] = []
     try:
+        visual_predict_started = time.perf_counter()
         with _prepare_pp_inputs(path) as pp_inputs:
             visual_results = []
             for input_item in pp_inputs:
@@ -87,6 +78,12 @@ def run_pp_chatocr_v4_extraction(
                         result["_pp_source_width"] = input_item.get("source_width")
                         result["_pp_source_height"] = input_item.get("source_height")
                 visual_results.extend(page_visual_results)
+            LOGGER.info(
+                "pp_chatocr_visual_predict_ms=%d pages=%d cached_engine=%s",
+                _elapsed_ms(visual_predict_started),
+                len(pp_inputs),
+                cached_engine,
+            )
 
             visual_info_list = [item.get("visual_info") for item in visual_results if isinstance(item, dict) and item.get("visual_info") is not None]
             normalized = _normalize_visual_results(visual_results)
@@ -94,15 +91,19 @@ def run_pp_chatocr_v4_extraction(
                 raise PPChatOCRExtractionError("PP-ChatOCRv4 visual/layout OCR produced no usable text lines with boxes.")
 
             vector_info = None
-            try:
-                vector_info = _call_with_supported_kwargs(
-                    engine.build_vector,
-                    visual_info_list,
-                    retriever_config=config["retriever_config"],
-                )
-            except Exception as exc:
-                warnings.append("pp_chatocr_vector_stage_failed")
-                _log_safe_stage_error("vector", exc, fallback_used=True)
+            chat_stage_configured = _is_pp_chat_stage_configured(config)
+            if chat_stage_configured:
+                vector_started = time.perf_counter()
+                try:
+                    vector_info = _call_with_supported_kwargs(
+                        engine.build_vector,
+                        visual_info_list,
+                        retriever_config=config["retriever_config"],
+                    )
+                    LOGGER.info("pp_chatocr_vector_ms=%d", _elapsed_ms(vector_started))
+                except Exception as exc:
+                    warnings.append("PP_CHATOCR_VECTOR_STAGE_FAILED")
+                    _log_safe_stage_error("vector", exc, fallback_used=True)
 
             mllm_predict_info = None
             mllm_results = []
@@ -124,7 +125,8 @@ def run_pp_chatocr_v4_extraction(
             mllm_predict_info = _merge_prediction_maps(mllm_results)
 
             chat_result = None
-            if config["chat_bot_config"]:
+            if chat_stage_configured:
+                chat_started = time.perf_counter()
                 try:
                     chat_result = _call_with_supported_kwargs(
                         engine.chat,
@@ -134,18 +136,23 @@ def run_pp_chatocr_v4_extraction(
                         mllm_predict_info=mllm_predict_info,
                         chat_bot_config=config["chat_bot_config"],
                     )
+                    LOGGER.info("pp_chatocr_chat_ms=%d", _elapsed_ms(chat_started))
                 except Exception as exc:
                     warnings.append(_stage_warning_code("chat", exc))
                     _log_safe_stage_error("chat", exc, fallback_used=False)
             else:
-                warnings.append("pp_chatocr_chat_stage_disabled")
+                LOGGER.debug(
+                    "PP_CHAT_OCR_CHAT_STAGE_DISABLED component=pp_chatocr chat_configured=%s retriever_configured=%s",
+                    bool(config["chat_bot_config"]),
+                    bool(config["retriever_config"]),
+                )
     except (PPChatOCRConfigurationError, PPChatOCRExtractionError):
         raise
     except Exception as exc:
         raise PPChatOCRExtractionError(f"PP-ChatOCRv4-doc extraction failed: {_safe_error(exc)}") from exc
     finally:
         close = getattr(engine, "close", None)
-        if callable(close):
+        if callable(close) and not cached_engine:
             try:
                 close()
             except Exception:
@@ -193,11 +200,70 @@ def run_pp_chatocr_v4_extraction(
             "paddleocr_version": _package_version("paddleocr"),
             "paddlex_version": _package_version("paddlex"),
             "paddlepaddle_version": _package_version("paddlepaddle"),
+            "chat_stage_configured": _is_pp_chat_stage_configured(config),
             "chat_configured": bool(config["chat_bot_config"]),
             "retriever_configured": bool(config["retriever_config"]),
             "mllm_configured": bool(config["mllm_chat_bot_config"]),
+            "engine_cache_enabled": bool(config["cache_engine"]),
+            "engine_cache_key": _safe_engine_cache_key(config),
         },
     }
+
+
+def _get_pp_chatocr_engine(config: dict[str, Any]) -> tuple[Any, bool]:
+    cache_enabled = bool(config.get("cache_engine"))
+    cache_key = _engine_cache_key(config)
+    if cache_enabled:
+        with _ENGINE_CACHE_LOCK:
+            cached = _ENGINE_CACHE.get(cache_key)
+            if cached is not None:
+                return cached, True
+
+    try:
+        from paddleocr import PPChatOCRv4Doc
+    except Exception as exc:  # pragma: no cover - environment dependent
+        raise PPChatOCRConfigurationError("PP-ChatOCRv4-doc is unavailable: paddleocr.PPChatOCRv4Doc could not be imported.") from exc
+
+    started = time.perf_counter()
+    try:
+        engine = PPChatOCRv4Doc(
+            device=config["device"],
+            use_table_recognition=config["use_table_recognition"],
+            use_seal_recognition=config["use_seal_recognition"],
+            use_doc_orientation_classify=config["use_doc_orientation_classify"],
+            use_doc_unwarping=config["use_doc_unwarping"],
+        )
+    except Exception as exc:  # pragma: no cover - model init is environment dependent
+        raise PPChatOCRConfigurationError(f"PP-ChatOCRv4-doc could not initialize: {_safe_error(exc)}") from exc
+    LOGGER.info("pp_chatocr_engine_init_ms=%d cached_engine=false", _elapsed_ms(started))
+
+    if cache_enabled:
+        with _ENGINE_CACHE_LOCK:
+            existing = _ENGINE_CACHE.get(cache_key)
+            if existing is not None:
+                close = getattr(engine, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+                return existing, True
+            _ENGINE_CACHE[cache_key] = engine
+            return engine, True
+    return engine, False
+
+
+def reset_pp_chatocr_engine_cache_for_tests() -> None:
+    with _ENGINE_CACHE_LOCK:
+        engines = list(_ENGINE_CACHE.values())
+        _ENGINE_CACHE.clear()
+    for engine in engines:
+        close = getattr(engine, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
 
 
 def _load_config() -> dict[str, Any]:
@@ -205,11 +271,6 @@ def _load_config() -> dict[str, Any]:
         "SECUURA_OCR_ENGINE",
         "SECUURA_ENABLE_ADVANCED_PADDLE_OCR",
         "PP_CHAT_OCR_PIPELINE",
-        "PP_CHAT_OCR_DEVICE",
-        "PP_CHAT_OCR_ENABLE_TABLE_RECOGNITION",
-        "PP_CHAT_OCR_ENABLE_SEAL_RECOGNITION",
-        "PP_CHAT_OCR_ENABLE_DOC_ORIENTATION",
-        "PP_CHAT_OCR_ENABLE_DOC_UNWARPING",
     ]
     missing = [name for name in required if os.getenv(name) in (None, "")]
     if missing:
@@ -220,23 +281,48 @@ def _load_config() -> dict[str, Any]:
         raise PPChatOCRConfigurationError("SECUURA_OCR_ENGINE must be pp_chatocr_v4.")
     if not _parse_bool(os.getenv("SECUURA_ENABLE_ADVANCED_PADDLE_OCR"), default=True):
         raise PPChatOCRConfigurationError("SECUURA_ENABLE_ADVANCED_PADDLE_OCR must be true.")
-    pipeline = os.getenv("PP_CHAT_OCR_PIPELINE", "").strip()
+    pipeline = os.getenv("PP_CHAT_OCR_PIPELINE", PIPELINE_NAME).strip()
     if pipeline != PIPELINE_NAME:
         raise PPChatOCRConfigurationError("PP_CHAT_OCR_PIPELINE must be PP-ChatOCRv4-doc.")
 
-    device = os.getenv("PP_CHAT_OCR_DEVICE", "").strip()
+    device = os.getenv("PP_CHAT_OCR_DEVICE", "cpu").strip() or "cpu"
     if device.lower().startswith("gpu") and _package_version("paddlepaddle-gpu") is None:
         raise PPChatOCRConfigurationError("PP_CHAT_OCR_DEVICE requests GPU, but paddlepaddle-gpu is not installed. Install GPU Paddle or set PP_CHAT_OCR_DEVICE=cpu.")
 
     return {
         "device": device,
-        "use_table_recognition": _parse_bool(os.getenv("PP_CHAT_OCR_ENABLE_TABLE_RECOGNITION"), default=True),
-        "use_seal_recognition": _parse_bool(os.getenv("PP_CHAT_OCR_ENABLE_SEAL_RECOGNITION"), default=True),
-        "use_doc_orientation_classify": _parse_bool(os.getenv("PP_CHAT_OCR_ENABLE_DOC_ORIENTATION"), default=True),
-        "use_doc_unwarping": _parse_bool(os.getenv("PP_CHAT_OCR_ENABLE_DOC_UNWARPING"), default=True),
+        "use_table_recognition": _parse_bool(_env_first("PP_CHAT_OCR_USE_TABLE_RECOGNITION", "PP_CHAT_OCR_ENABLE_TABLE_RECOGNITION"), default=True),
+        "use_seal_recognition": _parse_bool(_env_first("PP_CHAT_OCR_USE_SEAL_RECOGNITION", "PP_CHAT_OCR_ENABLE_SEAL_RECOGNITION"), default=False),
+        "use_doc_orientation_classify": _parse_bool(_env_first("PP_CHAT_OCR_USE_DOC_ORIENTATION_CLASSIFY", "PP_CHAT_OCR_ENABLE_DOC_ORIENTATION"), default=False),
+        "use_doc_unwarping": _parse_bool(_env_first("PP_CHAT_OCR_USE_DOC_UNWARPING", "PP_CHAT_OCR_ENABLE_DOC_UNWARPING"), default=False),
+        "cache_engine": _parse_bool(os.getenv("PP_CHAT_OCR_CACHE_ENGINE"), default=True),
         "chat_bot_config": _build_bot_config("PP_CHAT_OCR_CHAT"),
         "retriever_config": _build_bot_config("PP_CHAT_OCR_RETRIEVER"),
         "mllm_chat_bot_config": _build_bot_config("PP_CHAT_OCR_MLLM"),
+    }
+
+
+def _is_pp_chat_stage_configured(config: dict[str, Any]) -> bool:
+    return bool(config.get("chat_bot_config") and config.get("retriever_config"))
+
+
+def _engine_cache_key(config: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        config.get("device"),
+        bool(config.get("use_table_recognition")),
+        bool(config.get("use_seal_recognition")),
+        bool(config.get("use_doc_orientation_classify")),
+        bool(config.get("use_doc_unwarping")),
+    )
+
+
+def _safe_engine_cache_key(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "device": config.get("device"),
+        "use_table_recognition": bool(config.get("use_table_recognition")),
+        "use_seal_recognition": bool(config.get("use_seal_recognition")),
+        "use_doc_orientation_classify": bool(config.get("use_doc_orientation_classify")),
+        "use_doc_unwarping": bool(config.get("use_doc_unwarping")),
     }
 
 
@@ -484,8 +570,8 @@ def _prediction_fields_from_visual_ocr(normalized: dict[str, Any]) -> list[dict[
 
 def _stage_warning_code(stage: str, exc: Exception) -> str:
     if _is_auth_error(exc):
-        return f"pp_chatocr_{stage}_auth_failed"
-    return f"pp_chatocr_{stage}_stage_failed"
+        return f"PP_CHATOCR_{stage.upper()}_AUTH_FAILED"
+    return f"PP_CHATOCR_{stage.upper()}_STAGE_FAILED"
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -889,6 +975,18 @@ def _parse_bool(value: str | None, *, default: bool) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_first(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:

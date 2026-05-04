@@ -30,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 
 LOGGER = logging.getLogger(__name__)
 WARNING_VALUE_KEYS = ("code", "warning_code", "reason_code", "type", "stage", "error_code", "message")
+INTERNAL_ONLY_WARNING_CODES = {"PP_CHATOCR_CHAT_STAGE_DISABLED", "PP_CHAT_OCR_CHAT_STAGE_DISABLED"}
 UNSAFE_WARNING_MARKERS = (
     "RAW",
     "SECRET",
@@ -691,7 +692,7 @@ def _safe_warning_codes(value: Any) -> list[str]:
     seen: set[str] = set()
     for item in _iter_warning_values(value):
         code = _safe_warning_code(item)
-        if not code or code in seen:
+        if not code or code in INTERNAL_ONLY_WARNING_CODES or code in seen:
             continue
         seen.add(code)
         result.append(code)

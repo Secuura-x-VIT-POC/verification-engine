@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 
@@ -34,7 +35,7 @@ def infer_dynamic_document_schema_from_evidence(evidence_graph: dict[str, Any], 
 
 def _dynamic_schema_prompt(evidence_graph: dict[str, Any]) -> str:
     minimized = dict(evidence_graph or {})
-    minimized["evidence"] = list(minimized.get("evidence") or [])[:400]
+    minimized["evidence"] = list(minimized.get("evidence") or [])[:_dynamic_schema_max_evidence()]
     return (
         "Infer the document schema and extracted claims from this PP-ChatOCR evidence graph only. "
         "Return JSON only. Every claim must cite one or more evidence_ids from the graph. "
@@ -45,6 +46,14 @@ def _dynamic_schema_prompt(evidence_graph: dict[str, Any]) -> str:
         "missing_or_ambiguous_claims:[{label,reason,suggested_review_action}], warnings:[string]}.\n"
         f"Evidence graph:\n{json.dumps(minimized, default=str)}"
     )
+
+
+def _dynamic_schema_max_evidence() -> int:
+    try:
+        value = int(os.getenv("AGENT_DYNAMIC_SCHEMA_MAX_EVIDENCE", "120"))
+    except ValueError:
+        value = 120
+    return max(1, min(value, 400))
 
 
 def _coerce_json_payload(response: Any) -> dict[str, Any]:

@@ -95,6 +95,9 @@ MASK_VALUE_KEYS = {
     "candidate_name",
 }
 
+INTERNAL_ONLY_CODES = {"PP_CHATOCR_CHAT_STAGE_DISABLED", "PP_CHAT_OCR_CHAT_STAGE_DISABLED"}
+CODE_LIST_KEYS = {"warnings", "reason_codes", "risk_flags", "ambiguity_flags", "active_exceptions"}
+
 EMAIL_RE = re.compile(r"^([^@\s])[^@\s]*(@[^@\s]+\.[^@\s]+)$")
 DIGIT_RE = re.compile(r"\d")
 
@@ -121,7 +124,12 @@ def _sanitize_value(value: Any, *, key: str | None = None) -> Any:
             sanitized[normalized_key] = _sanitize_value(nested, key=normalized_key)
         return sanitized
     if isinstance(value, list):
-        return [_sanitize_value(item, key=key) for item in value]
+        sanitized_items = [_sanitize_value(item, key=key) for item in value]
+        if key in CODE_LIST_KEYS:
+            return [item for item in sanitized_items if str(item).upper() not in INTERNAL_ONLY_CODES]
+        if key == "bounding_boxes":
+            return _canonical_workspace_boxes(sanitized_items)
+        return sanitized_items
     if key in MASK_VALUE_KEYS:
         return mask_sensitive_value(value)
     return value
@@ -154,3 +162,40 @@ def mask_sensitive_value(value: Any) -> Any:
 def _looks_like_name_word(value: str) -> bool:
     cleaned = re.sub(r"[^A-Za-z]", "", value)
     return bool(cleaned) and cleaned[0].isalpha()
+
+
+def _canonical_workspace_boxes(value: list[Any], *, limit: int = 2) -> list[Any]:
+    boxes: list[tuple[tuple[int, float, float, float, float], float, dict[str, Any]]] = []
+    seen: set[tuple[int, float, float, float, float]] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        bbox = item.get("bbox")
+        if isinstance(bbox, list) and len(bbox) >= 4:
+            x0, y0, x1, y1 = bbox[:4]
+        else:
+            x0, y0, x1, y1 = item.get("x0"), item.get("y0"), item.get("x1"), item.get("y1")
+        try:
+            page = int(item.get("page_number") or item.get("page") or 1)
+            coords = (float(x0), float(y0), float(x1), float(y1))
+        except (TypeError, ValueError):
+            continue
+        normalized = (
+            page,
+            round(min(coords[0], coords[2]), 2),
+            round(min(coords[1], coords[3]), 2),
+            round(max(coords[0], coords[2]), 2),
+            round(max(coords[1], coords[3]), 2),
+        )
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        area = max(0.0, normalized[3] - normalized[1]) * max(0.0, normalized[4] - normalized[2])
+        payload = dict(item)
+        payload["page"] = page
+        payload["page_number"] = page
+        payload["x0"], payload["y0"], payload["x1"], payload["y1"] = normalized[1], normalized[2], normalized[3], normalized[4]
+        payload["bbox"] = [normalized[1], normalized[2], normalized[3], normalized[4]]
+        boxes.append((normalized, area, payload))
+    boxes.sort(key=lambda item: (item[1], item[0]))
+    return [payload for _, _, payload in boxes[:limit]]

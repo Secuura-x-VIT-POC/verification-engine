@@ -3,7 +3,9 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -53,6 +55,7 @@ from .state import GeneralizedVerificationState
 
 LOGGER = logging.getLogger(__name__)
 WARNING_VALUE_KEYS = ("code", "warning_code", "reason_code", "type", "stage", "error_code", "message")
+INTERNAL_ONLY_WARNING_CODES = {"PP_CHATOCR_CHAT_STAGE_DISABLED", "PP_CHAT_OCR_CHAT_STAGE_DISABLED"}
 UNSAFE_WARNING_MARKERS = (
     "RAW",
     "SECRET",
@@ -177,7 +180,9 @@ def _gemini_dynamic_schema_discovery(
                 schema=DynamicDocumentSchema,
                 stage_name="gemini_dynamic_schema_discovery",
             )
+            started = time.perf_counter()
             response = llm.invoke(_build_dynamic_schema_prompt(evidence_graph))
+            LOGGER.info("gemini_stage_ms=%d stage_name=gemini_dynamic_schema_discovery", _elapsed_ms(started))
             schema_payload = _validated_payload(DynamicDocumentSchema, response)
         except Exception as exc:
             LOGGER.warning(
@@ -713,6 +718,7 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
     sanitized_extraction = state.get("sanitized_extraction") or {}
     document_understanding = GeminiDocumentUnderstanding.model_validate(state.get("document_understanding") or {})
     field_decisions = [FieldDecision.model_validate(item) for item in list(state.get("field_decisions") or [])]
+    field_decisions = [_decision_with_workspace_boxes(field, sanitized_extraction) for field in field_decisions]
     verifier_results = [VerifierResult.model_validate(item) for item in list(state.get("verifier_results") or [])]
     final_verdict = state.get("final_verdict") or {}
     warnings = _workspace_safe_warnings(((sanitized_extraction.get("view") or {}).get("warnings")) or [])
@@ -819,13 +825,144 @@ def _workspace_safe_warning(item: Any) -> str:
     return "WORKSPACE_WARNING_REDACTED"
 
 
+def _decision_with_workspace_boxes(decision: FieldDecision, extraction_payload: dict[str, Any]) -> FieldDecision:
+    boxes = _canonical_workspace_boxes_for_decision(decision, extraction_payload)
+    return decision.model_copy(update={"bounding_boxes": boxes})
+
+
+def _canonical_workspace_boxes_for_decision(decision: FieldDecision, extraction_payload: dict[str, Any]) -> list[BoundingBox]:
+    claim = _dynamic_claim_by_field_id(extraction_payload).get(str(decision.field_id or "")) or {}
+    evidence_graph = (extraction_payload.get("view") or {}).get("evidence_graph") or extraction_payload.get("evidence_graph") or {}
+    evidence_items = [item for item in list((evidence_graph or {}).get("evidence") or []) if isinstance(item, dict)]
+    evidence_by_id = {str(item.get("evidence_id")): item for item in evidence_items if item.get("evidence_id")}
+    claim_evidence = [
+        evidence_by_id[item]
+        for item in [str(value) for value in list(claim.get("evidence_ids") or decision.evidence_ids or [])]
+        if item in evidence_by_id
+    ]
+
+    value_text = safe_normalized_string(
+        decision.normalized_value
+        or decision.extracted_value
+        or claim.get("normalized_value")
+        or claim.get("value")
+        or claim.get("extracted_value")
+    )
+    label_text = safe_normalized_string(decision.label or claim.get("label"))
+
+    selected: list[BoundingBox] = []
+    value_box = _best_specific_evidence_box(value_text, claim_evidence, prefer_contained_tokens=True)
+    if value_box is not None:
+        selected.append(value_box)
+    label_box = _best_specific_evidence_box(label_text, claim_evidence, prefer_contained_tokens=True)
+    if label_box is not None:
+        selected.append(label_box)
+
+    if selected:
+        return _dedupe_workspace_decision_boxes(selected)[:2]
+    return _dedupe_workspace_decision_boxes(list(decision.bounding_boxes))[:2]
+
+
+def _best_specific_evidence_box(text: str, evidence_items: list[dict[str, Any]], *, prefer_contained_tokens: bool) -> BoundingBox | None:
+    wanted = _norm_text(text)
+    if not wanted:
+        return None
+    exact = [item for item in evidence_items if _norm_text(item.get("text_preview")) == wanted and item.get("bbox")]
+    if exact:
+        return _box_from_evidence_items([_smallest_evidence_item(exact)])
+
+    token_items = []
+    if prefer_contained_tokens:
+        token_items = [
+            item
+            for item in evidence_items
+            if item.get("bbox")
+            and _norm_text(item.get("text_preview"))
+            and _norm_text(item.get("text_preview")) in wanted
+            and _norm_text(item.get("text_preview")) != wanted
+        ]
+    if token_items:
+        return _box_from_evidence_items(token_items)
+
+    containing = [
+        item
+        for item in evidence_items
+        if item.get("bbox")
+        and _norm_text(item.get("text_preview"))
+        and wanted in _norm_text(item.get("text_preview"))
+    ]
+    if containing:
+        return _box_from_evidence_items([_smallest_evidence_item(containing)])
+    return None
+
+
+def _smallest_evidence_item(items: list[dict[str, Any]]) -> dict[str, Any]:
+    return sorted(items, key=lambda item: (_evidence_area(item), str(item.get("evidence_id") or "")))[0]
+
+
+def _box_from_evidence_items(items: list[dict[str, Any]]) -> BoundingBox | None:
+    usable = [item for item in items if isinstance(item.get("bbox"), list) and len(item.get("bbox") or []) >= 4]
+    if not usable:
+        return None
+    pages = sorted({int(item.get("page_number") or item.get("page") or 1) for item in usable})
+    page = pages[0]
+    same_page = [item for item in usable if int(item.get("page_number") or item.get("page") or 1) == page]
+    xs0 = [float(item["bbox"][0]) for item in same_page]
+    ys0 = [float(item["bbox"][1]) for item in same_page]
+    xs1 = [float(item["bbox"][2]) for item in same_page]
+    ys1 = [float(item["bbox"][3]) for item in same_page]
+    bbox = [round(min(xs0), 2), round(min(ys0), 2), round(max(xs1), 2), round(max(ys1), 2)]
+    return BoundingBox(
+        page=page,
+        page_number=page,
+        x0=bbox[0],
+        y0=bbox[1],
+        x1=bbox[2],
+        y1=bbox[3],
+        bbox=bbox,
+        polygon=None,
+        coordinate_space=same_page[0].get("coordinate_space"),
+        source=same_page[0].get("source"),
+        confidence=_average_dynamic_confidence(same_page),
+    )
+
+
+def _evidence_area(item: dict[str, Any]) -> float:
+    bbox = item.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) < 4:
+        return float("inf")
+    return max(0.0, float(bbox[2]) - float(bbox[0])) * max(0.0, float(bbox[3]) - float(bbox[1]))
+
+
+def _dedupe_workspace_decision_boxes(boxes: list[BoundingBox]) -> list[BoundingBox]:
+    result: list[BoundingBox] = []
+    seen: set[tuple[int, float, float, float, float]] = set()
+    for box in boxes:
+        payload = box.model_dump(mode="json") if hasattr(box, "model_dump") else dict(box)
+        bbox = payload.get("bbox")
+        if isinstance(bbox, list) and len(bbox) >= 4:
+            x0, y0, x1, y1 = bbox[:4]
+        else:
+            x0, y0, x1, y1 = payload.get("x0"), payload.get("y0"), payload.get("x1"), payload.get("y1")
+        try:
+            page = int(payload.get("page_number") or payload.get("page") or 1)
+            key = (page, round(float(x0), 2), round(float(y0), 2), round(float(x1), 2), round(float(y1), 2))
+        except (TypeError, ValueError):
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(box)
+    return result
+
+
 def _safe_code_list(*values: Any) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for value in values:
         for item in _iter_code_values(value):
             code = _safe_code(item)
-            if not code or code in seen:
+            if not code or code in INTERNAL_ONLY_WARNING_CODES or code in seen:
                 continue
             seen.add(code)
             result.append(code)
@@ -958,7 +1095,9 @@ def _invoke_gemini_with_fallback(
 
     try:
         llm = _build_structured_gemini_llm(runtime_policy=runtime_policy, schema=schema, stage_name=stage_name)
+        started = time.perf_counter()
         response = llm.invoke(prompt)
+        LOGGER.info("gemini_stage_ms=%d stage_name=%s", _elapsed_ms(started), stage_name)
         payload = _validated_payload(schema, response)
         
         result_key = state_key or _state_key_for_collection(schema)
@@ -1027,6 +1166,11 @@ def _safe_fallback_reason(error_message: str) -> str:
     if "rate limit" in lowered:
         return "rate_limit"
     return "llm_error"
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
+
 
 def _build_structured_gemini_llm(*, runtime_policy: AgentRuntimePolicy, schema, stage_name: str):
     del runtime_policy
@@ -1109,7 +1253,7 @@ def _build_document_understanding_prompt(
 
 def _build_dynamic_schema_prompt(evidence_graph: dict[str, Any]) -> str:
     minimized = dict(evidence_graph or {})
-    minimized["evidence"] = list(minimized.get("evidence") or [])[:400]
+    minimized["evidence"] = list(minimized.get("evidence") or [])[:_dynamic_schema_max_evidence()]
     return (
         "Infer dynamic document schema and claims from PP-ChatOCR visual evidence only. "
         "Return strict JSON only and cite evidence_ids for every claim. "
@@ -1119,6 +1263,14 @@ def _build_dynamic_schema_prompt(evidence_graph: dict[str, Any]) -> str:
         "Allowed verification_intent values: identity, academic, employment, financial, address, date_validity, issuer_authenticity, generic_record, manual_review.\n"
         f"PP evidence graph:\n{json.dumps(minimized, default=str)}"
     )
+
+
+def _dynamic_schema_max_evidence() -> int:
+    try:
+        value = int(os.getenv("AGENT_DYNAMIC_SCHEMA_MAX_EVIDENCE", "120"))
+    except ValueError:
+        value = 120
+    return max(1, min(value, 400))
 
 
 def _payload_with_dynamic_claims(

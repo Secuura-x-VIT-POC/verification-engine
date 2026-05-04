@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,9 @@ from .output_builder import (
 )
 from .pii_classifier import apply_verifier_feedback, classify_pii
 from .security_gate import DocumentSafetyError, validate_document_intake
+
+LOGGER = logging.getLogger(__name__)
+INTERNAL_ONLY_WARNING_CODES = {"PP_CHATOCR_CHAT_STAGE_DISABLED", "PP_CHAT_OCR_CHAT_STAGE_DISABLED"}
 
 
 def run_extraction(session_id: str, pdf_path: str, llm_client=None, strategy: str = "auto"):
@@ -111,51 +116,55 @@ def extract_document_data_with_strategy(file_path: str, strategy: str = "auto") 
 
 def _run_extraction_bundle(session_id: str, pdf_path: str, llm_client=None, strategy: str = "auto") -> dict:
     del llm_client, strategy
+    started = time.perf_counter()
     path = Path(pdf_path)
-    safety_report = validate_document_intake(str(path))
-    document_type_hint = "generic"
-    pp_payload = run_pp_chatocr_v4_extraction(str(path), document_type_hint=document_type_hint)
-    evidence_graph = build_evidence_graph_from_pp_chatocr(pp_payload)
-    warnings = [_warning_from_payload(item) for item in list(pp_payload.get("warnings") or [])]
-    spatial_text_map = [_spatial_token_from_payload(item) for item in list(pp_payload.get("spatial_text_map") or [])]
-    evidence_lines = [_evidence_line_from_payload(item) for item in list(pp_payload.get("evidence_lines") or [])]
-    candidates = [_candidate_from_payload(item) for item in list(pp_payload.get("field_candidates") or [])]
-    sanitized_candidates = [classify_pii(candidate) for candidate in candidates]
-    credential_candidates = build_credential_candidates(sanitized_candidates, document_type_hint)
-    ocr_metadata = OCRMetadata.model_validate(_coerce_ocr_metadata(pp_payload.get("ocr_metadata") or {}, page_count=int(pp_payload.get("page_count") or 0)))
-    processing_result = build_processing_result(
-        session_id=session_id,
-        candidates=sanitized_candidates,
-        credential_candidates=credential_candidates,
-        ocr_metadata=ocr_metadata,
-        raw_text_per_page={page: "" for page in range(1, int(pp_payload.get("page_count") or 1) + 1)},
-        document_type_hint=document_type_hint,
-    )
-    workspace_view = build_workspace_view(processing_result)
-    generalized_analysis = build_generalized_analysis(processing_result)
-    canonical_schema = build_canonical_schema(processing_result.field_candidates)
-    metadata = build_document_metadata(
-        file_name=path.name,
-        file_type=path.suffix.lower().lstrip("."),
-        size_bytes=path.stat().st_size,
-        processing_result=processing_result,
-        safety_report=safety_report,
-    )
-    return {
-        "processing_result": processing_result,
-        "workspace_view": workspace_view,
-        "generalized_analysis": generalized_analysis,
-        "canonical_schema": canonical_schema,
-        "metadata": metadata,
-        "safety_report": safety_report,
-        "warnings": warnings,
-        "spatial_text_map": spatial_text_map,
-        "evidence_lines": evidence_lines,
-        "layout_blocks": list(pp_payload.get("layout_blocks") or []),
-        "table_cells": list(pp_payload.get("table_cells") or []),
-        "engine_metadata": dict(pp_payload.get("engine_metadata") or {}),
-        "evidence_graph": evidence_graph,
-    }
+    try:
+        safety_report = validate_document_intake(str(path))
+        document_type_hint = "generic"
+        pp_payload = run_pp_chatocr_v4_extraction(str(path), document_type_hint=document_type_hint)
+        evidence_graph = build_evidence_graph_from_pp_chatocr(pp_payload)
+        warnings = [warning for warning in (_warning_from_payload(item) for item in list(pp_payload.get("warnings") or [])) if warning is not None]
+        spatial_text_map = [_spatial_token_from_payload(item) for item in list(pp_payload.get("spatial_text_map") or [])]
+        evidence_lines = [_evidence_line_from_payload(item) for item in list(pp_payload.get("evidence_lines") or [])]
+        candidates = [_candidate_from_payload(item) for item in list(pp_payload.get("field_candidates") or [])]
+        sanitized_candidates = [classify_pii(candidate) for candidate in candidates]
+        credential_candidates = build_credential_candidates(sanitized_candidates, document_type_hint)
+        ocr_metadata = OCRMetadata.model_validate(_coerce_ocr_metadata(pp_payload.get("ocr_metadata") or {}, page_count=int(pp_payload.get("page_count") or 0)))
+        processing_result = build_processing_result(
+            session_id=session_id,
+            candidates=sanitized_candidates,
+            credential_candidates=credential_candidates,
+            ocr_metadata=ocr_metadata,
+            raw_text_per_page={page: "" for page in range(1, int(pp_payload.get("page_count") or 1) + 1)},
+            document_type_hint=document_type_hint,
+        )
+        workspace_view = build_workspace_view(processing_result)
+        generalized_analysis = build_generalized_analysis(processing_result)
+        canonical_schema = build_canonical_schema(processing_result.field_candidates)
+        metadata = build_document_metadata(
+            file_name=path.name,
+            file_type=path.suffix.lower().lstrip("."),
+            size_bytes=path.stat().st_size,
+            processing_result=processing_result,
+            safety_report=safety_report,
+        )
+        return {
+            "processing_result": processing_result,
+            "workspace_view": workspace_view,
+            "generalized_analysis": generalized_analysis,
+            "canonical_schema": canonical_schema,
+            "metadata": metadata,
+            "safety_report": safety_report,
+            "warnings": warnings,
+            "spatial_text_map": spatial_text_map,
+            "evidence_lines": evidence_lines,
+            "layout_blocks": list(pp_payload.get("layout_blocks") or []),
+            "table_cells": list(pp_payload.get("table_cells") or []),
+            "engine_metadata": dict(pp_payload.get("engine_metadata") or {}),
+            "evidence_graph": evidence_graph,
+        }
+    finally:
+        LOGGER.info("extraction_total_ms=%d", int((time.perf_counter() - started) * 1000))
 
 
 def _candidate_from_payload(item: dict) -> FieldCandidate:
@@ -215,7 +224,7 @@ def _dedupe_boxes(raw_boxes: list[dict]) -> list[BoundingBox]:
     return boxes
 
 
-def _warning_from_payload(item: Any) -> ExtractionWarning:
+def _warning_from_payload(item: Any) -> ExtractionWarning | None:
     code = "OCR_WARNING"
     message = "OCR warning"
     if hasattr(item, "model_dump"):
@@ -237,6 +246,8 @@ def _warning_from_payload(item: Any) -> ExtractionWarning:
     elif item not in (None, ""):
         code = _safe_warning_code(item)
         message = _safe_warning_message(item)
+    if code in INTERNAL_ONLY_WARNING_CODES:
+        return None
     return ExtractionWarning(code=code or "OCR_WARNING", message=message or "OCR warning")
 
 

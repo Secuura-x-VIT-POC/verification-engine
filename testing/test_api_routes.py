@@ -169,13 +169,14 @@ class WorkflowApiRouteTests(unittest.TestCase):
             db.commit()
             workspace = self._workspace_payload(session.id)
             workspace["document"]["warnings"] = [
+                "PP_CHATOCR_CHAT_STAGE_DISABLED",
                 {"code": "PP_CHAT_OCR_CHAT_STAGE_AUTH_FAILED", "message": "safe message"},
                 "SCHEMA_INFERENCE_WARNING",
                 {"message": "layout warning"},
             ]
             from backend.app.agent_orchestration.graph import _safe_code_list
             workspace["document"]["warnings"] = _safe_code_list(workspace["document"]["warnings"])
-            duplicate_box = {
+            value_box = {
                 "page": 1,
                 "page_number": 1,
                 "x0": 10,
@@ -183,6 +184,24 @@ class WorkflowApiRouteTests(unittest.TestCase):
                 "x1": 40,
                 "y1": 20,
                 "bbox": [10, 10, 40, 20],
+            }
+            label_box = {
+                "page": 1,
+                "page_number": 1,
+                "x0": 42,
+                "y0": 10,
+                "x1": 72,
+                "y1": 20,
+                "bbox": [42, 10, 72, 20],
+            }
+            full_line_box = {
+                "page": 1,
+                "page_number": 1,
+                "x0": 8,
+                "y0": 8,
+                "x1": 180,
+                "y1": 24,
+                "bbox": [8, 8, 180, 24],
             }
             workspace["fields"] = [
                 {
@@ -192,13 +211,14 @@ class WorkflowApiRouteTests(unittest.TestCase):
                     "normalized_value": f"masked-{index}",
                     "status": "AMBER",
                     "confidence": 0.8,
-                    "bounding_boxes": [duplicate_box],
+                    "bounding_boxes": [full_line_box, label_box, value_box, value_box],
                     "reason_codes": ["MANUAL_REVIEW_REQUIRED"],
                     "manual_review_required": True,
+                    "source_text": "RAW_OCR_TEXT_SHOULD_NOT_PERSIST",
                 }
                 for index in range(1, 6)
             ]
-            workspace["document"]["highlights_count"] = 5
+            workspace["document"]["highlights_count"] = 10
             workspace["verifiers"] = [
                 {
                     "task_id": "task-generalized-no-match",
@@ -214,7 +234,7 @@ class WorkflowApiRouteTests(unittest.TestCase):
             ]
             workspace["final_verdict"] = {
                 "outcome": "AMBER",
-                "reason_codes": ["MANUAL_REVIEW_REQUIRED", "NO_PROVIDER_AVAILABLE"],
+                "reason_codes": ["MANUAL_REVIEW_REQUIRED", "NO_PROVIDER_AVAILABLE", "PP_CHATOCR_CHAT_STAGE_DISABLED"],
                 "connector_ids": ["manual_review"],
                 "explanation": "Generalized manual review required.",
                 "risk_level": "MEDIUM",
@@ -268,9 +288,13 @@ class WorkflowApiRouteTests(unittest.TestCase):
             payload["document"]["warnings"],
             ["PP_CHAT_OCR_CHAT_STAGE_AUTH_FAILED", "SCHEMA_INFERENCE_WARNING", "LAYOUT_WARNING"],
         )
+        self.assertNotIn("PP_CHATOCR_CHAT_STAGE_DISABLED", payload["document"]["warnings"])
+        self.assertNotIn("PP_CHATOCR_CHAT_STAGE_DISABLED", payload["final_verdict"]["reason_codes"])
         self.assertTrue(all(isinstance(item, str) for item in payload["document"]["warnings"]))
         self.assertEqual(len(payload["fields"]), 5)
-        self.assertEqual(sum(len(field["bounding_boxes"]) for field in payload["fields"]), 5)
+        self.assertTrue(all(len(field["bounding_boxes"]) <= 2 for field in payload["fields"]))
+        self.assertEqual(sum(len(field["bounding_boxes"]) for field in payload["fields"]), 10)
+        self.assertFalse(any(box["bbox"] == [8.0, 8.0, 180.0, 24.0] for field in payload["fields"] for box in field["bounding_boxes"]))
         self.assertIn("MANUAL_REVIEW_PROVIDER_SELECTED", payload["verifiers"][0]["reason_codes"])
         self.assertEqual(payload["verifiers"][0]["attempted_provider_keys"], ["unknown_provider", "manual_review"])
         self.assertEqual(payload["verifiers"][0]["skipped_provider_keys"], ["unknown_provider"])
@@ -291,6 +315,7 @@ class WorkflowApiRouteTests(unittest.TestCase):
             self.assertIn("bounding_boxes", persisted)
             self.assertTrue(all(isinstance(item, str) for item in session.workspace_payload["document"]["warnings"]))
             self.assertFalse(any(isinstance(item, (dict, list)) for item in session.workspace_payload["document"]["warnings"]))
+            self.assertNotIn("PP_CHATOCR_CHAT_STAGE_DISABLED", persisted)
             self.assertNotIn("RAW_OCR_TEXT_SHOULD_NOT_PERSIST", persisted)
             self.assertNotIn("raw_gemini_response", persisted)
             self.assertNotIn("provider_raw_body", persisted)

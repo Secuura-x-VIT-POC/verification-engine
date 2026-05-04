@@ -211,18 +211,18 @@ def run_pp_chatocr_v4_extraction(
 
 
 def _get_pp_chatocr_engine(config: dict[str, Any]) -> tuple[Any, bool]:
+    try:
+        from paddleocr import PPChatOCRv4Doc
+    except Exception as exc:  # pragma: no cover - environment dependent
+        raise PPChatOCRConfigurationError("PP-ChatOCRv4-doc is unavailable: paddleocr.PPChatOCRv4Doc could not be imported.") from exc
+
     cache_enabled = bool(config.get("cache_engine"))
     cache_key = _engine_cache_key(config)
     if cache_enabled:
         with _ENGINE_CACHE_LOCK:
             cached = _ENGINE_CACHE.get(cache_key)
-            if cached is not None:
+            if cached is not None and cached.__class__ is PPChatOCRv4Doc:
                 return cached, True
-
-    try:
-        from paddleocr import PPChatOCRv4Doc
-    except Exception as exc:  # pragma: no cover - environment dependent
-        raise PPChatOCRConfigurationError("PP-ChatOCRv4-doc is unavailable: paddleocr.PPChatOCRv4Doc could not be imported.") from exc
 
     started = time.perf_counter()
     try:
@@ -240,7 +240,7 @@ def _get_pp_chatocr_engine(config: dict[str, Any]) -> tuple[Any, bool]:
     if cache_enabled:
         with _ENGINE_CACHE_LOCK:
             existing = _ENGINE_CACHE.get(cache_key)
-            if existing is not None:
+            if existing is not None and existing.__class__ is PPChatOCRv4Doc:
                 close = getattr(engine, "close", None)
                 if callable(close):
                     try:
@@ -313,6 +313,9 @@ def _engine_cache_key(config: dict[str, Any]) -> tuple[Any, ...]:
         bool(config.get("use_seal_recognition")),
         bool(config.get("use_doc_orientation_classify")),
         bool(config.get("use_doc_unwarping")),
+        bool(config.get("chat_bot_config")),
+        bool(config.get("retriever_config")),
+        bool(config.get("mllm_chat_bot_config")),
     )
 
 
@@ -557,6 +560,10 @@ def _has_usable_visual_ocr(normalized: dict[str, Any]) -> bool:
 
 
 def _prediction_fields_from_visual_ocr(normalized: dict[str, Any]) -> list[dict[str, str]]:
+    semantic = _semantic_prediction_fields_from_visual_ocr(normalized)
+    if semantic:
+        return semantic + _diagnostic_visible_text_fields(normalized, limit=3, seen_values={item["value"] for item in semantic})
+
     predictions: list[dict[str, str]] = []
     seen: set[str] = set()
     for index, item in enumerate(normalized.get("evidence_lines") or [], start=1):
@@ -565,7 +572,143 @@ def _prediction_fields_from_visual_ocr(normalized: dict[str, Any]) -> list[dict[
             continue
         seen.add(text)
         predictions.append({"label": f"Visible Text {index}", "value": text})
+        if len(predictions) >= 5:
+            break
     return predictions
+
+
+def _semantic_prediction_fields_from_visual_ocr(normalized: dict[str, Any]) -> list[dict[str, str]]:
+    predictions: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for item in normalized.get("evidence_lines") or []:
+        text = _sanitize_value(item.get("text_preview"))
+        parsed = _parse_label_value_text(text)
+        if parsed:
+            _append_semantic_prediction(predictions, seen, parsed[0], parsed[1])
+
+    for row in _group_ocr_rows(normalized.get("spatial_text_map") or []):
+        row_text = _sanitize_value(" ".join(str(token.get("text_preview") or "") for token in row))
+        parsed = _parse_label_value_text(row_text)
+        if parsed:
+            _append_semantic_prediction(predictions, seen, parsed[0], parsed[1])
+            continue
+        parsed = _parse_row_label_value(row)
+        if parsed:
+            _append_semantic_prediction(predictions, seen, parsed[0], parsed[1])
+
+    return predictions
+
+
+def _append_semantic_prediction(predictions: list[dict[str, str]], seen: set[tuple[str, str]], label: str, value: str) -> None:
+    label = _sanitize_label(label)
+    value = _sanitize_value(value)
+    if not label or _is_unresolved_value(value):
+        return
+    key = (_norm(label), _norm(value))
+    if key in seen:
+        return
+    seen.add(key)
+    predictions.append({"label": label, "value": value})
+
+
+def _diagnostic_visible_text_fields(normalized: dict[str, Any], *, limit: int, seen_values: set[str]) -> list[dict[str, str]]:
+    fields: list[dict[str, str]] = []
+    seen_norms = {_norm(value) for value in seen_values}
+    for item in normalized.get("evidence_lines") or []:
+        text = _sanitize_value(item.get("text_preview"))
+        if not text or _norm(text) in seen_norms:
+            continue
+        fields.append({"label": f"Diagnostic Visible Text {len(fields) + 1}", "value": text})
+        seen_norms.add(_norm(text))
+        if len(fields) >= limit:
+            break
+    return fields
+
+
+def _parse_label_value_text(text: str) -> tuple[str, str] | None:
+    if not text:
+        return None
+    match = re.match(r"^\s*([A-Za-z][A-Za-z0-9 .'’()/_-]{1,80}?)\s*[:：]\s*(\S.{0,220})\s*$", text)
+    if match:
+        return match.group(1), match.group(2)
+    tokens = text.split()
+    for split_at in range(min(len(tokens), 6), 0, -1):
+        label = " ".join(tokens[:split_at]).strip(" :")
+        value = " ".join(tokens[split_at:]).strip(" :")
+        if _looks_like_label(label) and _looks_like_value(value) and _looks_like_row_value_boundary(tokens[split_at:]):
+            return label, value
+    return None
+
+
+def _parse_row_label_value(row: list[dict[str, Any]]) -> tuple[str, str] | None:
+    if len(row) < 2:
+        return None
+    texts = [_sanitize_value(token.get("text_preview")) for token in row]
+    for split_at in range(min(len(row) - 1, 6), 0, -1):
+        label = " ".join(texts[:split_at]).strip(" :")
+        value = " ".join(texts[split_at:]).strip(" :")
+        if _looks_like_label(label) and _looks_like_value(value) and _looks_like_row_value_boundary(texts[split_at:]):
+            return label, value
+    return None
+
+
+def _group_ocr_rows(tokens: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    usable = [token for token in tokens if token.get("text_preview") and token.get("bbox")]
+    usable.sort(key=lambda token: (int(token.get("page_number") or 1), _box_center_y(token.get("bbox")), float((token.get("bbox") or [0])[0])))
+    rows: list[list[dict[str, Any]]] = []
+    for token in usable:
+        bbox = token.get("bbox") or [0, 0, 0, 0]
+        center_y = _box_center_y(bbox)
+        height = max(1.0, float(bbox[3]) - float(bbox[1]))
+        matched = None
+        for row in reversed(rows):
+            first = row[0]
+            if int(first.get("page_number") or 1) != int(token.get("page_number") or 1):
+                continue
+            row_center = sum(_box_center_y(item.get("bbox") or [0, 0, 0, 0]) for item in row) / len(row)
+            row_height = max(1.0, max(float((item.get("bbox") or [0, 0, 0, 0])[3]) - float((item.get("bbox") or [0, 0, 0, 0])[1]) for item in row))
+            if abs(center_y - row_center) <= max(height, row_height) * 0.65:
+                matched = row
+                break
+        if matched is None:
+            rows.append([token])
+        else:
+            matched.append(token)
+    for row in rows:
+        row.sort(key=lambda token: float((token.get("bbox") or [0])[0]))
+    return rows
+
+
+def _box_center_y(bbox: list[float]) -> float:
+    return (float(bbox[1]) + float(bbox[3])) / 2.0
+
+
+def _looks_like_label(value: str) -> bool:
+    normalized = _norm(value)
+    if not normalized or len(normalized) > 80:
+        return False
+    if any(token.isupper() and len(token) > 2 for token in str(value).split()):
+        return False
+    return any(token in normalized.split() for token in {"name", "id", "number", "date", "roll", "application", "candidate", "registration"})
+
+
+def _looks_like_value(value: str) -> bool:
+    if not value or len(value) > 220:
+        return False
+    normalized = _norm(value)
+    return bool(normalized) and normalized not in UNRESOLVED_VALUES
+
+
+def _looks_like_row_value_boundary(value_tokens: list[str]) -> bool:
+    if not value_tokens:
+        return False
+    first = str(value_tokens[0] or "").strip()
+    if re.search(r"\d", first):
+        return True
+    if first.isupper() and len(first) >= 2:
+        return True
+    return len(value_tokens) >= 2 and sum(1 for token in value_tokens[:4] if str(token)[:1].isupper()) >= 2
 
 
 def _stage_warning_code(stage: str, exc: Exception) -> str:

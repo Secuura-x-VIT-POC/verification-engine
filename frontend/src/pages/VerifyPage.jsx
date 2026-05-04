@@ -574,13 +574,8 @@ export default function VerifyPage({ auth, onLogout }) {
 
 	const canReview = Boolean(
 		workspace &&
-			(workspace.status === "PENDING_HUMAN_REVIEW" ||
-				workspace.status === "HUMAN_APPROVED" ||
-				workspace.status === "HUMAN_REJECTED" ||
-				workspace.status === "MANUAL_REVIEW_REQUIRED" ||
-				workspace.uiStatus === "READY" ||
-				workspace.uiStatus === "COMPLETED" ||
-				workspace.uiStatus === "Ready for human review")
+			workspace.status === "PENDING_HUMAN_REVIEW" &&
+			!reviewCompleted
 	);
 
 	const canCloseSession = Boolean(
@@ -643,6 +638,7 @@ export default function VerifyPage({ auth, onLogout }) {
 			);
 
 			setReviewCompleted(true);
+			await refreshWorkspace({ showLoading: false });
 
 			setReviewMessage(
 				`Review decision submitted successfully: ${

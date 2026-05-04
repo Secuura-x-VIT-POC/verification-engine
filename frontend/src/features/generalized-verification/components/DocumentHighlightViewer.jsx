@@ -17,8 +17,23 @@ export default function DocumentHighlightViewer({
   activeCredentialId,
   onSelectCredential,
 }) {
+  const scrollRef = useRef(null);
   const [numPages, setNumPages] = useState(0);
   const [viewerError, setViewerError] = useState("");
+  const [renderWidth, setRenderWidth] = useState(820);
+
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return undefined;
+    const update = () => {
+      const width = Math.floor(container.clientWidth || 820);
+      setRenderWidth(Math.max(320, Math.min(width - 8, 1100)));
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
 
   if (!documentUrl) {
     return <p className="muted">The PDF preview will appear here when a document is available.</p>;
@@ -31,7 +46,7 @@ export default function DocumentHighlightViewer({
   const pageCount = Math.max(numPages || fallbackPageCount, 1);
 
   return (
-    <div className="gv-document-scroll">
+    <div className="gv-document-scroll" ref={scrollRef}>
       {viewerError ? <p className="error-text">{viewerError}</p> : null}
       <Document
         file={documentUrl}
@@ -52,6 +67,7 @@ export default function DocumentHighlightViewer({
               pageHighlights={pageHighlights}
               activeCredentialId={activeCredentialId}
               onSelectCredential={onSelectCredential}
+              renderWidth={renderWidth}
             />
           );
         })}
@@ -65,6 +81,7 @@ function PageFrame({
   pageHighlights,
   activeCredentialId,
   onSelectCredential,
+  renderWidth,
 }) {
   const frameRef = useRef(null);
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
@@ -89,9 +106,14 @@ function PageFrame({
   return (
     <div className="gv-document-page">
       <div className="gv-document-page-meta">Page {pageNumber}</div>
-      <div className="gv-document-page-frame" ref={frameRef}>
+      <div
+        className="gv-document-page-frame"
+        ref={frameRef}
+        style={{ width: `${renderWidth}px` }}
+      >
         <Page
           pageNumber={pageNumber}
+          width={renderWidth}
           renderAnnotationLayer={false}
           renderTextLayer={false}
           onRenderSuccess={() => {

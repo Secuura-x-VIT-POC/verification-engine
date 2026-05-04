@@ -427,6 +427,53 @@ class WorkflowApiRouteTests(unittest.TestCase):
         self.assertIsNone(receipt.rejected_at)
         self.assertIsNone(receipt.manual_review_at)
 
+    def test_review_decision_same_final_state_is_idempotent(self):
+        self._create_session(
+            session_id="session-review-idempotent",
+            status=SessionState.HUMAN_APPROVED,
+            user_id="user-1",
+            trust_outcome="GREEN",
+        )
+
+        response = self.client.post(
+            "/api/v1/verification-sessions/session-review-idempotent/review-decision",
+            json={"decision": "APPROVE"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], SessionState.HUMAN_APPROVED)
+        self.assertEqual(response.json()["final_decision"], "APPROVED")
+        self.assertTrue(response.json()["audit_receipt_id"])
+
+    def test_review_decision_different_final_state_still_conflicts(self):
+        self._create_session(
+            session_id="session-review-final-conflict",
+            status=SessionState.HUMAN_APPROVED,
+            user_id="user-1",
+        )
+
+        response = self.client.post(
+            "/api/v1/verification-sessions/session-review-final-conflict/review-decision",
+            json={"decision": "REJECT"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+
+    def test_review_decision_audit_failure_returns_500_not_409(self):
+        self._create_session(
+            session_id="session-review-audit-failure",
+            status=SessionState.PENDING_HUMAN_REVIEW,
+            user_id="user-1",
+        )
+
+        with patch("backend.app.api.routes.upsert_final_review_receipt", side_effect=RuntimeError("audit db failed")):
+            response = self.client.post(
+                "/api/v1/verification-sessions/session-review-audit-failure/review-decision",
+                json={"decision": "APPROVE"},
+            )
+
+        self.assertEqual(response.status_code, 500)
+
     def test_review_decision_reject_returns_human_rejected(self):
         self._create_session(
             session_id="session-review-reject",

@@ -33,6 +33,12 @@ from .output_builder import (
 from .pii_classifier import apply_verifier_feedback, classify_pii
 from .security_gate import DocumentSafetyError, validate_document_intake
 
+try:
+    from backend.app.security.pdf_validator import read_pdf_security_sidecar
+except Exception:  # pragma: no cover - keeps extraction package usable standalone
+    def read_pdf_security_sidecar(pdf_path):
+        return {}
+
 LOGGER = logging.getLogger(__name__)
 INTERNAL_ONLY_WARNING_CODES = {"PP_CHATOCR_CHAT_STAGE_DISABLED", "PP_CHAT_OCR_CHAT_STAGE_DISABLED"}
 
@@ -122,6 +128,17 @@ def _run_extraction_bundle(session_id: str, pdf_path: str, llm_client=None, stra
         safety_report = validate_document_intake(str(path))
         document_type_hint = "generic"
         pp_payload = run_pp_chatocr_v4_extraction(str(path), document_type_hint=document_type_hint)
+        security_sidecar = read_pdf_security_sidecar(path)
+        sidecar_notices = list(security_sidecar.get("notice_codes") or [])
+        if sidecar_notices:
+            pp_payload["warnings"] = list(pp_payload.get("warnings") or []) + [
+                {"code": str(code), "message": "PDF was flattened to an image-only safe copy before OCR."}
+                for code in sidecar_notices
+            ]
+            engine_metadata = dict(pp_payload.get("engine_metadata") or {})
+            engine_metadata["pdf_safe_mode"] = security_sidecar.get("safe_mode", "image_only_pdf")
+            engine_metadata["pdf_original_quarantined"] = bool(security_sidecar.get("original_quarantined"))
+            pp_payload["engine_metadata"] = engine_metadata
         evidence_graph = build_evidence_graph_from_pp_chatocr(pp_payload)
         warnings = [warning for warning in (_warning_from_payload(item) for item in list(pp_payload.get("warnings") or [])) if warning is not None]
         spatial_text_map = [_spatial_token_from_payload(item) for item in list(pp_payload.get("spatial_text_map") or [])]
@@ -326,6 +343,12 @@ def _box_from_bbox(item: dict) -> dict | None:
         "coordinate_space": item.get("coordinate_space"),
         "source": "pp_chatocr_v4",
         "confidence": item.get("confidence"),
+        "source_width": item.get("source_width"),
+        "source_height": item.get("source_height"),
+        "page_width": item.get("page_width"),
+        "page_height": item.get("page_height"),
+        "dpi": item.get("dpi"),
+        "render_scale": item.get("render_scale"),
     }
 
 

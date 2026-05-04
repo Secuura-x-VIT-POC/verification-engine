@@ -103,6 +103,9 @@ class PPChatOCRv4NormalizationTests(unittest.TestCase):
             "PP_CHAT_OCR_ENABLE_SEAL_RECOGNITION": "true",
             "PP_CHAT_OCR_ENABLE_DOC_ORIENTATION": "true",
             "PP_CHAT_OCR_ENABLE_DOC_UNWARPING": "true",
+            "PP_CHAT_OCR_CHAT_API_KEY": "chat-key",
+            "PP_CHAT_OCR_RETRIEVER_API_KEY": "retriever-key",
+            "PP_CHAT_OCR_MLLM_API_KEY": "mllm-key",
         }
         self.fake_module = types.SimpleNamespace(PPChatOCRv4Doc=_FakePPChatOCRv4Doc)
 
@@ -138,6 +141,46 @@ class PPChatOCRv4NormalizationTests(unittest.TestCase):
         self.assertEqual(payload["spatial_text_map"][0]["source_width"], 900)
         self.assertEqual(payload["spatial_text_map"][0]["source_height"], 1200)
         self.assertEqual(payload["field_candidates"][0]["source_width"], 900)
+
+    def test_deterministic_label_value_fallback_extracts_semantic_fields(self):
+        _FakePPChatOCRv4Doc.chat_res = {}
+        _FakePPChatOCRv4Doc.mllm_res = {}
+        visual = _visual_result(
+            rec_texts=[
+                "Application",
+                "ID",
+                ":",
+                "EN24235978",
+                "Candidate's",
+                "Full",
+                "Name",
+                "DABHADE",
+                "SHREYASH",
+                "ARUNPANT",
+            ],
+            rec_boxes=[
+                [10, 20, 90, 35],
+                [94, 20, 116, 35],
+                [120, 20, 124, 35],
+                [132, 20, 230, 35],
+                [10, 50, 100, 65],
+                [104, 50, 138, 65],
+                [142, 50, 180, 65],
+                [210, 50, 280, 65],
+                [286, 50, 365, 65],
+                [370, 50, 450, 65],
+            ],
+        )
+        visual["layout_parsing_result"]["parsing_res_list"] = []
+        _FakePPChatOCRv4Doc.visual_results = [visual]
+
+        payload = self._run("demo.png")
+
+        fields = {item["label"]: item for item in payload["field_candidates"]}
+        self.assertEqual(fields["Application ID"]["extracted_value"], "EN24235978")
+        self.assertEqual(fields["Candidate's Full Name"]["extracted_value"], "DABHADE SHREYASH ARUNPANT")
+        self.assertEqual(fields["Application ID"]["bbox"], [132.0, 20.0, 230.0, 35.0])
+        self.assertFalse(any(item["label"].startswith("Visible Text") for item in payload["field_candidates"]))
 
     def test_table_ocr_outputs_create_table_cells(self):
         _FakePPChatOCRv4Doc.visual_results = [_visual_result(table_texts=["Grade A"])]

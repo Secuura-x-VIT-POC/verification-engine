@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { buildHighlightStyle } from "../src/features/generalized-verification/utils/highlightGeometry.js";
 import {
   normalizeAgentCredentialCandidates,
   normalizeAgentDocumentUnderstanding,
@@ -47,6 +48,25 @@ import {
 import { normalizeWorkspacePayload } from "../src/features/generalized-verification/utils/workspaceNormalizer.js";
 
 export const checks = [
+  {
+    name: "pp chatocr image pixel boxes scale to rendered page coordinates",
+    run() {
+      const style = buildHighlightStyle(
+        {
+          coordinateSpace: "pp_chatocr_image_pixels",
+          sourceWidth: 1000,
+          sourceHeight: 1400,
+          absoluteBox: { left: 100, top: 280, width: 250, height: 70 },
+        },
+        { width: 500, height: 700 }
+      );
+
+      assert.equal(style.left, "50px");
+      assert.equal(style.top, "140px");
+      assert.equal(style.width, "125px");
+      assert.equal(style.height, "35px");
+    },
+  },
   {
     name: "generalized workspace normalization supports canonical payload safely",
     run() {

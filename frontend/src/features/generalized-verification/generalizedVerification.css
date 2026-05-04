@@ -203,7 +203,8 @@
 }
 
 .gv-document-scroll {
-  max-height: 78vh;
+  width: 100%;
+  max-height: 82vh;
   overflow: auto;
   padding-right: 6px;
 }
@@ -227,8 +228,8 @@
 
 .gv-document-page-frame {
   position: relative;
-  display: inline-block;
-  border-radius: 18px;
+  display: block;
+  max-width: 1100px;
   overflow: hidden;
   box-shadow: 0 16px 38px rgba(15, 23, 42, 0.12);
 }
@@ -896,7 +897,7 @@ button.field-row:hover,
 
 .gv-document-layout {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) 340px;
+	grid-template-columns: minmax(0, 2fr) minmax(280px, 0.7fr);
 	gap: 20px;
 	align-items: start;
 }
@@ -938,7 +939,8 @@ button.field-row:hover,
 
 .gv-document-page-frame {
 	position: relative;
-	display: inline-block;
+	display: block;
+	max-width: 1100px;
 }
 
 .gv-document-page-frame canvas {

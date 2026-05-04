@@ -25,6 +25,12 @@ class BoundingBox(BaseModel):
     coordinate_space: str | None = None
     source: str | None = None
     confidence: float | None = None
+    source_width: float | None = None
+    source_height: float | None = None
+    page_width: float | None = None
+    page_height: float | None = None
+    dpi: float | None = None
+    render_scale: float | None = None
 
 
 class GeminiDocumentUnderstanding(BaseModel):

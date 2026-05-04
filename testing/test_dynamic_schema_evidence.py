@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from extraction.evidence_graph import build_evidence_graph_from_pp_chatocr
 
-from backend.app.agent_orchestration.graph import _gemini_dynamic_schema_discovery
+from backend.app.agent_orchestration.graph import _build_workspace_payload, _gemini_dynamic_schema_discovery
 from backend.app.agent_orchestration.policies import AgentRuntimePolicy
 from backend.app.agent_orchestration.sanitization import sanitize_workspace_payload
 from backend.app.agent_orchestration.schemas import DynamicDocumentSchema
@@ -140,6 +140,105 @@ def test_schema_failure_and_zero_claims_return_manual_review_warnings():
     with patch("backend.app.agent_orchestration.graph._build_structured_gemini_llm", return_value=EmptyLlm()):
         empty = _gemini_dynamic_schema_discovery({"extraction_payload": {"view": {"evidence_graph": evidence_graph}}}, _policy())
     assert "NO_DYNAMIC_CLAIMS_EXTRACTED" in empty["dynamic_schema"]["warnings"]
+
+
+def test_schema_failure_preserves_deterministic_label_value_fields():
+    evidence_graph = {
+        "source": "pp_chatocr_v4",
+        "evidence": [{"evidence_id": "ev-app", "text_preview": "Application ID : EN24235978", "page_number": 1, "source_type": "line"}],
+    }
+    extraction_payload = {
+        "view": {
+            "evidence_graph": evidence_graph,
+            "field_details": [
+                {
+                    "field_id": "application_id_abc123",
+                    "key": "application_id",
+                    "label": "Application ID",
+                    "value": "EN24235978",
+                    "extracted_value": "EN24235978",
+                    "masked_value": "****5978",
+                    "confidence": 0.92,
+                    "bbox": [132, 20, 230, 35],
+                    "page_number": 1,
+                    "coordinate_space": "pp_chatocr_image_pixels",
+                    "source_width": 1000,
+                    "source_height": 1400,
+                    "evidence_ref": "ev-app",
+                }
+            ],
+        }
+    }
+
+    failed = _gemini_dynamic_schema_discovery({"extraction_payload": extraction_payload}, AgentRuntimePolicy())
+
+    assert "SCHEMA_INFERENCE_FAILED" in failed["dynamic_schema"]["warnings"]
+    assert [claim["label"] for claim in failed["dynamic_claims"]] == ["Application ID"]
+    assert failed["dynamic_claims"][0]["value"] == "EN24235978"
+    assert failed["dynamic_claims"][0]["source_width"] == 1000
+    assert not failed["dynamic_claims"][0]["label"].startswith("Visible Text")
+
+
+def test_workspace_boxes_keep_source_dimensions_after_tightening():
+    extraction_payload = {
+        "view": {
+            "document_type": "generic_document",
+            "page_count": 1,
+            "used_ocr": True,
+            "warnings": [],
+            "dynamic_claims": [
+                {
+                    "claim_id": "application_id",
+                    "field_id": "application_id",
+                    "label": "Application ID",
+                    "value": "EN24235978",
+                    "evidence_ids": ["ev-value"],
+                }
+            ],
+            "evidence_graph": {
+                "evidence": [
+                    {
+                        "evidence_id": "ev-value",
+                        "page_number": 1,
+                        "text_preview": "EN24235978",
+                        "bbox": [132, 20, 230, 35],
+                        "coordinate_space": "pp_chatocr_image_pixels",
+                        "source_width": 1000,
+                        "source_height": 1400,
+                        "source": "pp_chatocr_v4",
+                    }
+                ]
+            },
+        }
+    }
+
+    result = _build_workspace_payload(
+        {
+            "session_id": "session-source-dimensions",
+            "filename": "document.pdf",
+            "sanitized_extraction": extraction_payload,
+            "document_understanding": {"document_type": "generic_document"},
+            "field_decisions": [
+                {
+                    "field_id": "application_id",
+                    "label": "Application ID",
+                    "extracted_value": "EN24235978",
+                    "normalized_value": "EN24235978",
+                    "status": "AMBER",
+                    "reason_codes": ["MANUAL_REVIEW_REQUIRED"],
+                    "bounding_boxes": [],
+                }
+            ],
+            "verifier_results": [],
+            "final_verdict": {"outcome": "AMBER", "reason_codes": ["MANUAL_REVIEW_REQUIRED"]},
+            "audit_log": [],
+        }
+    )
+
+    box = result["workspace_payload"]["fields"][0]["bounding_boxes"][0]
+    assert box["coordinate_space"] == "pp_chatocr_image_pixels"
+    assert box["source_width"] == 1000
+    assert box["source_height"] == 1400
 
 
 def test_dynamic_planner_routes_by_intent_and_data_type_not_label():

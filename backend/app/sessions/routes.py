@@ -1,16 +1,29 @@
 from __future__ import annotations
 
 import uuid
+import logging
+import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..auth.routes import get_current_user
 from ..db.database import get_db
-from ..security.pdf_validator import PDFValidationError, validate_pdf, validate_pdf_upload_metadata
+from ..security.pdf_validator import (
+    PDF_ACTIVE_CONTENT_STRIPPED_NOTICE,
+    PDFValidationError,
+    make_image_only_pdf,
+    report_to_safe_dict,
+    safe_pdf_flattening_enabled,
+    validate_pdf_report,
+    validate_pdf_upload_metadata,
+    write_pdf_security_sidecar,
+)
 from ..workflow import repository as workflow_repository
 from ..workflow.runtime import close_session, serialize_session
 from .constants import SessionState
@@ -19,6 +32,55 @@ from .models import UploadToken
 
 
 router = APIRouter(tags=["sessions"])
+LOGGER = logging.getLogger(__name__)
+
+
+class UploadResponse(BaseModel):
+    message: str
+    filename: str
+    session_id: str
+    status: str
+    notices: list[str] = Field(default_factory=list)
+
+
+def normalize_notices(raw_notices: Any) -> list[str]:
+    """
+    Normalizes notice codes into a safe list of strings.
+    Strips empty values, never includes raw exception text/paths/PII.
+    """
+    if not raw_notices:
+        return []
+        
+    extracted = []
+    if isinstance(raw_notices, str):
+        extracted.append(raw_notices)
+    elif isinstance(raw_notices, (list, tuple, set)):
+        for item in raw_notices:
+            if isinstance(item, str):
+                extracted.append(item)
+            elif hasattr(item, "get") and hasattr(item, "keys"):
+                for key in ["code", "warning_code", "reason_code", "type", "stage", "message"]:
+                    val = item.get(key)
+                    if val:
+                        extracted.append(str(val))
+            else:
+                extracted.append(str(item))
+    elif hasattr(raw_notices, "get") and hasattr(raw_notices, "keys"):
+        for key in ["code", "warning_code", "reason_code", "type", "stage", "message"]:
+            val = raw_notices.get(key)
+            if val:
+                extracted.append(str(val))
+        
+    safe_notices = []
+    for code in extracted:
+        code = code.strip()
+        if not code:
+            continue
+        if code.isupper() and all(c.isalnum() or c == '_' for c in code):
+            if code not in safe_notices:
+                safe_notices.append(code)
+                
+    return sorted(safe_notices)
 
 
 def _uploads_dir() -> Path:
@@ -49,7 +111,7 @@ def create_session(
     new_session = SessionModel(user_id=user)
     db.add(new_session)
     db.commit()
-    return {"session_id": new_session.id, "status": new_session.status}
+    return {"session_id": str(new_session.id), "status": str(new_session.status)}
 
 
 @router.get("/sessions/{session_id}")
@@ -88,7 +150,7 @@ def generate_upload_token(
     db.refresh(session)
 
     return {
-        "upload_token": upload_token.token,
+        "upload_token": str(upload_token.token),
         "expires_at": upload_token.expires_at.isoformat(),
     }
 
@@ -99,7 +161,7 @@ def upload_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: str = Depends(get_current_user),
-) -> dict[str, str]:
+) -> UploadResponse:
     upload_token = db.query(UploadToken).filter(UploadToken.token == token).first()
     if upload_token is None:
         raise HTTPException(status_code=404, detail="Invalid token")
@@ -108,34 +170,61 @@ def upload_file(
     if upload_token.expires_at < datetime.utcnow():
         raise HTTPException(status_code=401, detail="Token expired")
 
-    session = _get_owned_session(db, upload_token.session_id, user)
+    session = _get_owned_session(db, str(upload_token.session_id), user)
     try:
         validate_pdf_upload_metadata(file.filename, file.content_type)
     except PDFValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     content = file.file.read()
+    upload_notices: list[str] = []
+    security_payload: dict = {}
     try:
-        validate_pdf(content)
+        scan_started = time.perf_counter()
+        report = validate_pdf_report(content, allow_active_content=safe_pdf_flattening_enabled())
+        LOGGER.info("pdf_safety_scan_ms=%d active_content=%s", int((time.perf_counter() - scan_started) * 1000), report.has_active_or_embedded_content)
+        security_payload = {"original_report": report_to_safe_dict(report)}
+        if report.has_active_or_embedded_content:
+            if not safe_pdf_flattening_enabled():
+                raise PDFValidationError("PDF contains active or embedded content")
+            flatten_started = time.perf_counter()
+            safe_result = make_image_only_pdf(content)
+            LOGGER.info("pdf_safe_flatten_ms=%d pages=%s", int((time.perf_counter() - flatten_started) * 1000), safe_result.safe_report.page_count)
+            quarantine_dir = _uploads_dir() / "quarantine"
+            quarantine_dir.mkdir(parents=True, exist_ok=True)
+            quarantine_path = quarantine_dir / f"{uuid.uuid4()}_original.pdf"
+            quarantine_path.write_bytes(content)
+            content = safe_result.safe_pdf_bytes
+            upload_notices.append(PDF_ACTIVE_CONTENT_STRIPPED_NOTICE)
+            security_payload = {
+                "safe_mode": "image_only_pdf",
+                "notice_codes": upload_notices,
+                "original_report": report_to_safe_dict(safe_result.original_report),
+                "safe_report": report_to_safe_dict(safe_result.safe_report),
+                "original_quarantined": True,
+                "quarantine_filename": quarantine_path.name,
+            }
     except PDFValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     safe_filename = f"{uuid.uuid4()}.pdf"
     file_path = _uploads_dir() / safe_filename
     file_path.write_bytes(content)
+    if upload_notices:
+        write_pdf_security_sidecar(file_path, security_payload)
 
-    upload_token.is_used = True
-    upload_token.used_at = datetime.utcnow()
+    upload_token.is_used = True  # type: ignore
+    upload_token.used_at = datetime.utcnow()  # type: ignore
     workflow_repository.transition_state(
         db,
-        session.id,
+        str(session.id),
         SessionState.UPLOADED_PENDING_REVIEW,
         extra_values={
             "filename": file.filename,
             "file_path": str(file_path),
             "uploaded_at": datetime.utcnow(),
             "worker_phase": None,
-            "reason_codes": [],
+            "reason_codes": upload_notices,
             "connector_ids": [],
             "trust_outcome": None,
             "extraction_payload": None,
@@ -175,12 +264,13 @@ def upload_file(
     db.commit()
     db.refresh(session)
 
-    return {
-        "message": "File uploaded securely",
-        "filename": safe_filename,
-        "session_id": session.id,
-        "status": session.status,
-    }
+    return UploadResponse(
+        message="File uploaded securely",
+        filename=safe_filename,
+        session_id=str(session.id),
+        status=session.status,
+        notices=normalize_notices(upload_notices),
+    )
 
 
 @router.options("/sessions/{session_id}/document")

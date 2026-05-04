@@ -58,7 +58,11 @@ class AgentRuntimePolicy:
 
 def load_agent_runtime_policy() -> AgentRuntimePolicy:
     gemini_primary_configured = _gemini_primary_configured()
-    gemini_secondary_configured = bool((os.getenv("GEMINI_API_KEY_SECONDARY") or "").strip())
+    gemini_secondary_configured = bool(
+        (os.getenv("GEMINI_API_KEY_SECONDARY") or "").strip()
+        or (os.getenv("GEMINI_API_KEY_2") or "").strip()
+        or _gemini_keys_count() >= 2
+    )
     gemini_configured = gemini_primary_configured or gemini_secondary_configured
     return AgentRuntimePolicy(
         orchestration_enabled=_read_bool("AGENT_ORCHESTRATION_ENABLED", True),
@@ -83,12 +87,22 @@ def load_agent_runtime_policy() -> AgentRuntimePolicy:
 def _gemini_primary_configured() -> bool:
     return bool(
         (
-            os.getenv("GEMINI_API_KEY_PRIMARY")
+            _first_gemini_api_keys_value()
+            or os.getenv("GEMINI_API_KEY_1")
+            or os.getenv("GEMINI_API_KEY_PRIMARY")
             or os.getenv("GEMINI_API_KEY")
             or os.getenv("GOOGLE_API_KEY")
             or ""
         ).strip()
     )
+
+
+def _gemini_keys_count() -> int:
+    return len([item for item in (os.getenv("GEMINI_API_KEYS") or "").split(",") if item.strip()])
+
+
+def _first_gemini_api_keys_value() -> str:
+    return next((item.strip() for item in (os.getenv("GEMINI_API_KEYS") or "").split(",") if item.strip()), "")
 
 
 def minimize_extraction_payload(

@@ -196,6 +196,8 @@ def _gemini_dynamic_schema_discovery(
         warnings.append("SCHEMA_INFERENCE_FAILED")
 
     grounded_claims = _ground_dynamic_claims(schema_payload, evidence_graph)
+    if not grounded_claims:
+        grounded_claims = _deterministic_dynamic_claims_from_existing_fields(extraction_payload)
     if not grounded_claims and evidence_graph.get("evidence") and "SCHEMA_INFERENCE_FAILED" not in warnings:
         warnings.append("NO_DYNAMIC_CLAIMS_EXTRACTED")
         schema_payload.setdefault("warnings", []).append("NO_DYNAMIC_CLAIMS_EXTRACTED")
@@ -465,6 +467,7 @@ def _credentials_with_generalized_task_refs(
         if task.credential_id in existing_ids:
             continue
         field = normalized_fields.get(task.required_fields[0]) if task.required_fields else {}
+        field = field or {}
         additions.append(
             ExtractedCredential(
                 credential_id=task.credential_id,
@@ -721,7 +724,12 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
     field_decisions = [_decision_with_workspace_boxes(field, sanitized_extraction) for field in field_decisions]
     verifier_results = [VerifierResult.model_validate(item) for item in list(state.get("verifier_results") or [])]
     final_verdict = state.get("final_verdict") or {}
-    warnings = _workspace_safe_warnings(((sanitized_extraction.get("view") or {}).get("warnings")) or [])
+    warnings = _workspace_safe_warnings(
+        [
+            *list(((sanitized_extraction.get("view") or {}).get("warnings")) or []),
+            *list(state.get("ai_warnings") or []),
+        ]
+    )
 
     status = SessionState.PENDING_HUMAN_REVIEW
 
@@ -924,6 +932,8 @@ def _box_from_evidence_items(items: list[dict[str, Any]]) -> BoundingBox | None:
         coordinate_space=same_page[0].get("coordinate_space"),
         source=same_page[0].get("source"),
         confidence=_average_dynamic_confidence(same_page),
+        source_width=next((item.get("source_width") for item in same_page if item.get("source_width")), None),
+        source_height=next((item.get("source_height") for item in same_page if item.get("source_height")), None),
     )
 
 
@@ -1125,12 +1135,19 @@ def _invoke_gemini_with_fallback(
             return {
                 result_key: result_payload,
                 "gemini_errors": [f"{stage_name}: Gemini rate limit encountered."],
+                "ai_warnings": ["GEMINI_QUOTA_EXHAUSTED"],
                 "gemini_fallback_used": True,
                 "fallback_used": True,
                 "fallback_reason": "rate_limit",
                 "audit_log": [_audit_item(stage_name, "Gemini demo fixture fallback applied; fallback_used=true fallback_reason=rate_limit exception_class=GeminiPoolRateLimitError.", level="WARNING")],
             }
-        return _fallback_response(stage_name, fallback_model, "Gemini rate limit encountered.", state_key=state_key)
+        return _fallback_response(
+            stage_name,
+            fallback_model,
+            "Gemini rate limit encountered.",
+            state_key=state_key,
+            reason_code="GEMINI_QUOTA_EXHAUSTED",
+        )
     except Exception as exc:
         LOGGER.warning(
             "Gemini invocation failed",
@@ -1143,13 +1160,20 @@ def _invoke_gemini_with_fallback(
         )
         return _fallback_response(stage_name, fallback_model, "Gemini invocation failed.", state_key=state_key)
 
-def _fallback_response(stage_name: str, fallback_model, error_message: str, *, state_key: str | None = None) -> dict[str, Any]:
+def _fallback_response(
+    stage_name: str,
+    fallback_model,
+    error_message: str,
+    *,
+    state_key: str | None = None,
+    reason_code: str | None = None,
+) -> dict[str, Any]:
     payload = fallback_model.model_dump(mode="json") if hasattr(fallback_model, "model_dump") else fallback_model.dict()
     
     result_key = "document_understanding" if isinstance(fallback_model, GeminiDocumentUnderstanding) else (state_key or _state_key_for_collection(type(fallback_model)))
     result_payload = payload if isinstance(fallback_model, GeminiDocumentUnderstanding) else payload.get(_default_collection_key(type(fallback_model)), [])
 
-    return {
+    result = {
         result_key: result_payload,
         "gemini_errors": [f"{stage_name}: {error_message}"],
         "gemini_fallback_used": True,
@@ -1157,6 +1181,9 @@ def _fallback_response(stage_name: str, fallback_model, error_message: str, *, s
         "fallback_reason": _safe_fallback_reason(error_message),
         "audit_log": [_audit_item(stage_name, f"Gemini fallback applied; fallback_used=true fallback_reason={_safe_fallback_reason(error_message)}.", level="WARNING")],
     }
+    if reason_code:
+        result["ai_warnings"] = _safe_code_list(reason_code)
+    return result
 
 
 def _safe_fallback_reason(error_message: str) -> str:
@@ -1224,10 +1251,27 @@ def _validated_payload(schema, response: Any) -> dict[str, Any]:
         payload = response.model_dump(mode="json")
     elif hasattr(response, "dict"):
         payload = response.dict()
+    elif isinstance(response, str):
+        payload = _parse_structured_json_response(response)
     else:
         payload = response
     model = schema.model_validate(payload)
     return model.model_dump(mode="json")
+
+
+def _parse_structured_json_response(response: str) -> Any:
+    text = str(response or "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return json.loads(match.group(1).strip())
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(text[start:end + 1])
+        raise
 
 def _build_document_understanding_prompt(
     *,
@@ -1338,7 +1382,17 @@ def _ground_dynamic_claims(schema_payload: dict[str, Any], evidence_graph: dict[
             source_width = merged.get("source_width")
             source_height = merged.get("source_height")
             page_number = int(claim.get("page_number") or merged.get("page_number") or 1)
-            boxes = [_box_from_dynamic_geometry(page_number, bbox, polygon, coordinate_space, merged.get("confidence"))] if bbox else []
+            boxes = [
+                _box_from_dynamic_geometry(
+                    page_number,
+                    bbox,
+                    polygon,
+                    coordinate_space,
+                    merged.get("confidence"),
+                    source_width=source_width,
+                    source_height=source_height,
+                )
+            ] if bbox else []
             grounding_confidence = 1.0 if boxes else 0.0
 
         field_id = claim_id
@@ -1381,6 +1435,106 @@ def _ground_dynamic_claims(schema_payload: dict[str, Any], evidence_graph: dict[
             }
         )
     return grounded
+
+
+def _deterministic_dynamic_claims_from_existing_fields(extraction_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    view = extraction_payload.get("view") if isinstance(extraction_payload.get("view"), dict) else {}
+    raw_fields = [
+        item
+        for item in list(view.get("field_details") or view.get("field_candidates") or [])
+        if isinstance(item, dict)
+    ]
+    semantic_fields = [
+        item for item in raw_fields
+        if not _is_generic_visible_label(item.get("label") or item.get("key") or item.get("field_id"))
+    ]
+    selected = semantic_fields or raw_fields[:5]
+    claims: list[dict[str, Any]] = []
+    for index, field in enumerate(selected, start=1):
+        value = safe_normalized_string(
+            field.get("extracted_value")
+            or field.get("value")
+            or field.get("normalized_value")
+            or field.get("masked_value")
+        )
+        if not value:
+            continue
+        label = safe_normalized_string(field.get("label") or field.get("key") or field.get("field_id")) or f"Field {index}"
+        field_id = str(field.get("field_id") or field.get("key") or _slug_id(label.replace(" ", "-")))
+        boxes = _boxes_from_claim(field)
+        bbox = field.get("bbox") or (boxes[0].bbox if boxes else None)
+        claims.append(
+            {
+                "claim_id": field_id,
+                "field_id": field_id,
+                "key": field_id,
+                "label": label,
+                "value": value,
+                "extracted_value": value,
+                "masked_value": field.get("masked_value") or _mask_dynamic_value(value),
+                "normalized_value": safe_normalized_string(field.get("normalized_value") or value),
+                "confidence": float(field.get("confidence") or 0.65),
+                "ai_confidence": float(field.get("confidence") or 0.65),
+                "grounding_confidence": 1.0 if boxes else 0.0,
+                "data_type": _dynamic_data_type_for_label(label),
+                "category": _dynamic_data_type_for_label(label),
+                "importance": "important",
+                "requires_verification": bool(field.get("requires_verification", True)),
+                "verification_intent": _dynamic_intent_for_label(label),
+                "verification_reason": "Deterministic OCR label-value fallback.",
+                "reason": "Deterministic OCR label-value fallback.",
+                "reason_codes": ["DETERMINISTIC_OCR_LABEL_VALUE_FALLBACK"],
+                "evidence_ids": [str(field.get("evidence_ref") or field.get("evidence_line_id"))] if (field.get("evidence_ref") or field.get("evidence_line_id")) else [],
+                "evidence_ref": field.get("evidence_ref") or field.get("evidence_line_id"),
+                "bbox": bbox,
+                "polygon": field.get("polygon") or (boxes[0].polygon if boxes else None),
+                "page": field.get("page") or field.get("page_number") or (boxes[0].page if boxes else 1),
+                "page_number": field.get("page_number") or field.get("page") or (boxes[0].page_number if boxes else 1),
+                "coordinate_space": field.get("coordinate_space") or (boxes[0].coordinate_space if boxes else None),
+                "source_width": field.get("source_width") or (boxes[0].source_width if boxes else None),
+                "source_height": field.get("source_height") or (boxes[0].source_height if boxes else None),
+                "grounding_status": "grounded" if boxes else "unresolved",
+                "bounding_box": boxes[0].model_dump(mode="json") if boxes else field.get("bounding_box"),
+                "bounding_boxes": [box.model_dump(mode="json") for box in boxes],
+                "extraction_method": field.get("extraction_method") or "pp_chatocr_v4",
+                "source": "pp_chatocr_v4",
+            }
+        )
+    return claims
+
+
+def _is_generic_visible_label(value: Any) -> bool:
+    normalized = _norm_text(value)
+    return normalized.startswith("visible text") or normalized.startswith("diagnostic visible text")
+
+
+def _dynamic_data_type_for_label(label: str) -> str:
+    normalized = _norm_text(label)
+    if "name" in normalized:
+        return "person_name"
+    if any(token in normalized for token in ("id", "number", "roll", "registration", "application")):
+        return "identifier"
+    if "date" in normalized or normalized == "dob":
+        return "date"
+    if any(token in normalized for token in ("institution", "issuer", "organization", "university", "school")):
+        return "organization"
+    if any(token in normalized for token in ("score", "grade", "result", "cgpa")):
+        return "score"
+    return "free_text"
+
+
+def _dynamic_intent_for_label(label: str) -> str:
+    data_type = _dynamic_data_type_for_label(label)
+    normalized = _norm_text(label)
+    if data_type in {"person_name", "identifier"}:
+        return "identity"
+    if any(token in normalized for token in ("candidate", "application", "roll", "registration", "score", "grade", "result")):
+        return "academic"
+    if data_type == "date":
+        return "date_validity"
+    if data_type == "organization":
+        return "issuer_authenticity"
+    return "manual_review"
 
 
 def _match_evidence_ids_for_value(value: str, evidence_items: list[dict[str, Any]]) -> list[str]:
@@ -1455,7 +1609,16 @@ def _dynamic_claim_by_field_id(extraction_payload: dict[str, Any]) -> dict[str, 
     }
 
 
-def _box_from_dynamic_geometry(page_number: int, bbox: list[float] | None, polygon: list[list[float]] | None, coordinate_space: str | None, confidence: float | None) -> BoundingBox:
+def _box_from_dynamic_geometry(
+    page_number: int,
+    bbox: list[float] | None,
+    polygon: list[list[float]] | None,
+    coordinate_space: str | None,
+    confidence: float | None,
+    *,
+    source_width: float | None = None,
+    source_height: float | None = None,
+) -> BoundingBox:
     x0, y0, x1, y1 = bbox or [0, 0, 0, 0]
     return BoundingBox(
         page=page_number,
@@ -1469,6 +1632,8 @@ def _box_from_dynamic_geometry(page_number: int, bbox: list[float] | None, polyg
         coordinate_space=coordinate_space,
         source="pp_chatocr_v4",
         confidence=confidence,
+        source_width=source_width,
+        source_height=source_height,
     )
 
 
@@ -1721,6 +1886,8 @@ def _boxes_from_claim(claim: dict[str, Any]) -> list[BoundingBox]:
                 "coordinate_space": claim.get("coordinate_space"),
                 "source": claim.get("source"),
                 "confidence": claim.get("confidence"),
+                "source_width": claim.get("source_width"),
+                "source_height": claim.get("source_height"),
             }
         )
     boxes: list[BoundingBox] = []
@@ -1750,6 +1917,8 @@ def _boxes_from_claim(claim: dict[str, Any]) -> list[BoundingBox]:
                 coordinate_space=raw.get("coordinate_space"),
                 source=raw.get("source"),
                 confidence=raw.get("confidence"),
+                source_width=raw.get("source_width"),
+                source_height=raw.get("source_height"),
             )
         )
     return boxes

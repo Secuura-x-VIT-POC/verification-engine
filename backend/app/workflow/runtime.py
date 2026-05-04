@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from ..audit.service import get_latest_audit_receipt
 from ..cleanup.controller import complete_cleanup, fail_cleanup, start_cleanup
+from ..security.pdf_validator import read_pdf_security_sidecar
 from ..sessions.constants import HUMAN_FINAL_STATES, SessionState, VERIFIED_STATES
 from ..sessions.models import Session as SessionModel
 from . import repository
@@ -126,6 +127,7 @@ def close_session(db: DbSession, session: SessionModel) -> SessionModel:
     try:
         if session.file_path:
             file_path = Path(session.file_path)
+            _delete_pdf_security_artifacts(file_path)
             if file_path.exists():
                 file_path.unlink()
 
@@ -160,6 +162,18 @@ def close_session(db: DbSession, session: SessionModel) -> SessionModel:
         db.commit()
         db.refresh(session)
         return session
+
+
+def _delete_pdf_security_artifacts(file_path: Path) -> None:
+    sidecar_path = Path(f"{file_path}.security.json")
+    sidecar_payload = read_pdf_security_sidecar(file_path)
+    quarantine_filename = str(sidecar_payload.get("quarantine_filename") or "").strip()
+    if quarantine_filename and Path(quarantine_filename).name == quarantine_filename:
+        quarantine_path = file_path.parent / "quarantine" / quarantine_filename
+        if quarantine_path.exists():
+            quarantine_path.unlink()
+    if sidecar_path.exists():
+        sidecar_path.unlink()
 
 
 def serialize_session(db: DbSession, session: SessionModel) -> dict[str, Any]:

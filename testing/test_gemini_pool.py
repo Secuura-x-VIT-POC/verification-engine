@@ -29,21 +29,31 @@ class _FakeChatGoogleGenerativeAI:
     calls: list[dict] = []
     responses_by_key: dict[str, list] = {}
 
-    def __init__(self, *, model, google_api_key, temperature):
+    def __init__(self, *, model, google_api_key, temperature, timeout=None, max_retries=None):
         self.model = model
         self.google_api_key = google_api_key
         self.temperature = temperature
+        self.timeout = timeout
+        self.max_retries = max_retries
         self.structured_schema = None
         self.calls.append(
             {
                 "model": model,
                 "google_api_key": google_api_key,
                 "temperature": temperature,
+                "timeout": timeout,
+                "max_retries": max_retries,
             }
         )
 
     def with_structured_output(self, schema):
-        structured = type(self)(model=self.model, google_api_key=self.google_api_key, temperature=self.temperature)
+        structured = type(self)(
+            model=self.model,
+            google_api_key=self.google_api_key,
+            temperature=self.temperature,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
+        )
         structured.structured_schema = schema
         return structured
 
@@ -85,6 +95,8 @@ class GeminiPoolTests(unittest.TestCase):
                 "GEMINI_POOL_STRATEGY": "",
                 "GEMINI_MODEL": "",
                 "GEMINI_TEMPERATURE": "",
+                "GEMINI_PROVIDER_MAX_RETRIES": "",
+                "GEMINI_PROVIDER_TIMEOUT_SECONDS": "",
             },
             clear=False,
         )
@@ -104,6 +116,27 @@ class GeminiPoolTests(unittest.TestCase):
 
         self.assertEqual(result["response"], "primary response")
         self.assertEqual(result["key"], "primary-key")
+        self.assertEqual(_FakeChatGoogleGenerativeAI.calls[0]["max_retries"], 0)
+        self.assertEqual(_FakeChatGoogleGenerativeAI.calls[0]["timeout"], 45)
+
+    def test_configured_key_entries_are_ordered_and_deduped_across_aliases(self):
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_API_KEYS": "list-primary, list-secondary, list-primary",
+                "GEMINI_API_KEY_PRIMARY": "list-primary",
+                "GEMINI_API_KEY": "primary-alias",
+                "GOOGLE_API_KEY": "primary-alias",
+                "GEMINI_API_KEY_1": "primary-one",
+                "GEMINI_API_KEY_SECONDARY": "list-secondary",
+                "GEMINI_API_KEY_2": "secondary-two",
+            },
+            clear=False,
+        ):
+            entries = gemini_pool._configured_key_entries()
+
+        self.assertEqual([entry.key for entry in entries], ["list-primary", "list-secondary", "primary-alias", "primary-one", "secondary-two"])
+        self.assertEqual([entry.slot for entry in entries], ["primary", "secondary", "primary", "primary", "secondary"])
 
     def test_default_stage_preferred_primary_still_uses_primary_first(self):
         with patch.dict(
@@ -265,13 +298,12 @@ class GeminiPoolTests(unittest.TestCase):
         self.assertEqual(result["response"], "secondary response")
         self.assertEqual(
             [call["google_api_key"] for call in _FakeChatGoogleGenerativeAI.calls],
-            ["primary-key", "primary-key", "secondary-key"],
+            ["primary-key", "secondary-key"],
         )
         observed = [(record.key_slot, record.outcome_category) for record in captured.records]
         self.assertEqual(
             observed,
             [
-                ("primary", "rate_limited"),
                 ("primary", "rate_limited"),
                 ("primary", "fallback"),
                 ("secondary", "success"),
@@ -366,7 +398,7 @@ class GeminiPoolTests(unittest.TestCase):
         self.assertEqual(result["response"], "secondary response")
         self.assertEqual(
             [call["google_api_key"] for call in _FakeChatGoogleGenerativeAI.calls],
-            ["primary-key", "primary-key", "secondary-key"],
+            ["primary-key", "secondary-key"],
         )
         self.assertEqual(captured.records[0].selected_first_slot, "primary")
         self.assertEqual(captured.records[-1].key_slot, "secondary")

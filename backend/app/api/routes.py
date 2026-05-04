@@ -418,6 +418,30 @@ def review_decision_route(
     user: str = Depends(get_current_user),
 ) -> ReviewDecisionResponse:
     session = _get_owned_session(db, session_id, user)
+    final_state, final_decision = _review_status_for_decision(request.decision)
+    if session.status == final_state:
+        try:
+            audit_receipt = upsert_final_review_receipt(
+                db,
+                session,
+                reviewer_ref=user,
+                reviewer_decision=final_decision,
+                reviewer_note=request.reviewer_note,
+            )
+            db.commit()
+            db.refresh(session)
+        except Exception as exc:
+            db.rollback()
+            LOGGER.exception("REVIEW_DECISION_IDEMPOTENT_RECEIPT_FAILED session_id=%s decision=%s", session.id, request.decision)
+            raise HTTPException(status_code=500, detail="Review decision failed while recording the audit receipt") from exc
+        return ReviewDecisionResponse(
+            session_id=session.id,
+            status=session.status,
+            final_decision=final_decision,
+            cleanup_ready=True,
+            audit_receipt_id=audit_receipt.audit_event_id,
+        )
+
     allowed_states = {
         SessionState.PENDING_HUMAN_REVIEW,
         SessionState.VERIFIED_GREEN,
@@ -427,7 +451,6 @@ def review_decision_route(
     if session.status not in allowed_states:
         raise HTTPException(status_code=409, detail="Session is not ready for human review")
 
-    final_state, final_decision = _review_status_for_decision(request.decision)
     try:
         if session.status in {
             SessionState.VERIFIED_GREEN,
@@ -446,10 +469,14 @@ def review_decision_route(
         )
         db.commit()
         db.refresh(session)
+    except (repository.StateTransitionConflictError, repository.InvalidStateTransitionError) as exc:
+        db.rollback()
+        LOGGER.warning("REVIEW_DECISION_CONFLICT session_id=%s decision=%s status=%s", session.id, request.decision, session.status)
+        raise HTTPException(status_code=409, detail="Review decision could not be applied") from exc
     except Exception as exc:
         db.rollback()
         LOGGER.exception("REVIEW_DECISION_FAILED session_id=%s decision=%s", session.id, request.decision)
-        raise HTTPException(status_code=409, detail="Review decision could not be applied") from exc
+        raise HTTPException(status_code=500, detail="Review decision failed while recording the audit receipt") from exc
 
     return ReviewDecisionResponse(
         session_id=session.id,

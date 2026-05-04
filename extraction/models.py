@@ -32,6 +32,12 @@ class BoundingBox(BaseModel):
     coordinate_space: Optional[str] = None
     source: Optional[str] = None
     confidence: Optional[float] = None
+    source_width: Optional[float] = None
+    source_height: Optional[float] = None
+    page_width: Optional[float] = None
+    page_height: Optional[float] = None
+    dpi: Optional[float] = None
+    render_scale: Optional[float] = None
 
     def model_post_init(self, __context: Any) -> None:
         object.__setattr__(self, "width", round(float(self.x1) - float(self.x0), 2))

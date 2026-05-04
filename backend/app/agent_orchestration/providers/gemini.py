@@ -6,16 +6,34 @@ import re
 from typing import Any
 
 from ..schemas import DynamicDocumentSchema
-from .gemini_pool import GeminiPoolConfigurationError, build_gemini_client
+from .gemini_pool import GeminiPoolConfigurationError, _configured_key_entries, invoke_gemini_balanced
 
 
 def build_gemini_llm():
-    try:
-        return build_gemini_client("primary")
-    except GeminiPoolConfigurationError as exc:
-        if str(exc) == "GEMINI_API_KEY is not configured":
-            raise RuntimeError("GEMINI_API_KEY is not configured") from exc
-        raise RuntimeError(str(exc)) from exc
+    if not _configured_key_entries():
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+    return _PooledGeminiLLM()
+
+
+class _PooledGeminiLLM:
+    def __init__(self, *, schema: type | None = None):
+        self.schema = schema
+
+    def with_structured_output(self, schema, **_kwargs):
+        return _PooledGeminiLLM(schema=schema)
+
+    def invoke(self, prompt_or_messages):
+        try:
+            return invoke_gemini_balanced(
+                prompt_or_messages,
+                preferred_key="primary",
+                schema=self.schema,
+                stage_name="gemini_direct_provider",
+            )
+        except GeminiPoolConfigurationError as exc:
+            if str(exc) == "GEMINI_API_KEY is not configured":
+                raise RuntimeError("GEMINI_API_KEY is not configured") from exc
+            raise RuntimeError(str(exc)) from exc
 
 
 def _read_float(name: str, default: float) -> float:

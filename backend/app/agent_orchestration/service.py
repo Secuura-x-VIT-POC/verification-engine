@@ -22,5 +22,9 @@ def normalize_extraction_payload(extraction_payload: dict[str, Any]) -> dict[str
         LOGGER.warning("GENERALIZED_VERIFICATION_FALLBACK reason=graph_failed error=%s", exc)
         return extraction_payload
 
+    if isinstance(result, dict) and result.get("gemini_fallback_used"):
+        LOGGER.warning("GENERALIZED_VERIFICATION_FALLBACK reason=gemini_fallback_used")
+        return extraction_payload
+
     LOGGER.info("GENERALIZED_VERIFICATION_GRAPH_ACCEPTED")
     return result if isinstance(result, dict) else extraction_payload

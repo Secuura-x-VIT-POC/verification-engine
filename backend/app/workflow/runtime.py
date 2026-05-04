@@ -29,6 +29,22 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
 LOGGER = logging.getLogger(__name__)
+WARNING_VALUE_KEYS = ("code", "warning_code", "reason_code", "type", "stage", "error_code", "message")
+UNSAFE_WARNING_MARKERS = (
+    "RAW",
+    "SECRET",
+    "PRIVATE",
+    "PROMPT",
+    "FULL_RESPONSE",
+    "RAW_RESPONSE",
+    "GEMINI_RESPONSE",
+    "MODEL_OUTPUT",
+    "PROVIDER_RAW",
+    "PROVIDER_BODY",
+    "REQUEST_BODY",
+    "RESPONSE_BODY",
+    "REVIEWER_NOTE",
+)
 
 
 COMPATIBILITY_FIELD_ALIASES = {
@@ -262,7 +278,7 @@ def extract_document_payload(file_path: Path) -> dict[str, Any]:
             "confidence": confidence,
             "bounding_boxes": bounding_boxes,
             "field_details": field_details,
-            "warnings": raw_result.get("warnings") or [],
+            "warnings": _safe_warning_codes(raw_result.get("warnings")),
             "reason_code": raw_result.get("reason_code"),
             "metadata": raw_result.get("metadata"),
             "ocr_metadata": raw_result.get("ocr_metadata"),
@@ -333,10 +349,7 @@ def _build_generalized_view_payload(
             _slug(label or _normalize_string(entry.get("category")) or _normalize_string(entry.get("credential_id")) or f"field-{index}"),
             seen_keys,
         )
-        box = _first_box(entry.get("bounding_boxes")) or entry.get("bounding_box") or entry.get("bbox")
-        converted_boxes = [_convert_box(box)] if isinstance(box, dict) else []
-        if not converted_boxes and isinstance(box, list):
-            converted_boxes = [_convert_box({"bbox": box, "page_number": entry.get("page_number") or entry.get("page")})]
+        converted_boxes = _dedupe_converted_boxes(entry)
         page = converted_boxes[0]["page"] if converted_boxes else _coerce_int(entry.get("page"))
         page_number = _coerce_int(entry.get("page_number")) or page
         detail = {
@@ -372,6 +385,35 @@ def _build_generalized_view_payload(
         field_details.append(detail)
 
     return extracted_fields, confidence, bounding_boxes, field_details
+
+
+def _dedupe_converted_boxes(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_boxes: list[Any] = []
+    if isinstance(entry.get("bounding_boxes"), list):
+        raw_boxes.extend(entry.get("bounding_boxes") or [])
+    if isinstance(entry.get("bounding_box"), dict):
+        raw_boxes.append(entry.get("bounding_box"))
+    if isinstance(entry.get("bbox"), list):
+        raw_boxes.append({"bbox": entry.get("bbox"), "page_number": entry.get("page_number") or entry.get("page")})
+
+    converted: list[dict[str, Any]] = []
+    seen: set[tuple[int, float, float, float, float]] = set()
+    for raw in raw_boxes:
+        if not isinstance(raw, dict):
+            continue
+        box = _convert_box(raw)
+        key = (
+            int(box.get("page_number") or box.get("page") or 1),
+            round(float(box.get("x0") or 0), 2),
+            round(float(box.get("y0") or 0), 2),
+            round(float(box.get("x1") or 0), 2),
+            round(float(box.get("y1") or 0), 2),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        converted.append(box)
+    return converted
 
 
 def _build_semantic_aliases(raw_result: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -642,6 +684,65 @@ def _convert_box(box: dict[str, Any]) -> dict[str, Any]:
 
 def _safe_error(exc: Exception) -> str:
     return re.sub(r"\s+", " ", str(exc)).strip()[:300]
+
+
+def _safe_warning_codes(value: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in _iter_warning_values(value):
+        code = _safe_warning_code(item)
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        result.append(code)
+    return result
+
+
+def _iter_warning_values(value: Any):
+    if value is None:
+        return
+    if hasattr(value, "model_dump"):
+        try:
+            yield from _iter_warning_values(value.model_dump(mode="json"))
+            return
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        for key in WARNING_VALUE_KEYS:
+            if value.get(key) not in (None, ""):
+                yield value.get(key)
+                return
+        yield "OCR_WARNING"
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_warning_values(item)
+        return
+    code_attr = getattr(value, "code", None)
+    if code_attr not in (None, ""):
+        yield code_attr
+        return
+    message_attr = getattr(value, "message", None)
+    if message_attr not in (None, ""):
+        yield message_attr
+        return
+    yield value
+
+
+def _safe_warning_code(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    upper = text.upper()
+    if any(marker in upper for marker in UNSAFE_WARNING_MARKERS):
+        return "WORKSPACE_WARNING_REDACTED"
+    code = re.sub(r"[^A-Z0-9]+", "_", upper).strip("_")
+    code = re.sub(r"_+", "_", code)
+    if not code:
+        return ""
+    if len(code) > 96:
+        return "WORKSPACE_WARNING_REDACTED"
+    return code
 
 
 def _serialize_dt(value: datetime | None) -> str | None:

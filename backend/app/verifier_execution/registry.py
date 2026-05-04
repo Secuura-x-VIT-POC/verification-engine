@@ -30,24 +30,55 @@ PROVIDER_ALIASES = {
 
 CLAIM_TYPE_TO_VERIFIER = {
     "identity": "identity_db",
+    "person_name": "identity_db",
+    "document_identifier": "identity_db",
+    "document_id": "identity_db",
     "identity_document": "identity_db",
+    "issuer_authenticity": "academic_registry",
+    "organization": "academic_registry",
+    "institution": "academic_registry",
     "academic": "academic_registry",
+    "credential": "academic_registry",
+    "qualification": "academic_registry",
     "academic_degree": "academic_registry",
     "academic_credential": "academic_registry",
+    "date_validity": "certificate_registry",
+    "issue_date": "certificate_registry",
+    "expiry_date": "certificate_registry",
     "certificate": "certificate_registry",
     "certificate_document": "certificate_registry",
     "address": "address_check",
+    "location": "address_check",
     "passport": "passport_db",
     "license": "license_registry",
     "financial": "financial_registry",
+    "monetary_amount": "financial_registry",
+    "amount": "financial_registry",
     "tax": "tax_authority",
+    "status": "manual_review",
+    "result": "manual_review",
+    "eligibility": "manual_review",
 }
 
 CLAIM_TYPE_TO_CATEGORY = {
     "academic_degree": "academic",
     "academic_credential": "academic",
+    "credential": "academic",
+    "qualification": "academic",
     "certificate_document": "certificate",
     "identity_document": "identity",
+    "person_name": "identity",
+    "document_identifier": "identity",
+    "document_id": "identity",
+    "issuer_authenticity": "academic",
+    "organization": "academic",
+    "institution": "academic",
+    "date_validity": "certificate",
+    "issue_date": "certificate",
+    "expiry_date": "certificate",
+    "location": "address",
+    "monetary_amount": "financial",
+    "amount": "financial",
 }
 
 
@@ -79,7 +110,7 @@ class VerifierRegistry:
         return sorted(self._verifiers.keys())
 
     def verifier_key_for_claim_type(self, claim_type: str) -> str:
-        return CLAIM_TYPE_TO_VERIFIER.get(str(claim_type or "").strip().lower(), "manual_review")
+        return CLAIM_TYPE_TO_VERIFIER.get(_canonical_claim_type(claim_type), "manual_review")
 
     def get_provider_candidates(
         self,
@@ -92,7 +123,7 @@ class VerifierRegistry:
         del required_fields
         provider_policy = load_provider_runtime_policy()
         provider_registry = build_default_provider_registry()
-        normalized_claim_type = str(claim_type or "").strip().lower()
+        normalized_claim_type = _canonical_claim_type(claim_type)
         verifier_key = self.verifier_key_for_claim_type(normalized_claim_type)
         category = _category_for_claim_type(normalized_claim_type, context)
         preferred_provider_key = _preferred_provider_for_assurance(
@@ -189,7 +220,23 @@ def _category_for_claim_type(claim_type: str, context: dict[str, Any] | None) ->
         explicit = str(context.get("category") or "").strip().lower()
         if explicit:
             return explicit
-    return CLAIM_TYPE_TO_CATEGORY.get(claim_type, claim_type or "unknown")
+    normalized = _canonical_claim_type(claim_type)
+    return CLAIM_TYPE_TO_CATEGORY.get(normalized, normalized or "unknown")
+
+
+def _canonical_claim_type(claim_type: str | None) -> str:
+    normalized = str(claim_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "name": "person_name",
+        "id": "document_identifier",
+        "issuer": "issuer_authenticity",
+        "credential_title": "credential",
+        "degree": "credential",
+        "date": "date_validity",
+        "address_location": "address",
+        "money": "monetary_amount",
+    }
+    return aliases.get(normalized, normalized)
 
 
 def _preferred_provider_for_assurance(*, assurance_required: str, verifier_key: str) -> str | None:

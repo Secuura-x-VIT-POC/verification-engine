@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
+from typing import Any
 
 from .evidence_graph import build_evidence_graph_from_pp_chatocr
 from .models import (
@@ -114,10 +116,7 @@ def _run_extraction_bundle(session_id: str, pdf_path: str, llm_client=None, stra
     document_type_hint = "generic"
     pp_payload = run_pp_chatocr_v4_extraction(str(path), document_type_hint=document_type_hint)
     evidence_graph = build_evidence_graph_from_pp_chatocr(pp_payload)
-    warnings = [
-        ExtractionWarning(code=str(code).upper(), message=str(code))
-        for code in list(pp_payload.get("warnings") or [])
-    ]
+    warnings = [_warning_from_payload(item) for item in list(pp_payload.get("warnings") or [])]
     spatial_text_map = [_spatial_token_from_payload(item) for item in list(pp_payload.get("spatial_text_map") or [])]
     evidence_lines = [_evidence_line_from_payload(item) for item in list(pp_payload.get("evidence_lines") or [])]
     candidates = [_candidate_from_payload(item) for item in list(pp_payload.get("field_candidates") or [])]
@@ -160,8 +159,13 @@ def _run_extraction_bundle(session_id: str, pdf_path: str, llm_client=None, stra
 
 
 def _candidate_from_payload(item: dict) -> FieldCandidate:
-    bbox = item.get("bounding_box") or _box_from_bbox(item)
-    boxes = [BoundingBox.model_validate(bbox)] if isinstance(bbox, dict) and bbox.get("bbox") else []
+    raw_boxes = list(item.get("bounding_boxes") or [])
+    if isinstance(item.get("bounding_box"), dict):
+        raw_boxes.append(item["bounding_box"])
+    fallback_box = _box_from_bbox(item)
+    if isinstance(fallback_box, dict):
+        raw_boxes.append(fallback_box)
+    boxes = _dedupe_boxes(raw_boxes)
     value = item.get("extracted_value") or item.get("normalized_value") or item.get("masked_value") or ""
     return FieldCandidate(
         field_id=str(item.get("field_id") or item.get("label") or "field"),
@@ -188,6 +192,75 @@ def _candidate_from_payload(item: dict) -> FieldCandidate:
         detected_by=["layout"] if boxes else [],
         requires_verification=bool(item.get("requires_verification", True)),
     )
+
+
+def _dedupe_boxes(raw_boxes: list[dict]) -> list[BoundingBox]:
+    boxes: list[BoundingBox] = []
+    seen: set[tuple[int, float, float, float, float]] = set()
+    for raw_box in raw_boxes:
+        if not isinstance(raw_box, dict) or not raw_box.get("bbox"):
+            continue
+        box = BoundingBox.model_validate(raw_box)
+        key = (
+            int(box.page_number or box.page or 1),
+            round(float(box.x0), 2),
+            round(float(box.y0), 2),
+            round(float(box.x1), 2),
+            round(float(box.y1), 2),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        boxes.append(box)
+    return boxes
+
+
+def _warning_from_payload(item: Any) -> ExtractionWarning:
+    code = "OCR_WARNING"
+    message = "OCR warning"
+    if hasattr(item, "model_dump"):
+        try:
+            item = item.model_dump(mode="json")
+        except Exception:
+            pass
+    if isinstance(item, dict):
+        code = _safe_warning_code(
+            item.get("code")
+            or item.get("warning_code")
+            or item.get("reason_code")
+            or item.get("type")
+            or item.get("stage")
+            or item.get("error_code")
+            or item.get("message")
+        )
+        message = _safe_warning_message(item.get("message") or code)
+    elif item not in (None, ""):
+        code = _safe_warning_code(item)
+        message = _safe_warning_message(item)
+    return ExtractionWarning(code=code or "OCR_WARNING", message=message or "OCR warning")
+
+
+def _safe_warning_code(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "OCR_WARNING"
+    upper = text.upper()
+    if any(marker in upper for marker in ("RAW", "SECRET", "PRIVATE", "PROMPT", "GEMINI_RESPONSE", "PROVIDER_RAW", "PROVIDER_BODY", "REVIEWER_NOTE")):
+        return "OCR_WARNING_REDACTED"
+    code = re.sub(r"[^A-Z0-9]+", "_", upper).strip("_")
+    code = re.sub(r"_+", "_", code)
+    if not code:
+        return "OCR_WARNING"
+    if len(code) > 96:
+        return "OCR_WARNING_REDACTED"
+    return code
+
+
+def _safe_warning_message(value: Any) -> str:
+    code = _safe_warning_code(value)
+    if code.endswith("_REDACTED"):
+        return "OCR warning redacted"
+    return code.replace("_", " ").title()
 
 
 def _spatial_token_from_payload(item: dict) -> SpatialTextToken:

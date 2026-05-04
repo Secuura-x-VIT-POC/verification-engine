@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import tempfile
 import unittest
 from datetime import datetime
@@ -19,6 +20,7 @@ from backend.app.auth.routes import get_current_user
 from backend.app.db.database import Base, get_db
 from backend.app.sessions.constants import SessionState
 from backend.app.sessions.models import AuditReceiptRecord, Session as SessionModel
+from backend.app.workflow import repository
 from backend.app.workflow.runtime import is_ready_for_cleanup
 from backend.app.workflow.state_machine import validate_transition
 
@@ -152,7 +154,7 @@ class WorkflowApiRouteTests(unittest.TestCase):
     def test_verifying_can_move_to_pending_human_review(self):
         validate_transition(SessionState.VERIFYING, SessionState.PENDING_HUMAN_REVIEW)
 
-    def test_run_endpoint_starts_verification_and_returns_workspace_payload(self):
+    def test_run_uses_single_generalized_pipeline_and_persists_sanitized_workspace(self):
         file_path = self._create_temp_pdf()
         self._create_session(
             session_id="session-run-valid",
@@ -161,21 +163,139 @@ class WorkflowApiRouteTests(unittest.TestCase):
             file_path=file_path,
         )
 
+        def fake_generalized_runner(db, session, *, reviewer_ref):
+            self.assertEqual(reviewer_ref, "user-1")
+            repository.transition_state(db, session.id, SessionState.VERIFYING, extra_values={"worker_phase": "GENERALIZED_PIPELINE"})
+            db.commit()
+            workspace = self._workspace_payload(session.id)
+            workspace["document"]["warnings"] = [
+                {"code": "PP_CHAT_OCR_CHAT_STAGE_AUTH_FAILED", "message": "safe message"},
+                "SCHEMA_INFERENCE_WARNING",
+                {"message": "layout warning"},
+            ]
+            from backend.app.agent_orchestration.graph import _safe_code_list
+            workspace["document"]["warnings"] = _safe_code_list(workspace["document"]["warnings"])
+            duplicate_box = {
+                "page": 1,
+                "page_number": 1,
+                "x0": 10,
+                "y0": 10,
+                "x1": 40,
+                "y1": 20,
+                "bbox": [10, 10, 40, 20],
+            }
+            workspace["fields"] = [
+                {
+                    "field_id": f"field-{index}",
+                    "label": f"Field {index}",
+                    "extracted_value": f"masked-{index}",
+                    "normalized_value": f"masked-{index}",
+                    "status": "AMBER",
+                    "confidence": 0.8,
+                    "bounding_boxes": [duplicate_box],
+                    "reason_codes": ["MANUAL_REVIEW_REQUIRED"],
+                    "manual_review_required": True,
+                }
+                for index in range(1, 6)
+            ]
+            workspace["document"]["highlights_count"] = 5
+            workspace["verifiers"] = [
+                {
+                    "task_id": "task-generalized-no-match",
+                    "field_id": "field-1",
+                    "connector_id": "manual_review",
+                    "status": "MANUAL_REVIEW",
+                    "verification_confidence": 0.0,
+                    "reason_codes": ["NO_PROVIDER_AVAILABLE", "MANUAL_REVIEW_PROVIDER_SELECTED"],
+                    "audit_message": "No executable generalized provider matched; manual review required.",
+                    "attempted_provider_keys": ["unknown_provider", "manual_review"],
+                    "skipped_provider_keys": ["unknown_provider"],
+                }
+            ]
+            workspace["final_verdict"] = {
+                "outcome": "AMBER",
+                "reason_codes": ["MANUAL_REVIEW_REQUIRED", "NO_PROVIDER_AVAILABLE"],
+                "connector_ids": ["manual_review"],
+                "explanation": "Generalized manual review required.",
+                "risk_level": "MEDIUM",
+                "matching_score": 0.0,
+                "visual_match_probability": 0.0,
+            }
+            workspace["audit"] = [
+                {
+                    "stage": "mocked_langgraph",
+                    "message": "mocked LangGraph output consumed; generalized verification_tasks used",
+                    "level": "INFO",
+                    "timestamp": "2026-05-04T00:00:00+00:00",
+                }
+            ]
+            workspace["raw_text"] = "RAW_OCR_TEXT_SHOULD_NOT_PERSIST"
+            workspace["raw_gemini_response"] = {"secret": "MODEL_OUTPUT"}
+            workspace["provider_raw_body"] = {"secret": "PROVIDER_BODY"}
+            from backend.app.agent_orchestration.sanitization import sanitize_workspace_payload
+            from backend.app.agent_orchestration.schemas import WorkspacePayload
+
+            sanitized = sanitize_workspace_payload(WorkspacePayload.model_validate(workspace))
+            repository.complete_processing(
+                db,
+                session.id,
+                SessionState.PENDING_HUMAN_REVIEW,
+                sanitized.final_verdict.outcome,
+                sanitized.final_verdict.reason_codes,
+                sanitized.final_verdict.connector_ids,
+                extra_values={
+                    "workspace_payload": sanitized.model_dump(mode="json"),
+                    "verification_execution_status": "READY",
+                    "generalized_analysis_status": "READY",
+                },
+            )
+            db.commit()
+            return sanitized
+
         with patch("backend.app.api.routes.start_verification", return_value="STARTED") as start_mock, patch(
-            "backend.app.api.routes._build_workspace_payload",
-            return_value=self._workspace_payload("session-run-valid"),
-        ) as workspace_mock:
+            "backend.app.api.routes.run_generalized_verification_session",
+            side_effect=fake_generalized_runner,
+        ) as generalized_mock:
             response = self.client.post("/api/v1/verification-sessions/session-run-valid/run")
 
         self.assertEqual(response.status_code, 200)
         self.assertNotEqual(response.status_code, 410)
-        self.assertEqual(response.json()["session_id"], "session-run-valid")
-        self.assertIn("final_verdict", response.json())
-        self.assertEqual(response.json()["status"], SessionState.PENDING_HUMAN_REVIEW)
-        self.assertEqual(response.json()["final_verdict"]["outcome"], "AMBER")
-        start_mock.assert_called_once()
-        self.assertEqual(start_mock.call_args.kwargs["worker_id"], "user-1")
-        workspace_mock.assert_called_once()
+        payload = response.json()
+        self.assertEqual(payload["session_id"], "session-run-valid")
+        self.assertEqual(payload["status"], SessionState.PENDING_HUMAN_REVIEW)
+        self.assertEqual(payload["final_verdict"]["outcome"], "AMBER")
+        self.assertEqual(
+            payload["document"]["warnings"],
+            ["PP_CHAT_OCR_CHAT_STAGE_AUTH_FAILED", "SCHEMA_INFERENCE_WARNING", "LAYOUT_WARNING"],
+        )
+        self.assertTrue(all(isinstance(item, str) for item in payload["document"]["warnings"]))
+        self.assertEqual(len(payload["fields"]), 5)
+        self.assertEqual(sum(len(field["bounding_boxes"]) for field in payload["fields"]), 5)
+        self.assertIn("MANUAL_REVIEW_PROVIDER_SELECTED", payload["verifiers"][0]["reason_codes"])
+        self.assertEqual(payload["verifiers"][0]["attempted_provider_keys"], ["unknown_provider", "manual_review"])
+        self.assertEqual(payload["verifiers"][0]["skipped_provider_keys"], ["unknown_provider"])
+        serialized_payload = json.dumps(payload, sort_keys=True)
+        self.assertNotIn("RAW_OCR_TEXT_SHOULD_NOT_PERSIST", serialized_payload)
+        self.assertNotIn("raw_gemini_response", serialized_payload)
+        self.assertNotIn("provider_raw_body", serialized_payload)
+        start_mock.assert_not_called()
+        generalized_mock.assert_called_once()
+
+        db = self.SessionLocal()
+        try:
+            session = db.query(SessionModel).filter(SessionModel.id == "session-run-valid").one()
+            self.assertEqual(session.status, SessionState.PENDING_HUMAN_REVIEW)
+            self.assertEqual(session.trust_outcome, "AMBER")
+            self.assertNotEqual(session.status, session.trust_outcome)
+            persisted = json.dumps(session.workspace_payload, sort_keys=True)
+            self.assertIn("bounding_boxes", persisted)
+            self.assertTrue(all(isinstance(item, str) for item in session.workspace_payload["document"]["warnings"]))
+            self.assertFalse(any(isinstance(item, (dict, list)) for item in session.workspace_payload["document"]["warnings"]))
+            self.assertNotIn("RAW_OCR_TEXT_SHOULD_NOT_PERSIST", persisted)
+            self.assertNotIn("raw_gemini_response", persisted)
+            self.assertNotIn("provider_raw_body", persisted)
+        finally:
+            db.close()
 
     def test_run_endpoint_wrong_owner_returns_403(self):
         file_path = self._create_temp_pdf()
@@ -232,7 +352,7 @@ class WorkflowApiRouteTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 409)
                 self.assertEqual(response.json()["detail"], "Session is already closed")
 
-    def test_run_endpoint_start_failed_returns_500(self):
+    def test_run_endpoint_generalized_pipeline_failed_returns_500(self):
         file_path = self._create_temp_pdf()
         self._create_session(
             session_id="session-run-start-failed",
@@ -241,11 +361,11 @@ class WorkflowApiRouteTests(unittest.TestCase):
             file_path=file_path,
         )
 
-        with patch("backend.app.api.routes.start_verification", return_value="FAILED"):
+        with patch("backend.app.api.routes.run_generalized_verification_session", side_effect=RuntimeError("pipeline failed")):
             response = self.client.post("/api/v1/verification-sessions/session-run-start-failed/run")
 
         self.assertEqual(response.status_code, 500)
-        self.assertEqual(response.json()["detail"], "Verification could not be started")
+        self.assertEqual(response.json()["detail"], "Generalized verification failed")
 
     def test_review_decision_approve_returns_human_approved(self):
         self._create_session(
@@ -601,6 +721,15 @@ class WorkflowApiRouteTests(unittest.TestCase):
             "audit": [],
             "actions": [],
         }
+
+
+def test_run_uses_single_generalized_pipeline_and_persists_sanitized_workspace():
+    case = WorkflowApiRouteTests(methodName="test_run_uses_single_generalized_pipeline_and_persists_sanitized_workspace")
+    case.setUp()
+    try:
+        case.test_run_uses_single_generalized_pipeline_and_persists_sanitized_workspace()
+    finally:
+        case.tearDown()
 
 
 if __name__ == "__main__":

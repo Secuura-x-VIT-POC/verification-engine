@@ -5,6 +5,7 @@ import hashlib
 import inspect
 import importlib.metadata
 import io
+import logging
 import os
 import re
 import tempfile
@@ -15,6 +16,7 @@ from typing import Any
 SOURCE = "pp_chatocr_v4"
 COORDINATE_SPACE = "pp_chatocr_image_pixels"
 PIPELINE_NAME = "PP-ChatOCRv4-doc"
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_KEY_LIST = [
     "all visible key-value pairs",
@@ -87,34 +89,56 @@ def run_pp_chatocr_v4_extraction(
                 visual_results.extend(page_visual_results)
 
             visual_info_list = [item.get("visual_info") for item in visual_results if isinstance(item, dict) and item.get("visual_info") is not None]
-            vector_info = _call_with_supported_kwargs(
-                engine.build_vector,
-                visual_info_list,
-                retriever_config=config["retriever_config"],
-            )
+            normalized = _normalize_visual_results(visual_results)
+            if not _has_usable_visual_ocr(normalized):
+                raise PPChatOCRExtractionError("PP-ChatOCRv4 visual/layout OCR produced no usable text lines with boxes.")
+
+            vector_info = None
+            try:
+                vector_info = _call_with_supported_kwargs(
+                    engine.build_vector,
+                    visual_info_list,
+                    retriever_config=config["retriever_config"],
+                )
+            except Exception as exc:
+                warnings.append("pp_chatocr_vector_stage_failed")
+                _log_safe_stage_error("vector", exc, fallback_used=True)
 
             mllm_predict_info = None
             mllm_results = []
-            for input_item in pp_inputs:
-                mllm_result = _call_with_supported_kwargs(
-                    engine.mllm_pred,
-                    input_item["path"],
-                    keys,
-                    mllm_chat_bot_config=config["mllm_chat_bot_config"],
-                )
-                page_mllm = _as_mapping(mllm_result).get("mllm_res")
-                if isinstance(page_mllm, dict):
-                    mllm_results.append(page_mllm)
+            if config["mllm_chat_bot_config"]:
+                try:
+                    for input_item in pp_inputs:
+                        mllm_result = _call_with_supported_kwargs(
+                            engine.mllm_pred,
+                            input_item["path"],
+                            keys,
+                            mllm_chat_bot_config=config["mllm_chat_bot_config"],
+                        )
+                        page_mllm = _as_mapping(mllm_result).get("mllm_res")
+                        if isinstance(page_mllm, dict):
+                            mllm_results.append(page_mllm)
+                except Exception as exc:
+                    warnings.append(_stage_warning_code("mllm", exc))
+                    _log_safe_stage_error("mllm", exc, fallback_used=False)
             mllm_predict_info = _merge_prediction_maps(mllm_results)
 
-            chat_result = _call_with_supported_kwargs(
-                engine.chat,
-                keys,
-                visual_info_list,
-                vector_info=vector_info,
-                mllm_predict_info=mllm_predict_info,
-                chat_bot_config=config["chat_bot_config"],
-            )
+            chat_result = None
+            if config["chat_bot_config"]:
+                try:
+                    chat_result = _call_with_supported_kwargs(
+                        engine.chat,
+                        keys,
+                        visual_info_list,
+                        vector_info=vector_info,
+                        mllm_predict_info=mllm_predict_info,
+                        chat_bot_config=config["chat_bot_config"],
+                    )
+                except Exception as exc:
+                    warnings.append(_stage_warning_code("chat", exc))
+                    _log_safe_stage_error("chat", exc, fallback_used=False)
+            else:
+                warnings.append("pp_chatocr_chat_stage_disabled")
     except (PPChatOCRConfigurationError, PPChatOCRExtractionError):
         raise
     except Exception as exc:
@@ -127,10 +151,10 @@ def run_pp_chatocr_v4_extraction(
             except Exception:
                 pass
 
-    normalized = _normalize_visual_results(visual_results)
     chat_fields = _normalize_prediction_map(_as_mapping(chat_result).get("chat_res"))
     mllm_fields = _normalize_prediction_map(mllm_predict_info)
-    field_candidates = _build_field_candidates([*chat_fields, *mllm_fields], normalized, warnings)
+    predictions = [*chat_fields, *mllm_fields] or _prediction_fields_from_visual_ocr(normalized)
+    field_candidates = _build_field_candidates(predictions, normalized, warnings)
 
     return {
         "extraction_method": SOURCE,
@@ -352,12 +376,17 @@ def _normalize_visual_results(visual_results: list[Any]) -> dict[str, Any]:
     for page_index, result in enumerate(visual_results or [], start=1):
         if not isinstance(result, dict):
             continue
-        layout = _safe_result_mapping(result.get("layout_parsing_result"))
+        layout = _safe_result_mapping(
+            result.get("layout_parsing_result")
+            or result.get("layoutParsingResults")
+            or result.get("visual_info")
+            or result
+        )
         page_number = _coerce_int(result.get("_pp_page_number") or layout.get("page_index") or layout.get("page_id") or layout.get("page_number"), page_index)
         source_width = _coerce_int(result.get("_pp_source_width"), None)
         source_height = _coerce_int(result.get("_pp_source_height"), None)
 
-        for block_index, block in enumerate(_as_list(layout.get("parsing_res_list")), start=1):
+        for block_index, block in enumerate(_as_list(layout.get("parsing_res_list") or layout.get("prunedResult")), start=1):
             block_map = _as_mapping(block)
             text = _sanitize_preview(block_map.get("block_content") or block_map.get("content"))
             geom = _geometry(
@@ -385,7 +414,7 @@ def _normalize_visual_results(visual_results: list[Any]) -> dict[str, Any]:
                 )
 
         _append_ocr_tokens(
-            layout.get("overall_ocr_res"),
+            layout.get("overall_ocr_res") or result.get("overall_ocr_res"),
             page_number=page_number,
             source_width=source_width,
             source_height=source_height,
@@ -394,7 +423,7 @@ def _normalize_visual_results(visual_results: list[Any]) -> dict[str, Any]:
             evidence_lines=evidence_lines,
         )
 
-        for table_index, table in enumerate(_as_list(layout.get("table_res_list")), start=1):
+        for table_index, table in enumerate(_as_list(layout.get("table_res_list") or result.get("table_res_list")), start=1):
             table_map = _as_mapping(table)
             for cell_index, cell_box in enumerate(_as_list(table_map.get("cell_bbox_list")), start=1):
                 table_cells.append(
@@ -435,6 +464,43 @@ def _normalize_visual_results(visual_results: list[Any]) -> dict[str, Any]:
         "page_count": max([1, *[int(item.get("page_number") or 1) for item in [*spatial_text_map, *layout_blocks, *table_cells]]]),
         "warnings": warnings,
     }
+
+
+def _has_usable_visual_ocr(normalized: dict[str, Any]) -> bool:
+    return any(item.get("text_preview") and item.get("bbox") for item in normalized.get("spatial_text_map") or [])
+
+
+def _prediction_fields_from_visual_ocr(normalized: dict[str, Any]) -> list[dict[str, str]]:
+    predictions: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(normalized.get("evidence_lines") or [], start=1):
+        text = _sanitize_value(item.get("text_preview"))
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        predictions.append({"label": f"Visible Text {index}", "value": text})
+    return predictions
+
+
+def _stage_warning_code(stage: str, exc: Exception) -> str:
+    if _is_auth_error(exc):
+        return f"pp_chatocr_{stage}_auth_failed"
+    return f"pp_chatocr_{stage}_stage_failed"
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "401" in text or "invalid_iam_token" in text or "unauthorized" in text
+
+
+def _log_safe_stage_error(stage: str, exc: Exception, *, fallback_used: bool) -> None:
+    LOGGER.warning(
+        "PP_CHAT_OCR_STAGE_FAILED component=pp_chatocr stage=%s error_code=%s exception_class=%s fallback_used=%s",
+        stage,
+        "401" if _is_auth_error(exc) else "unknown",
+        exc.__class__.__name__,
+        fallback_used,
+    )
 
 
 def _append_ocr_tokens(raw_ocr: Any, *, page_number: int, source_width: int | None = None, source_height: int | None = None, source_kind: str, spatial_text_map: list[dict[str, Any]], evidence_lines: list[dict[str, Any]]) -> None:
@@ -654,6 +720,8 @@ def _box_dict(geom: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _safe_result_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, list) and value:
+        return _safe_result_mapping(value[0])
     if isinstance(value, dict):
         return value
     json_attr = getattr(value, "json", None)

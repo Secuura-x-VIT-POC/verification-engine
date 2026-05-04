@@ -239,6 +239,8 @@ class VerifierResult(BaseModel):
     optional: bool = False
     high_assurance: bool = False
     field_ids: list[str] = Field(default_factory=list)
+    attempted_provider_keys: list[str] = Field(default_factory=list)
+    skipped_provider_keys: list[str] = Field(default_factory=list)
 
     _confidence_fields = field_validator("verification_confidence", mode="before")(
         lambda cls, value: _clamp(value or 0.0)
@@ -332,6 +334,8 @@ class WorkspaceVerifierStatus(BaseModel):
     optional: bool = False
     high_assurance: bool = False
     field_ids: list[str] = Field(default_factory=list)
+    attempted_provider_keys: list[str] = Field(default_factory=list)
+    skipped_provider_keys: list[str] = Field(default_factory=list)
 
     _confidence_fields = field_validator("confidence", mode="before")(lambda cls, value: _clamp(value or 0.0))
 

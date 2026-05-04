@@ -17,10 +17,10 @@ def normalize_extraction_payload(extraction_payload: dict[str, Any]) -> dict[str
 
     try:
         graph = build_generalized_verification_graph()
-        graph.invoke({"extraction_payload": extraction_payload})
+        result = graph.invoke({"extraction_payload": extraction_payload})
     except Exception as exc:
         LOGGER.warning("GENERALIZED_VERIFICATION_FALLBACK reason=graph_failed error=%s", exc)
         return extraction_payload
 
     LOGGER.info("GENERALIZED_VERIFICATION_GRAPH_ACCEPTED")
-    return extraction_payload
+    return result if isinstance(result, dict) else extraction_payload

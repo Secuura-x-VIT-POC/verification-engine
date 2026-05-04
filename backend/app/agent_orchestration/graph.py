@@ -14,6 +14,11 @@ from ..sessions.constants import SessionState
 from ..workflow.runtime import build_connector_responses, build_policy, extract_document_payload
 from ..verification_domain.adapters import build_session_credentials, build_session_verification_plan
 from ..verification_domain.contracts import SessionCredentialCollection, SessionVerificationPlan
+from ..verification_domain.contracts import (
+    ExtractedCredential,
+    VerificationTask as DomainVerificationTask,
+    VerifierRouteDecision,
+)
 from ..verifier_execution.contracts import VerificationTaskResult
 from ..verifier_execution.service import build_execution_artifacts
 from ..trust.findings import build_trust_findings, normalize_reason_codes
@@ -23,6 +28,7 @@ from .schemas import (
     BoundingBox,
     DynamicDocumentSchema,
     FieldDecision,
+    FinalVerdict,
     GeminiCredentialGroup,
     GeminiCredentialGroupCollection,
     GeminiDocumentUnderstanding,
@@ -46,6 +52,22 @@ from .semantic_normalization import normalize_claims_semantically, safe_normaliz
 from .state import GeneralizedVerificationState
 
 LOGGER = logging.getLogger(__name__)
+WARNING_VALUE_KEYS = ("code", "warning_code", "reason_code", "type", "stage", "error_code", "message")
+UNSAFE_WARNING_MARKERS = (
+    "RAW",
+    "SECRET",
+    "PRIVATE",
+    "PROMPT",
+    "FULL_RESPONSE",
+    "RAW_RESPONSE",
+    "GEMINI_RESPONSE",
+    "MODEL_OUTPUT",
+    "PROVIDER_RAW",
+    "PROVIDER_BODY",
+    "REQUEST_BODY",
+    "RESPONSE_BODY",
+    "REVIEWER_NOTE",
+)
 
 def build_generalized_verification_graph(
     *,
@@ -350,17 +372,129 @@ def _planning_output_for_existing_runtime(state: GeneralizedVerificationState) -
     extraction_payload = state.get("extraction_payload") or {}
     session_id = str(state.get("session_id") or "")
     credentials = build_session_credentials(session_id, extraction_payload)
-    plan = build_session_verification_plan(
-        session_id,
-        extraction_payload,
-        credentials=credentials,
-    )
+    generalized_tasks = _domain_tasks_from_generalized_tasks(state.get("verification_tasks") or [])
+    if generalized_tasks:
+        credentials = _credentials_with_generalized_task_refs(credentials, generalized_tasks, state)
+        plan = SessionVerificationPlan(
+            session_id=session_id,
+            document_type=credentials.document_type,
+            route_decisions=[_route_decision_from_domain_task(task) for task in generalized_tasks],
+            tasks=generalized_tasks,
+        )
+        audit_message = f"Built existing runtime plan from {len(generalized_tasks)} generalized task(s)."
+    else:
+        plan = build_session_verification_plan(
+            session_id,
+            extraction_payload,
+            credentials=credentials,
+        )
+        audit_message = f"Built existing runtime plan with {len(plan.tasks)} task(s)."
 
     return {
         "domain_credentials": credentials.model_dump(mode="json"),
         "domain_verification_plan": plan.model_dump(mode="json"),
-        "audit_log": [_audit_item("planning_output_for_existing_runtime", f"Built existing runtime plan with {len(plan.tasks)} task(s).")],
+        "audit_log": [_audit_item("planning_output_for_existing_runtime", audit_message)],
     }
+
+
+def _domain_tasks_from_generalized_tasks(raw_tasks: list[Any]) -> list[DomainVerificationTask]:
+    tasks: list[DomainVerificationTask] = []
+    for index, raw_task in enumerate(raw_tasks, start=1):
+        if not isinstance(raw_task, dict):
+            continue
+        try:
+            task = VerificationTask.model_validate(raw_task)
+        except Exception:
+            continue
+        provider_candidates = [
+            _provider_key_from_candidate(candidate)
+            for candidate in list(task.provider_candidates or [])
+        ]
+        provider_candidates = [candidate for candidate in provider_candidates if candidate]
+        preferred_provider = provider_candidates[0] if provider_candidates else (task.connector_id or None)
+        verifier_key = _verifier_key_for_claim_type(task.claim_type)
+        tasks.append(
+            DomainVerificationTask(
+                task_id=task.task_id or f"task-{index}",
+                credential_id=task.credential_id or task.field_id or f"credential-{index}",
+                verifier_key=verifier_key,
+                verifier_label=verifier_key.replace("_", " ").title(),
+                verification_type=task.claim_type or "generic_record",
+                required=not task.optional,
+                claim_type=_canonical_claim_type(task.claim_type),
+                provider_candidates=provider_candidates,
+                required_fields=list(dict.fromkeys(task.required_fields or task.field_ids or [task.field_id])),
+                assurance_required=task.assurance_required,
+                selected_provider=preferred_provider,
+                planned_provider_key=preferred_provider,
+                preferred_provider_key=preferred_provider,
+                reason_codes=["GENERALIZED_TASK_PLAN"],
+                input_payload=_safe_task_payload(
+                    {
+                        **dict(task.input_payload or {}),
+                        "claim_type": _canonical_claim_type(task.claim_type),
+                        "required_fields": task.required_fields,
+                        "assurance_required": task.assurance_required,
+                        "provider_candidates": provider_candidates,
+                        "planner_reason": task.planner_reason,
+                    }
+                ),
+            )
+        )
+    return tasks
+
+
+def _credentials_with_generalized_task_refs(
+    credentials: SessionCredentialCollection,
+    tasks: list[DomainVerificationTask],
+    state: GeneralizedVerificationState,
+) -> SessionCredentialCollection:
+    existing_ids = {credential.credential_id for credential in credentials.credentials}
+    normalized_fields = {
+        str(field.get("field_id") or ""): field
+        for field in list(state.get("normalized_fields") or [])
+        if isinstance(field, dict)
+    }
+    additions: list[ExtractedCredential] = []
+    for task in tasks:
+        if task.credential_id in existing_ids:
+            continue
+        field = normalized_fields.get(task.required_fields[0]) if task.required_fields else {}
+        additions.append(
+            ExtractedCredential(
+                credential_id=task.credential_id,
+                label=str(field.get("label") or task.verification_type or task.credential_id),
+                category=_canonical_claim_type(task.claim_type),
+                value=None,
+                normalized_value=None,
+                confidence=field.get("ai_confidence"),
+                page=None,
+                is_pii=False,
+                requires_verification=task.required,
+                verification_recommended=task.required,
+                verification_reason=task.input_payload.get("planner_reason"),
+                source_candidate_ids=list(task.required_fields),
+                extraction_method="pp_chatocr_v4",
+            )
+        )
+        existing_ids.add(task.credential_id)
+    if not additions:
+        return credentials
+    return credentials.model_copy(update={"credentials": [*credentials.credentials, *additions]})
+
+
+def _route_decision_from_domain_task(task: DomainVerificationTask) -> VerifierRouteDecision:
+    preferred = task.preferred_provider_key or task.planned_provider_key or (task.provider_candidates[0] if task.provider_candidates else None)
+    return VerifierRouteDecision(
+        credential_id=task.credential_id,
+        selected_verifier_key=task.verifier_key,
+        selected_verifier_label=task.verifier_label,
+        route_reason=str(task.input_payload.get("planner_reason") or "Generalized verification task selected."),
+        preferred_provider_key=preferred,
+        planned_provider_key=preferred,
+        fallback_reason=None if preferred else "NO_EXECUTABLE_PROVIDER",
+        manual_review_recommended=not bool(preferred),
+    )
 
 def _run_verifier_apis(state: GeneralizedVerificationState) -> dict[str, Any]:
     compatibility_results = build_connector_responses(
@@ -470,7 +604,7 @@ def _policy_verdict(state: GeneralizedVerificationState) -> dict[str, Any]:
     field_decisions = [FieldDecision.model_validate(item) for item in list(state.get("field_decisions") or [])]
     verifier_results = [VerifierResult.model_validate(item) for item in list(state.get("verifier_results") or [])]
     dynamic_schema = state.get("dynamic_schema") if isinstance(state.get("dynamic_schema"), dict) else {}
-    schema_warnings = set(dynamic_schema.get("warnings") or [])
+    schema_warnings = set(_safe_code_list(dynamic_schema.get("warnings")))
     if schema_warnings.intersection({"SCHEMA_INFERENCE_FAILED", "NO_DYNAMIC_CLAIMS_EXTRACTED"}) and not field_decisions:
         warning = "SCHEMA_INFERENCE_FAILED" if "SCHEMA_INFERENCE_FAILED" in schema_warnings else "NO_DYNAMIC_CLAIMS_EXTRACTED"
         verdict = FinalVerdict(
@@ -489,7 +623,7 @@ def _policy_verdict(state: GeneralizedVerificationState) -> dict[str, Any]:
         field_decisions=field_decisions,
         verifier_results=verifier_results,
         unsafe_or_malformed=document_understanding.unsafe_or_malformed,
-        document_reason_codes=list(document_understanding.risk_flags),
+        document_reason_codes=_safe_code_list(document_understanding.risk_flags),
     )
     
     return {
@@ -604,6 +738,8 @@ def _build_workspace_payload(state: GeneralizedVerificationState) -> dict[str, A
             optional=result.optional,
             high_assurance=result.high_assurance,
             field_ids=result.field_ids,
+            attempted_provider_keys=result.attempted_provider_keys,
+            skipped_provider_keys=result.skipped_provider_keys,
         )
         for result in verifier_results
     ]
@@ -665,9 +801,7 @@ def _workspace_actions_for_status(session_status: str) -> list[WorkspaceAction]:
 
 
 def _workspace_safe_warnings(raw_warnings: Any) -> list[str]:
-    if not isinstance(raw_warnings, list):
-        return []
-    return [_workspace_safe_warning(item) for item in raw_warnings[:8]]
+    return _safe_code_list(raw_warnings)[:8]
 
 
 def _workspace_safe_warning(item: Any) -> str:
@@ -685,9 +819,70 @@ def _workspace_safe_warning(item: Any) -> str:
     return "WORKSPACE_WARNING_REDACTED"
 
 
+def _safe_code_list(*values: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for item in _iter_code_values(value):
+            code = _safe_code(item)
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            result.append(code)
+    return result
+
+
+def _iter_code_values(value: Any):
+    if value is None:
+        return
+    if hasattr(value, "model_dump"):
+        try:
+            yield from _iter_code_values(value.model_dump(mode="json"))
+            return
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        for key in WARNING_VALUE_KEYS:
+            if value.get(key) not in (None, ""):
+                yield value.get(key)
+                return
+        yield "WORKSPACE_WARNING"
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_code_values(item)
+        return
+    code_attr = getattr(value, "code", None)
+    if code_attr not in (None, ""):
+        yield code_attr
+        return
+    message_attr = getattr(value, "message", None)
+    if message_attr not in (None, ""):
+        yield message_attr
+        return
+    yield value
+
+
+def _safe_code(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    upper = text.upper()
+    if any(marker in upper for marker in UNSAFE_WARNING_MARKERS):
+        return "WORKSPACE_WARNING_REDACTED"
+    code = re.sub(r"[^A-Z0-9]+", "_", upper).strip("_")
+    code = re.sub(r"_+", "_", code)
+    if not code:
+        return ""
+    if len(code) > 96:
+        return "WORKSPACE_WARNING_REDACTED"
+    return code
+
+
 def _workspace_verifier_result(result: VerificationTaskResult) -> VerifierResult:
     status = _verifier_status_from_task_result(result)
     provider_key = result.executed_provider_key or result.planned_provider_key or result.verifier_key
+    raw_summary = result.raw_result_summary or {}
     return VerifierResult(
         task_id=result.task_id,
         field_id=result.credential_id,
@@ -700,6 +895,8 @@ def _workspace_verifier_result(result: VerificationTaskResult) -> VerifierResult
         optional=False,
         high_assurance=result.planned_provider_key == "entra_verified_id",
         field_ids=[result.credential_id],
+        attempted_provider_keys=list(raw_summary.get("attempted_provider_keys") or []),
+        skipped_provider_keys=list(raw_summary.get("skipped_provider_keys") or []),
     )
 
 
@@ -791,7 +988,8 @@ def _invoke_gemini_with_fallback(
                 "gemini_errors": [f"{stage_name}: Gemini rate limit encountered."],
                 "gemini_fallback_used": True,
                 "fallback_used": True,
-                "audit_log": [_audit_item(stage_name, "Gemini demo fixture fallback applied.", level="WARNING")],
+                "fallback_reason": "rate_limit",
+                "audit_log": [_audit_item(stage_name, "Gemini demo fixture fallback applied; fallback_used=true fallback_reason=rate_limit exception_class=GeminiPoolRateLimitError.", level="WARNING")],
             }
         return _fallback_response(stage_name, fallback_model, "Gemini rate limit encountered.", state_key=state_key)
     except Exception as exc:
@@ -816,8 +1014,19 @@ def _fallback_response(stage_name: str, fallback_model, error_message: str, *, s
         result_key: result_payload,
         "gemini_errors": [f"{stage_name}: {error_message}"],
         "gemini_fallback_used": True,
-        "audit_log": [_audit_item(stage_name, "Gemini fallback applied.", level="WARNING")],
+        "fallback_used": True,
+        "fallback_reason": _safe_fallback_reason(error_message),
+        "audit_log": [_audit_item(stage_name, f"Gemini fallback applied; fallback_used=true fallback_reason={_safe_fallback_reason(error_message)}.", level="WARNING")],
     }
+
+
+def _safe_fallback_reason(error_message: str) -> str:
+    lowered = str(error_message or "").lower()
+    if "disabled" in lowered or "missing" in lowered:
+        return "gemini_unavailable"
+    if "rate limit" in lowered:
+        return "rate_limit"
+    return "llm_error"
 
 def _build_structured_gemini_llm(*, runtime_policy: AgentRuntimePolicy, schema, stage_name: str):
     del runtime_policy
@@ -920,7 +1129,13 @@ def _payload_with_dynamic_claims(
 ) -> dict[str, Any]:
     payload = copy.deepcopy(extraction_payload)
     view = dict(payload.get("view") or {})
-    existing_warnings = list(view.get("warnings") or [])
+    merged_warnings = _safe_code_list(
+        view.get("warnings"),
+        warnings,
+        schema_payload.get("warnings"),
+    )
+    schema_payload = dict(schema_payload or {})
+    schema_payload["warnings"] = _safe_code_list(schema_payload.get("warnings"))
     view.update(
         {
             "document_type": schema_payload.get("document_type") or view.get("document_type") or "unknown",
@@ -928,7 +1143,7 @@ def _payload_with_dynamic_claims(
             "dynamic_claims": grounded_claims,
             "field_details": grounded_claims,
             "fields": {str(claim.get("field_id") or claim.get("claim_id")): claim.get("extracted_value") or "" for claim in grounded_claims},
-            "warnings": list(dict.fromkeys([*existing_warnings, *warnings, *list(schema_payload.get("warnings") or [])])),
+            "warnings": merged_warnings,
         }
     )
     payload["view"] = view
@@ -947,12 +1162,12 @@ def _ground_dynamic_claims(schema_payload: dict[str, Any], evidence_graph: dict[
         claim_id = str(claim.get("claim_id") or f"claim-{index}")
         value = safe_normalized_string(claim.get("value") or claim.get("normalized_value"))
         evidence_ids = [str(item) for item in list(claim.get("evidence_ids") or []) if str(item) in evidence_by_id]
-        reason_codes = list(claim.get("reason_codes") or [])
+        reason_codes = _safe_code_list(claim.get("reason_codes"))
         if not evidence_ids and value:
             evidence_ids = _match_evidence_ids_for_value(value, evidence_items)
         if not evidence_ids:
             grounding_status = "unresolved"
-            reason_codes = list(dict.fromkeys([*reason_codes, "GROUNDING_UNRESOLVED"]))
+            reason_codes = _safe_code_list(reason_codes, "GROUNDING_UNRESOLVED")
             boxes: list[BoundingBox] = []
             bbox = None
             polygon = None
@@ -1076,7 +1291,7 @@ def _attach_dynamic_decision_metadata(decision: FieldDecision, extraction_payloa
     decision.source_width = claim.get("source_width")
     decision.source_height = claim.get("source_height")
     decision.grounding_status = claim.get("grounding_status") or decision.grounding_status
-    decision.reason_codes = list(dict.fromkeys([*decision.reason_codes, *list(claim.get("reason_codes") or [])]))
+    decision.reason_codes = _safe_code_list(decision.reason_codes, claim.get("reason_codes"))
 
 
 def _dynamic_claim_by_field_id(extraction_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1157,7 +1372,7 @@ def _build_credential_grouping_prompt(
 
 def _fallback_document_understanding(extraction_payload: dict[str, Any]) -> GeminiDocumentUnderstanding:
     view = extraction_payload.get("view") or {}
-    warnings = [str(item) for item in list(view.get("warnings") or [])]
+    warnings = _safe_code_list(view.get("warnings"))
     field_details = list(view.get("field_details") or [])
     document_type = str(view.get("document_type") or extraction_payload.get("document_type") or "unknown_document")
     if document_type == "unknown":
@@ -1357,6 +1572,7 @@ def _boxes_from_claim(claim: dict[str, Any]) -> list[BoundingBox]:
             }
         )
     boxes: list[BoundingBox] = []
+    seen: set[tuple[int, float, float, float, float]] = set()
     for raw in raw_boxes:
         if not isinstance(raw, dict):
             continue
@@ -1364,10 +1580,15 @@ def _boxes_from_claim(claim: dict[str, Any]) -> list[BoundingBox]:
             x0, y0, x1, y1 = raw["bbox"][:4]
         else:
             x0, y0, x1, y1 = raw.get("x0", 0), raw.get("y0", 0), raw.get("x1", 0), raw.get("y1", 0)
+        page = int(raw.get("page") or raw.get("page_number") or 1)
+        dedupe_key = (page, round(float(x0), 2), round(float(y0), 2), round(float(x1), 2), round(float(y1), 2))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
         boxes.append(
             BoundingBox(
-                page=int(raw.get("page") or raw.get("page_number") or 1),
-                page_number=int(raw.get("page_number") or raw.get("page") or 1),
+                page=page,
+                page_number=page,
                 x0=float(x0),
                 y0=float(y0),
                 x1=float(x1),
@@ -1457,7 +1678,7 @@ def _recommend_route_for_group(group: GeminiCredentialGroup) -> RouteRecommendat
 
 
 def _provider_candidates_for_claim_type(claim_type: str, assurance_required: str) -> list[dict[str, Any]]:
-    normalized = str(claim_type or "").lower()
+    normalized = _canonical_claim_type(claim_type)
     try:
         from ..verifier_execution.registry import build_default_verifier_registry
 
@@ -1537,6 +1758,58 @@ def _provider_candidates_for_claim_type(claim_type: str, assurance_required: str
             }
         )
     return candidates
+
+
+def _provider_key_from_candidate(candidate: Any) -> str:
+    if isinstance(candidate, dict):
+        return str(candidate.get("provider_key") or candidate.get("provider_id") or candidate.get("connector_id") or "").strip()
+    return str(candidate or "").strip()
+
+
+def _canonical_claim_type(claim_type: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(claim_type or "").strip().lower()).strip("_")
+    aliases = {
+        "person_name": "identity",
+        "name": "identity",
+        "identity_document": "identity",
+        "document_identifier": "identity",
+        "document_id": "identity",
+        "id": "identity",
+        "issuer": "issuer_authenticity",
+        "issuer_authenticity": "issuer_authenticity",
+        "organization": "issuer_authenticity",
+        "institution": "issuer_authenticity",
+        "credential": "academic",
+        "qualification": "academic",
+        "academic_credential": "academic",
+        "academic_degree": "academic",
+        "issue_date": "date_validity",
+        "expiry_date": "date_validity",
+        "date": "date_validity",
+        "location": "address",
+        "monetary_amount": "financial",
+        "amount": "financial",
+        "result": "status",
+        "eligibility": "status",
+        "generic_claim": "generic_record",
+        "document": "generic_record",
+    }
+    return aliases.get(normalized, normalized or "generic_record")
+
+
+def _verifier_key_for_claim_type(claim_type: Any) -> str:
+    canonical = _canonical_claim_type(claim_type)
+    if canonical == "identity":
+        return "identity_db"
+    if canonical in {"issuer_authenticity", "academic"}:
+        return "academic_registry"
+    if canonical == "date_validity":
+        return "certificate_registry"
+    if canonical == "address":
+        return "address_check"
+    if canonical == "financial":
+        return "financial_registry"
+    return "manual_review"
 
 
 def _claim_type_from_dynamic_claim(claim: dict[str, Any]) -> str | None:
@@ -1632,10 +1905,10 @@ def _verification_confidence_from_status(status: str) -> float:
 def _normalize_legacy_verifier_status_and_reasons(status: Any, reason_codes: Any) -> tuple[str, list[str]]:
     normalized = str(status or "").upper()
     allowed = {"VERIFIED", "MISMATCH", "TIMEOUT", "ERROR", "SKIPPED", "NOT_APPLICABLE"}
-    reasons = list(reason_codes) if isinstance(reason_codes, list) else []
+    reasons = _safe_code_list(reason_codes)
     if normalized in allowed:
         return normalized, reasons
-    return "ERROR", list(dict.fromkeys([*reasons, "PROVIDER_RESULT_MALFORMED"]))
+    return "ERROR", _safe_code_list(reasons, "PROVIDER_RESULT_MALFORMED")
 
 def _verifier_audit_message(connector_id: str, status: str, raw_result: dict[str, Any]) -> str:
     normalized = str(status or "").upper()

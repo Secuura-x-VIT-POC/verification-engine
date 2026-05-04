@@ -103,7 +103,7 @@ def _invoke_with_retries(
     for attempt_index in range(GEMINI_POOL_MAX_RETRIES_PER_KEY + 1):
         try:
             client = build_gemini_client(key_slot)
-            invoker = client.with_structured_output(schema) if schema is not None else client
+            invoker = client.with_structured_output(schema=schema, method="json_schema") if schema is not None else client
             response = invoker.invoke(prompt_or_messages)
             _log_safe_event(
                 stage_name,

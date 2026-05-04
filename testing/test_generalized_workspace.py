@@ -417,7 +417,7 @@ class GeneralizedWorkspaceTests(unittest.TestCase):
         self.assertTrue(payload["fields"])
         self.assertTrue(any(field["status"] == "AMBER" for field in payload["fields"]))
         self.assertTrue(any(field.get("manual_review_required") for field in payload["fields"]))
-        self.assertIn("AI_ONLY_EVIDENCE", set(payload["final_verdict"]["reason_codes"]))
+        self.assertIn("MANUAL_REVIEW_PROVIDER_SELECTED", set(payload["final_verdict"]["reason_codes"]))
 
     def test_workspace_uses_phase6_canonical_manual_review_amber_and_privacy(self):
         session_id, file_path = self._create_uploaded_session("session-phase6-manual")

@@ -1,30 +1,43 @@
 # Verification Engine
 
-Generic PDF verification framework for session-scoped document review, connector validation, trust rendering, and secure cleanup.
+Generic, privacy-aware PDF verification platform for session-scoped document review, connector validation, trust rendering, and secure cleanup.
 
 ## Product Direction
 
-- The product is a generalized document verification platform, not a recruitment-only verifier.
-- Microsoft Entra Verified ID is the primary VC and identity trust rail for Entra-aligned credentials.
-- Other public or open verification APIs remain supplementary connectors.
-- JWT login is acceptable for the current POC, while Microsoft Entra is the target identity and access model.
+- The product is a generalized document verification platform, not limited to recruitment—supports any document/credential verification use case.
+- Microsoft Entra Verified ID is the primary trust rail for VC-presentable identity, academic, and certificate-style credentials.
+- Other public or open verification APIs are available as fallback or supplementary providers.
+- JWT login is supported for POC/demo, while Microsoft Entra is the target for production identity and access.
 
 ## Core Flow
 
-1. Upload and view experience
-   - Reviewers upload a PDF and open a bounded verification session.
-   - Processing remains session-scoped and privacy-aware.
-2. Extraction and grounding
-   - The extraction service parses the document, grounds fields to page geometry, and produces reusable session artifacts.
-   - OCR stays local by default with the precedence `native PDF text -> PaddleOCR -> Tesseract fallback`.
-3. Connector validation
-   - Deterministic planning builds per-credential verification tasks.
-   - The verifier registry executes those tasks through Microsoft Entra Verified ID when available, then supplementary providers, then honest fallback paths.
-4. Trust result rendering
-   - The generalized workspace renders field-level audits and a consolidated deterministic trust outcome.
-   - LangGraph enrichment can improve understanding and explanation, but it does not decide final trust.
-5. Secure cleanup
-   - Cleanup remains session-driven and minimizes retained content after review.
+Upload & Session
+
+- Reviewers upload a PDF and open a privacy-bounded verification session.
+- All processing is session-scoped.
+
+
+Extraction & Grounding
+
+- The extraction service parses the document, grounds fields to page geometry, and produces reusable session artifacts.
+- OCR is local-first: native PDF text → PaddleOCR → Tesseract fallback.
+
+
+Connector Validation
+
+- Deterministic planning builds per-credential verification tasks.
+- The verifier registry executes these via Entra Verified ID, then supplementary providers, then honest fallback/manual review.
+
+
+Trust Rendering
+
+- The reviewer workspace renders field-level audits and a consolidated, deterministic trust outcome.
+- LangGraph enrichment improves explanations but does not decide trust.
+
+
+Secure Cleanup
+
+- Session-driven cleanup minimizes retained content and purges derived artifacts after review.
 
 ## Architecture Layers
 

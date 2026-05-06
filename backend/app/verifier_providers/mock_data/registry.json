@@ -1,0 +1,43 @@
+{
+  "records": [
+    {
+      "record_id": "id_1",
+      "verifier_keys": ["identity_db"],
+      "categories": ["identity"],
+      "fields": [
+        {
+          "field_key": "name",
+          "label": "Name",
+          "value": "Violet"
+        }
+      ]
+    },
+    {
+      "record_id": "id_2",
+      "verifier_keys": ["identity_db"],
+      "categories": ["identity"],
+      "fields": [
+        {
+          "field_key": "name",
+          "label": "Name",
+          "value": "Ethan"
+        }
+      ]
+    },
+    {
+      "record_id": "acad_1",
+      "verifier_keys": ["academic_registry"],
+      "categories": ["academic"],
+      "fields": [
+        {
+          "field_key": "name",
+          "value": "Violet"
+        },
+        {
+          "field_key": "degree",
+          "value": "BTech"
+        }
+      ]
+    }
+  ]
+}

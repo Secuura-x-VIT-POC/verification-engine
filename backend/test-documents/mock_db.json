@@ -1,0 +1,17 @@
+{
+  "identity_db": [
+    {
+      "name": "Violet"
+    },
+    {
+      "name": "Ethan"
+    }
+  ],
+
+  "academic_registry": [
+    {
+      "name": "Violet",
+      "degree": "BTech"
+    }
+  ]
+}

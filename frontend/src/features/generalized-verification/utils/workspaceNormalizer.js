@@ -60,6 +60,17 @@ function asSafeArray(value) {
 	return Array.isArray(value) ? value : [];
 }
 
+function firstSafeObject(...values) {
+	return (
+		values.find(
+			(value) =>
+				value &&
+				typeof value === "object" &&
+				!Array.isArray(value)
+		) || {}
+	);
+}
+
 function sanitizeWorkspaceValue(value) {
 	if (Array.isArray(value)) {
 		return value.map((item) => sanitizeWorkspaceValue(item));
@@ -83,11 +94,12 @@ export function normalizeWorkspacePayload(payload, sessionId) {
 	const finalVerdict = asSafeObject(
 		workspace.final_verdict || workspace.finalVerdict
 	);
-	const auditReceipt = asSafeObject(
-		workspace.audit_receipt ||
-			workspace.auditReceipt ||
-			workspace.audit_summary ||
-			workspace.audit
+	const auditReceipt = firstSafeObject(
+	workspace.audit_receipt,
+	workspace.auditReceipt,
+	workspace.latest_audit_receipt,
+	workspace.latestAuditReceipt,
+	workspace.receipt
 	);
 
 	return {

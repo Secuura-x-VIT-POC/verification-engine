@@ -38,6 +38,14 @@ function asArray(value) {
 	return Array.isArray(value) ? value : [];
 }
 
+function isWorkspaceActionEnabled(actions, actionId) {
+	return asArray(actions).some(
+		(action) =>
+			(action.id || action.action_id) === actionId &&
+			action.enabled !== false
+	);
+}
+
 function normalizeStatus(value, fallback = "AMBER") {
 	const status = String(value || fallback).trim().toUpperCase();
 
@@ -109,8 +117,20 @@ function getFieldLabel(field) {
 	);
 }
 
-function getFieldValue(field) {
+function isMaskedDisplayValue(value) {
+	const text = String(value || "").trim();
+	if (!text) return false;
+
 	return (
+		text === "***" ||
+		text.includes("***") ||
+		/^\*+$/.test(text) ||
+		/\*{2,}/.test(text)
+	);
+}
+
+function getFieldValue(field) {
+	const value =
 		field.value_preview ||
 		field.valuePreview ||
 		field.masked_value ||
@@ -119,8 +139,13 @@ function getFieldValue(field) {
 		field.extractedValue ||
 		field.normalized_value ||
 		field.normalizedValue ||
-		"Hidden"
-	);
+		"Hidden";
+
+	if (isMaskedDisplayValue(value)) {
+		return "Masked value — hidden by privacy policy";
+	}
+
+	return value;
 }
 
 function getFieldReason(field) {
@@ -256,34 +281,63 @@ function boxFromPolygon(polygon) {
 	return { x0, y0, x1, y1, bbox: [x0, y0, x1, y1], polygon };
 }
 
-function getFieldBoxes(field) {
+function asNonEmptyArray(value) {
+	return Array.isArray(value) && value.length ? value : null;
+}
+
+function getCanonicalFieldBoxes(field) {
+	const canonical =
+		asNonEmptyArray(field.bounding_boxes) ||
+		asNonEmptyArray(field.boundingBoxes);
+
+	if (canonical) return canonical;
+
+	const legacy =
+		asNonEmptyArray(field.boxes) ||
+		asNonEmptyArray(field.geometry_boxes) ||
+		asNonEmptyArray(field.geometryBoxes);
+
+	if (legacy) return legacy;
+
+	if (field.bounding_box) return [field.bounding_box];
+	if (field.boundingBox) return [field.boundingBox];
+	if (field.bbox) return [{ bbox: field.bbox }];
+	if (field.geometry) return [field.geometry];
+	if (field.box) return [field.box];
+
+	if (field.polygon) {
+		const polygonBox = boxFromPolygon(field.polygon);
+		return polygonBox ? [polygonBox] : [];
+	}
+
+	return [];
+}
+
+function roundBoxValue(value) {
+	const numberValue = Number(value);
+	if (!Number.isFinite(numberValue)) return "0";
+	return numberValue.toFixed(2);
+}
+
+function buildHighlightDedupeKey(page, relativeBox, absoluteBox) {
+	const box = relativeBox || absoluteBox;
+	if (!box) return null;
+
 	return [
-		...asArray(field.bounding_boxes),
-		...asArray(field.boundingBoxes),
-		...asArray(field.boxes),
-		...asArray(field.geometry_boxes),
-		...asArray(field.geometryBoxes),
-		...(field.bounding_box ? [field.bounding_box] : []),
-		...(field.boundingBox ? [field.boundingBox] : []),
-		...(field.bbox ? [{ bbox: field.bbox }] : []),
-		...(field.polygon ? [boxFromPolygon(field.polygon)] : []),
-		...(field.geometry ? [field.geometry] : []),
-		...(field.box ? [field.box] : []),
-	].filter(Boolean).map((box) => ({
-		...box,
-		polygon: box.polygon || field.polygon,
-		page: box.page || field.page || field.page_number || field.pageNumber || 1,
-		page_number: box.page_number || box.pageNumber || field.page_number || field.pageNumber || box.page || field.page || 1,
-		coordinate_space: box.coordinate_space || box.coordinateSpace || field.coordinate_space || field.coordinateSpace,
-		source_width: box.source_width || box.sourceWidth || field.source_width || field.sourceWidth,
-		source_height: box.source_height || box.sourceHeight || field.source_height || field.sourceHeight,
-	}));
+		page,
+		roundBoxValue(box.left),
+		roundBoxValue(box.top),
+		roundBoxValue(box.width),
+		roundBoxValue(box.height),
+	].join(":");
 }
 
 function buildHighlightItems(fields) {
+	const seenBoxes = new Set();
+
 	return fields.flatMap((field, fieldIndex) => {
 		const fieldId = getFieldId(field, fieldIndex);
-		const rawBoxes = getFieldBoxes(field);
+		const rawBoxes = getCanonicalFieldBoxes(field);
 
 		const status = normalizeStatus(field.status || field.outcome);
 		const outcomeColor =
@@ -291,28 +345,80 @@ function buildHighlightItems(fields) {
 
 		return rawBoxes
 			.map((box, boxIndex) => {
-				const relativeBox = normalizeBoxToPercent(box || {});
-				const absoluteBox = normalizeAbsoluteBox(box || {});
+				const enrichedBox = {
+					...box,
+					page:
+						box.page ||
+						field.page ||
+						field.page_number ||
+						field.pageNumber ||
+						1,
+					page_number:
+						box.page_number ||
+						box.pageNumber ||
+						field.page_number ||
+						field.pageNumber ||
+						box.page ||
+						field.page ||
+						1,
+					coordinate_space:
+						box.coordinate_space ||
+						box.coordinateSpace ||
+						field.coordinate_space ||
+						field.coordinateSpace,
+					source_width:
+						box.source_width ||
+						box.sourceWidth ||
+						field.source_width ||
+						field.sourceWidth,
+					source_height:
+						box.source_height ||
+						box.sourceHeight ||
+						field.source_height ||
+						field.sourceHeight,
+				};
+
+				const relativeBox = normalizeBoxToPercent(enrichedBox);
+				const absoluteBox = normalizeAbsoluteBox(enrichedBox);
 
 				if (!relativeBox && !absoluteBox) {
 					return null;
 				}
 
+				const page =
+					enrichedBox.page_number ||
+					enrichedBox.pageNumber ||
+					enrichedBox.page ||
+					1;
+
+				const dedupeKey = buildHighlightDedupeKey(
+					page,
+					relativeBox,
+					absoluteBox
+				);
+
+				if (!dedupeKey || seenBoxes.has(dedupeKey)) {
+					return null;
+				}
+
+				seenBoxes.add(dedupeKey);
+
 				return {
 					credentialId: fieldId,
-					id: `${fieldId}-${boxIndex}`,
+					id: `${fieldId}-${dedupeKey}-${boxIndex}`,
 					label: getFieldLabel(field),
 					documentValue: getFieldValue(field),
 					explanation: getFieldExplanation(field),
-					page: box.page_number || box.pageNumber || box.page || field.page_number || field.pageNumber || field.page || 1,
+					page,
 					auditStatus: status,
 					outcomeColor,
 					relativeBox,
 					absoluteBox,
-					polygon: box.polygon || field.polygon,
-					coordinateSpace: box.coordinate_space || box.coordinateSpace || field.coordinate_space || field.coordinateSpace,
-					sourceWidth: box.source_width || box.sourceWidth || field.source_width || field.sourceWidth,
-					sourceHeight: box.source_height || box.sourceHeight || field.source_height || field.sourceHeight,
+					polygon: enrichedBox.polygon,
+					coordinateSpace:
+						enrichedBox.coordinate_space || enrichedBox.coordinateSpace,
+					sourceWidth: enrichedBox.source_width || enrichedBox.sourceWidth,
+					sourceHeight: enrichedBox.source_height || enrichedBox.sourceHeight,
 				};
 			})
 			.filter(Boolean);
@@ -461,15 +567,21 @@ function AuditList({ audit }) {
 	);
 }
 
-function AuditReceiptPanel({ workspace }) {
+function AuditReceiptPanel({ workspace, reviewResult }) {
 	const audit = getAuditObject(workspace);
 	const privacy = workspace?.privacy || {};
 
 	const finalDecision =
+		reviewResult?.finalDecision ||
 		audit.final_decision ||
 		audit.reviewer_decision ||
 		audit.final_reviewer_decision ||
 		"Pending";
+
+	const receiptId =
+		reviewResult?.auditReceiptId ||
+		audit.audit_receipt_id ||
+		audit.receipt_id;
 
 	return (
 		<div className="gv-card">
@@ -478,7 +590,7 @@ function AuditReceiptPanel({ workspace }) {
 			<div className="gv-meta-stack">
 				<span>
 					<strong>Receipt ID:</strong>{" "}
-					{formatValue(audit.audit_receipt_id || audit.receipt_id, "Pending")}
+					{formatValue(receiptId, "Pending")}
 				</span>
 
 				<span>
@@ -538,6 +650,7 @@ export default function VerifyPage({ auth, onLogout }) {
 	const [isSubmittingReview, setIsSubmittingReview] = useState(false);
 	const [isRunningVerification, setIsRunningVerification] = useState(false);
 	const [reviewCompleted, setReviewCompleted] = useState(false);
+	const [reviewResult, setReviewResult] = useState(null);
 
 	const {
 		documentUrl,
@@ -578,18 +691,19 @@ export default function VerifyPage({ auth, onLogout }) {
 			!reviewCompleted
 	);
 
-	const canCloseSession = Boolean(
-		workspace &&
-			(reviewCompleted ||
-				workspace.status === "HUMAN_APPROVED" ||
-				workspace.status === "HUMAN_REJECTED" ||
-				workspace.status === "MANUAL_REVIEW_REQUIRED" ||
-				workspace.status === "PENDING_CLEANUP" ||
-				workspace.actionFlags?.can_close === true ||
-				workspace.actions?.some(
-					(action) => action.id === "can_close" && action.enabled !== false
-				))
-	);
+	const FINAL_REVIEW_STATUSES = new Set([
+	"HUMAN_APPROVED",
+	"HUMAN_REJECTED",
+	"MANUAL_REVIEW_REQUIRED",
+	"PENDING_CLEANUP",
+]);
+
+const canCloseSession = Boolean(
+	workspace &&
+		(FINAL_REVIEW_STATUSES.has(workspace.status) ||
+			workspace.actionFlags?.can_close === true ||
+			isWorkspaceActionEnabled(workspace.actions, "can_close"))
+);
 
 	async function handleRunVerification() {
 		setReviewError("");
@@ -638,6 +752,16 @@ export default function VerifyPage({ auth, onLogout }) {
 			);
 
 			setReviewCompleted(true);
+
+			setReviewResult({
+				status: reviewResponse?.status,
+				finalDecision:
+					reviewResponse?.final_decision ||
+					reviewResponse?.reviewer_decision ||
+					decision,
+				auditReceiptId: reviewResponse?.audit_receipt_id,
+			});
+
 			await refreshWorkspace({ showLoading: false });
 
 			setReviewMessage(
@@ -783,7 +907,7 @@ export default function VerifyPage({ auth, onLogout }) {
 						)}
 					</OverviewCard>
 
-					<AuditReceiptPanel workspace={workspace} />
+					<AuditReceiptPanel workspace={workspace} reviewResult={reviewResult} />
 
 					<OverviewCard title="Notices" className="gv-card-wide">
 						{warnings.length ? (
@@ -864,7 +988,7 @@ export default function VerifyPage({ auth, onLogout }) {
 				</div>
 
 				<div className="gv-stack">
-					<AuditReceiptPanel workspace={workspace} />
+					<AuditReceiptPanel workspace={workspace} reviewResult={reviewResult} />
 
 					<div className="gv-card">
 						<p className="eyebrow">Audit Trail</p>

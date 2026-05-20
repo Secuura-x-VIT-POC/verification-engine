@@ -1,123 +1,60 @@
 {
   "records": [
     {
-      "record_id": "govt_passport_india_001",
-      "verifier_keys": ["passport_db", "identity_db"],
-      "categories": ["passport", "identity"],
+      "record_id": "demo-identity-001",
+      "verifier_keys": ["identity_db"],
+      "categories": ["identity"],
+      "document_types": ["academic_credential", "identity_document"],
+      "confidence": 0.99,
       "fields": [
         {
-          "field_key": "document_id",
-          "label": "Passport Number",
-          "value": "L1234567",
-          "normalized_value": "l1234567"
-        },
-        {
           "field_key": "name",
-          "label": "Full Name",
-          "value": "VIOLET SHARMA",
-          "normalized_value": "violet sharma"
-        },
-        {
-          "field_key": "date_of_birth",
-          "label": "Date of Birth",
-          "value": "12-05-2002",
-          "normalized_value": "2002-05-12"
+          "label": "Candidate Name",
+          "label_aliases": ["name", "candidate-name", "holder_name"],
+          "value": "Demo Student",
+          "normalized_value": "Demo Student",
+          "confidence": 0.99
         }
       ]
     },
     {
-      "record_id": "academic_vit_btech_001",
+      "record_id": "demo-academic-001",
       "verifier_keys": ["academic_registry"],
       "categories": ["academic"],
-      "document_types": ["academic_degree", "academic_credential"],
+      "document_types": ["academic_credential"],
+      "confidence": 0.98,
       "fields": [
         {
-          "field_key": "document_id",
-          "label": "Registration Number",
-          "value": "22BCE0001",
-          "normalized_value": "22bce0001"
-        },
-        {
-          "field_key": "name",
+          "field_key": "student_name",
           "label": "Student Name",
-          "value": "ETHAN HUNT",
-          "normalized_value": "ethan hunt"
-        },
-        {
-          "field_key": "degree",
-          "label": "Degree",
-          "value": "B.Tech Computer Science and Engineering",
-          "normalized_value": "btech computer science and engineering"
+          "label_aliases": ["Candidate Name", "name", "candidate-name", "holder_name"],
+          "value": "Demo Student",
+          "normalized_value": "Demo Student",
+          "confidence": 0.98
         },
         {
           "field_key": "institution",
-          "label": "University",
-          "value": "Vellore Institute of Technology",
-          "normalized_value": "vellore institute of technology"
+          "label": "Institution",
+          "label_aliases": ["Institution Name", "issuer", "institution_name"],
+          "value": "Demo University",
+          "normalized_value": "Demo University",
+          "confidence": 0.98
         },
         {
-          "field_key": "cgpa",
-          "label": "CGPA",
-          "value": "9.2",
-          "normalized_value": "9.2"
-        }
-      ]
-    },
-    {
-      "record_id": "govt_pan_card_001",
-      "verifier_keys": ["tax_authority", "identity_db"],
-      "categories": ["tax", "identity"],
-      "fields": [
+          "field_key": "credential",
+          "label": "Credential",
+          "label_aliases": ["degree", "credential_title"],
+          "value": "Bachelor of Technology",
+          "normalized_value": "Bachelor of Technology",
+          "confidence": 0.98
+        },
         {
           "field_key": "document_id",
-          "label": "PAN Number",
-          "value": "ABCDE1234F",
-          "normalized_value": "abcde1234f"
-        },
-        {
-          "field_key": "name",
-          "label": "Name on Card",
-          "value": "ARJUN VERMA",
-          "normalized_value": "arjun verma"
-        }
-      ]
-    },
-    {
-      "record_id": "personal_license_001",
-      "verifier_keys": ["license_registry"],
-      "categories": ["license"],
-      "fields": [
-        {
-          "field_key": "document_id",
-          "label": "License Number",
-          "value": "TN-01-20220001234",
-          "normalized_value": "tn0120220001234"
-        },
-        {
-          "field_key": "name",
-          "label": "Driver Name",
-          "value": "SARAH WILLIAMS",
-          "normalized_value": "sarah williams"
-        }
-      ]
-    },
-    {
-      "record_id": "academic_vit_transcript_002",
-      "verifier_keys": ["academic_registry"],
-      "categories": ["academic"],
-      "document_types": ["academic_transcript"],
-      "fields": [
-        {
-          "field_key": "document_id",
-          "label": "Roll Number",
-          "value": "21BMR0123",
-          "normalized_value": "21bmr0123"
-        },
-        {
-          "field_key": "institution",
-          "label": "Issuer",
-          "value": "VIT Chennai",
-          "normalized_value": "vit chennai"
+          "label": "Document ID",
+          "label_aliases": ["Roll Number", "id", "registration_number"],
+          "value": "DEMO-2024-001",
+          "normalized_value": "DEMO-2024-001",
+          "confidence": 0.98
         }
       ]
     }

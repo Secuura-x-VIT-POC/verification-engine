@@ -1052,8 +1052,6 @@ def _verifier_status_from_task_result(result: VerificationTaskResult) -> str:
         return "VERIFIED"
     if result.audit_status == "MISMATCH":
         return "MISMATCH"
-    if result.audit_status == "UNVERIFIED":
-            return "UNVERIFIED"
     if result.task_status == "SKIPPED":
         return "SKIPPED"
     if "TIMEOUT" in set(result.reason_codes or []):

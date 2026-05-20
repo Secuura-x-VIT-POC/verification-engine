@@ -66,10 +66,7 @@ def determine_field_decision(
                     extraction_confidence, ai_confidence, verification_confidence, grounding_confidence,
                     verifier_result.reason_codes or ["OPTIONAL_VERIFIER_TIMEOUT"], source_api, audit_message
                 )
-        if verifier_result.status == "UNVERIFIED":
-            # Treat as weak evidence (not failure)
-            # DO NOT early-return
-            verification_confidence = 0.35
+        
         # API Error (Internal or remote)
         if verifier_result.status == "ERROR":
             status = "RED" if verifier_result.high_assurance else "AMBER"
@@ -295,9 +292,6 @@ def _verifier_result_from_task_result(item: dict[str, Any]) -> VerifierResult:
     elif "TIMEOUT" in set(item.get("reason_codes") or []):
         status = "TIMEOUT"
         confidence, confidence_malformed = _safe_float(item.get("confidence"), default=0.2)
-    elif audit_status == "UNVERIFIED":
-        status = "UNVERIFIED"
-        confidence, confidence_malformed = _safe_float(item.get("confidence"), default=0.35)
     else:
         status = "ERROR"
         confidence, confidence_malformed = _safe_float(item.get("confidence"), default=0.35)
@@ -334,7 +328,7 @@ def _normalize_connector_results(connector_result: dict | list[dict] | None) -> 
 
 def _normalize_provider_status(value: Any) -> tuple[str, bool]:
     normalized = str(value or "").upper()
-    allowed = {"VERIFIED", "MISMATCH", "TIMEOUT", "ERROR", "SKIPPED", "NOT_APPLICABLE","UNVERIFIED"}
+    allowed = {"VERIFIED", "MISMATCH", "TIMEOUT", "ERROR", "SKIPPED", "NOT_APPLICABLE"}
     if normalized in allowed:
         return normalized, False
     return "ERROR", True

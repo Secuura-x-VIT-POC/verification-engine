@@ -5,6 +5,8 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -13,9 +15,12 @@ from sqlalchemy.pool import StaticPool
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from backend.app.db.database import Base  # noqa: E402
+from backend.app.db.database import get_db  # noqa: E402
+from backend.app.auth.routes import get_current_user  # noqa: E402
 from backend.app.sessions.constants import SessionState  # noqa: E402
 from backend.app.sessions.models import AuditReceiptRecord, Session as SessionModel  # noqa: E402
-from backend.app.workflow.runtime import close_session  # noqa: E402
+from backend.app.sessions.routes import router as sessions_router  # noqa: E402
+from backend.app.workflow.runtime import CloseSessionStateError, close_session  # noqa: E402
 
 
 class CleanupPrivacyTests(unittest.TestCase):
@@ -100,6 +105,54 @@ class CleanupPrivacyTests(unittest.TestCase):
                 self.assertNotIn(sentinel, serialized)
         finally:
             db.close()
+
+    def test_close_session_service_rejects_pending_human_review(self):
+        db = self.SessionLocal()
+        try:
+            session = SessionModel(
+                id="cleanup-pending-session",
+                user_id="reviewer-1",
+                status=SessionState.PENDING_HUMAN_REVIEW,
+            )
+            db.add(session)
+            db.commit()
+
+            with self.assertRaises(CloseSessionStateError):
+                close_session(db, session)
+        finally:
+            db.close()
+
+    def test_close_session_route_rejects_pending_human_review(self):
+        db = self.SessionLocal()
+        try:
+            session = SessionModel(
+                id="cleanup-route-pending-session",
+                user_id="reviewer-1",
+                status=SessionState.PENDING_HUMAN_REVIEW,
+            )
+            db.add(session)
+            db.commit()
+        finally:
+            db.close()
+
+        app = FastAPI()
+        app.include_router(sessions_router)
+        app.dependency_overrides[get_current_user] = lambda: "reviewer-1"
+
+        def override_get_db():
+            route_db = self.SessionLocal()
+            try:
+                yield route_db
+            finally:
+                route_db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        client = TestClient(app)
+
+        response = client.post("/sessions/cleanup-route-pending-session/close")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "Submit a review decision before closing this session.")
 
 
 if __name__ == "__main__":

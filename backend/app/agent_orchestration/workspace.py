@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
+from ..audit.service import get_latest_audit_receipt, serialize_audit_summary
 from ..sessions.constants import SessionState
 from ..sessions.models import Session as SessionModel
 from ..workflow import repository
@@ -22,6 +24,25 @@ from .schemas import (
 
 
 LOGGER = logging.getLogger(__name__)
+
+HUMAN_FINAL_WORKSPACE_STATES = {
+    SessionState.HUMAN_APPROVED,
+    SessionState.HUMAN_REJECTED,
+    SessionState.MANUAL_REVIEW_REQUIRED,
+}
+
+WORKSPACE_PRIVACY_METADATA = {
+    "raw_workspace_text_persisted": False,
+    "raw_ocr_text_persisted": False,
+    "raw_gemini_output_persisted": False,
+    "raw_provider_payloads_persisted": False,
+    "raw_reviewer_note_persisted": False,
+    "reviewer_note_hash_only": True,
+    "source_pdf_retained_until_cleanup": True,
+    "raw_text_persisted": False,
+    "pii_persisted": False,
+    "reviewer_note_persisted": False,
+}
 
 
 def run_generalized_verification_session(
@@ -153,11 +174,82 @@ def get_workspace_payload_for_session(session: SessionModel) -> WorkspacePayload
     persisted = session.workspace_payload or session.verification_execution_summary_payload
     if isinstance(persisted, dict):
         try:
-            return sanitize_workspace_payload(WorkspacePayload.model_validate(persisted))
+            workspace = sanitize_workspace_payload(WorkspacePayload.model_validate(persisted))
+            return _overlay_live_workspace_state(workspace, session)
         except Exception:
             LOGGER.warning("WORKSPACE_PAYLOAD_INVALID session_id=%s", session.id)
 
-    return sanitize_workspace_payload(_build_placeholder_workspace(session))
+    return _overlay_live_workspace_state(sanitize_workspace_payload(_build_placeholder_workspace(session)), session)
+
+
+def get_live_workspace_payload_for_session(db, session: SessionModel) -> WorkspacePayload:
+    workspace = get_workspace_payload_for_session(session)
+    audit_receipt = get_latest_audit_receipt(db, session.id)
+    if audit_receipt is None:
+        return workspace
+    return workspace.model_copy(update={"audit_receipt": serialize_audit_summary(audit_receipt)})
+
+
+def _overlay_live_workspace_state(workspace: WorkspacePayload, session: SessionModel) -> WorkspacePayload:
+    actions = _merge_live_close_action(workspace.actions, session.status)
+    action_flags = {"can_close": _close_enabled_for_status(session.status)}
+    privacy = {**(workspace.privacy or {}), **WORKSPACE_PRIVACY_METADATA}
+
+    return sanitize_workspace_payload(
+        workspace.model_copy(
+            update={
+                "status": session.status,
+                "ui_status": _ui_status_for_session(session.status),
+                "actions": actions,
+                "action_flags": action_flags,
+                "privacy": privacy,
+            }
+        )
+    )
+
+
+def _merge_live_close_action(actions: list[WorkspaceAction], session_status: str) -> list[WorkspaceAction]:
+    close_enabled = _close_enabled_for_status(session_status)
+    merged: list[WorkspaceAction] = []
+    found_can_close = False
+    for action in actions:
+        action_id = _action_id(action)
+        if action_id == "can_close":
+            found_can_close = True
+            merged.append(action.model_copy(update={"enabled": close_enabled}))
+        else:
+            merged.append(action)
+    if not found_can_close:
+        close_action = next((action for action in _default_actions(session_status) if action.action_id == "can_close"), None)
+        if close_action is not None:
+            merged.append(close_action.model_copy(update={"enabled": close_enabled}))
+    return merged
+
+
+def _action_id(action: WorkspaceAction | dict[str, Any]) -> str:
+    if isinstance(action, WorkspaceAction):
+        return str(action.action_id or "")
+    return str(action.get("action_id") or action.get("id") or action.get("actionId") or "")
+
+
+def _close_enabled_for_status(session_status: str) -> bool:
+    return session_status in HUMAN_FINAL_WORKSPACE_STATES
+
+
+def _ui_status_for_session(session_status: str) -> str:
+    if session_status == SessionState.PENDING_HUMAN_REVIEW:
+        return "Ready for human review"
+    if session_status == SessionState.HUMAN_APPROVED:
+        return "Human approved"
+    if session_status == SessionState.HUMAN_REJECTED:
+        return "Human rejected"
+    if session_status == SessionState.MANUAL_REVIEW_REQUIRED:
+        return "Manual review required"
+    if session_status in {SessionState.VERIFIED_GREEN, SessionState.VERIFIED_AMBER, SessionState.VERIFIED_RED}:
+        return "Ready"
+    if session_status == SessionState.VERIFYING:
+        return "Verifying"
+    return session_status
 
 
 def _build_placeholder_workspace(session: SessionModel) -> WorkspacePayload:

@@ -187,11 +187,22 @@ def _gemini_dynamic_schema_discovery(
         except Exception as exc:
             LOGGER.warning(
                 "Gemini dynamic schema inference failed",
-                extra={"stage_name": "gemini_dynamic_schema_discovery", "exception_class": exc.__class__.__name__},
+                extra={
+                    "stage_name": "gemini_dynamic_schema_discovery",
+                    "exception_class": exc.__class__.__name__,
+                    "schema_failure_category": _schema_failure_category(exc),
+                },
             )
             schema_payload = DynamicDocumentSchema(warnings=["SCHEMA_INFERENCE_FAILED"]).model_dump(mode="json")
             warnings.append("SCHEMA_INFERENCE_FAILED")
     else:
+        LOGGER.info(
+            "Gemini dynamic schema inference skipped",
+            extra={
+                "stage_name": "gemini_dynamic_schema_discovery",
+                "schema_failure_category": _schema_disabled_category(runtime_policy),
+            },
+        )
         schema_payload = DynamicDocumentSchema(warnings=["SCHEMA_INFERENCE_FAILED"]).model_dump(mode="json")
         warnings.append("SCHEMA_INFERENCE_FAILED")
 
@@ -226,6 +237,20 @@ def _gemini_dynamic_schema_discovery(
             )
         ],
     }
+
+def _schema_failure_category(exc: Exception) -> str:
+    if isinstance(exc, GeminiPoolRateLimitError):
+        return "RATE_LIMIT"
+    if isinstance(exc, (KeyError, TypeError, ValueError)):
+        return "PARSE_ERROR"
+    return "PROVIDER_ERROR"
+
+def _schema_disabled_category(runtime_policy: AgentRuntimePolicy) -> str:
+    if runtime_policy.provider_key != "gemini" or not runtime_policy.gemini_configured:
+        return "CONFIG_MISSING"
+    if not runtime_policy.gemini_structured_output_enabled:
+        return "CONFIG_MISSING"
+    return "PROVIDER_ERROR"
 
 def _gemini_field_normalization(
     state: GeneralizedVerificationState,

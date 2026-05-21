@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 DecisionStatus = Literal["GREEN", "AMBER", "RED"]
@@ -354,9 +354,18 @@ class WorkspaceAuditEntry(BaseModel):
 
 
 class WorkspaceAction(BaseModel):
-    action_id: str
+    action_id: str = ""
     label: str
     enabled: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_action_id(cls, value: Any) -> Any:
+        if isinstance(value, dict) and not value.get("action_id"):
+            action_id = value.get("id") or value.get("actionId")
+            if action_id:
+                value = {**value, "action_id": action_id}
+        return value
 
 
 class WorkspacePayload(BaseModel):
@@ -370,3 +379,6 @@ class WorkspacePayload(BaseModel):
     final_verdict: FinalVerdict
     audit: list[WorkspaceAuditEntry] = Field(default_factory=list)
     actions: list[WorkspaceAction] = Field(default_factory=list)
+    action_flags: dict[str, bool] = Field(default_factory=dict)
+    audit_receipt: dict[str, Any] | None = None
+    privacy: dict[str, Any] = Field(default_factory=dict)

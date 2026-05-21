@@ -59,29 +59,13 @@ def run_pp_chatocr_v4_extraction(
     warnings: list[str] = []
     try:
         visual_predict_started = time.perf_counter()
-        with _prepare_pp_inputs(path) as pp_inputs:
-            visual_results = []
-            for input_item in pp_inputs:
-                with _suppress_pp_console_output():
-                    page_visual_results = list(
-                        engine.visual_predict(
-                            input_item["path"],
-                            use_table_recognition=config["use_table_recognition"],
-                            use_seal_recognition=config["use_seal_recognition"],
-                            use_doc_orientation_classify=config["use_doc_orientation_classify"],
-                            use_doc_unwarping=config["use_doc_unwarping"],
-                        )
-                    )
-                for result in page_visual_results:
-                    if isinstance(result, dict):
-                        result["_pp_page_number"] = input_item["page_number"]
-                        result["_pp_source_width"] = input_item.get("source_width")
-                        result["_pp_source_height"] = input_item.get("source_height")
-                visual_results.extend(page_visual_results)
+        with _prepare_pp_inputs(path, raster_scale=config["pdf_raster_scale"]) as pp_inputs:
+            visual_results, prediction_mode = _visual_predict_with_batch_fallback(engine, pp_inputs, config)
             LOGGER.info(
-                "pp_chatocr_visual_predict_ms=%d pages=%d cached_engine=%s",
+                "pp_chatocr_visual_predict_ms=%d pages=%d prediction_mode=%s engine_reused=%s",
                 _elapsed_ms(visual_predict_started),
                 len(pp_inputs),
+                prediction_mode,
                 cached_engine,
             )
 
@@ -206,6 +190,7 @@ def run_pp_chatocr_v4_extraction(
             "mllm_configured": bool(config["mllm_chat_bot_config"]),
             "engine_cache_enabled": bool(config["cache_engine"]),
             "engine_cache_key": _safe_engine_cache_key(config),
+            "pdf_raster_scale": config["pdf_raster_scale"],
         },
     }
 
@@ -296,10 +281,26 @@ def _load_config() -> dict[str, Any]:
         "use_doc_orientation_classify": _parse_bool(_env_first("PP_CHAT_OCR_USE_DOC_ORIENTATION_CLASSIFY", "PP_CHAT_OCR_ENABLE_DOC_ORIENTATION"), default=False),
         "use_doc_unwarping": _parse_bool(_env_first("PP_CHAT_OCR_USE_DOC_UNWARPING", "PP_CHAT_OCR_ENABLE_DOC_UNWARPING"), default=False),
         "cache_engine": _parse_bool(os.getenv("PP_CHAT_OCR_CACHE_ENGINE"), default=True),
+        "pdf_raster_scale": _parse_pdf_raster_scale(),
         "chat_bot_config": _build_bot_config("PP_CHAT_OCR_CHAT"),
         "retriever_config": _build_bot_config("PP_CHAT_OCR_RETRIEVER"),
         "mllm_chat_bot_config": _build_bot_config("PP_CHAT_OCR_MLLM"),
     }
+
+
+def _parse_pdf_raster_scale() -> float:
+    raw_value = os.getenv("PP_CHAT_OCR_PDF_RASTER_SCALE")
+    if raw_value in (None, ""):
+        return 2.0
+    try:
+        scale = float(str(raw_value).strip())
+    except (TypeError, ValueError):
+        LOGGER.warning("PP_CHAT_OCR_RASTER_SCALE_INVALID using_default=true")
+        return 2.0
+    if scale <= 0:
+        LOGGER.warning("PP_CHAT_OCR_RASTER_SCALE_INVALID using_default=true")
+        return 2.0
+    return scale
 
 
 def _is_pp_chat_stage_configured(config: dict[str, Any]) -> bool:
@@ -330,15 +331,16 @@ def _safe_engine_cache_key(config: dict[str, Any]) -> dict[str, Any]:
 
 
 class _PreparedPPInputs:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, raster_scale: float = 2.0):
         self.path = path
+        self.raster_scale = raster_scale
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self.items: list[dict[str, Any]] = []
 
     def __enter__(self) -> list[dict[str, Any]]:
         if self.path.suffix.lower() == ".pdf":
             self._temp_dir = tempfile.TemporaryDirectory(prefix="secuura_pp_chatocr_pdf_")
-            self.items = _rasterize_pdf_to_images(self.path, Path(self._temp_dir.name))
+            self.items = _rasterize_pdf_to_images(self.path, Path(self._temp_dir.name), raster_scale=self.raster_scale)
         else:
             width, height = _image_size(self.path)
             self.items = [
@@ -356,23 +358,24 @@ class _PreparedPPInputs:
             self._temp_dir.cleanup()
 
 
-def _prepare_pp_inputs(path: Path) -> _PreparedPPInputs:
-    return _PreparedPPInputs(path)
+def _prepare_pp_inputs(path: Path, *, raster_scale: float = 2.0) -> _PreparedPPInputs:
+    return _PreparedPPInputs(path, raster_scale=raster_scale)
 
 
-def _rasterize_pdf_to_images(path: Path, output_dir: Path) -> list[dict[str, Any]]:
+def _rasterize_pdf_to_images(path: Path, output_dir: Path, *, raster_scale: float = 2.0) -> list[dict[str, Any]]:
     try:
         import fitz
     except Exception as exc:  # pragma: no cover - environment dependent
         raise PPChatOCRConfigurationError("PDF rasterization requires PyMuPDF for image rendering only.") from exc
 
     items: list[dict[str, Any]] = []
+    started = time.perf_counter()
     try:
         document = fitz.open(str(path))
         try:
             for page_index in range(len(document)):
                 page = document.load_page(page_index)
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                pix = page.get_pixmap(matrix=fitz.Matrix(raster_scale, raster_scale), alpha=False)
                 image_path = output_dir / f"page-{page_index + 1}.png"
                 pix.save(str(image_path))
                 items.append(
@@ -389,7 +392,82 @@ def _rasterize_pdf_to_images(path: Path, output_dir: Path) -> list[dict[str, Any
         raise PPChatOCRExtractionError(f"PDF rasterization for PP-ChatOCR failed: {_safe_error(exc)}") from exc
     if not items:
         raise PPChatOCRExtractionError("PDF rasterization for PP-ChatOCR produced no page images.")
+    LOGGER.info(
+        "pp_chatocr_pdf_rasterize_ms=%d pages=%d raster_scale=%s",
+        _elapsed_ms(started),
+        len(items),
+        raster_scale,
+    )
     return items
+
+
+def _visual_predict_with_batch_fallback(engine: Any, pp_inputs: list[dict[str, Any]], config: dict[str, Any]) -> tuple[list[Any], str]:
+    if len(pp_inputs) > 1:
+        try:
+            batch_results = _visual_predict_batch(engine, pp_inputs, config)
+            if batch_results is not None:
+                return batch_results, "batch"
+            LOGGER.warning(
+                "PP_CHAT_OCR_BATCH_VISUAL_PREDICT_FALLBACK page_count=%d reason=shape_mismatch",
+                len(pp_inputs),
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "PP_CHAT_OCR_BATCH_VISUAL_PREDICT_FALLBACK page_count=%d exception_class=%s",
+                len(pp_inputs),
+                exc.__class__.__name__,
+            )
+        return _visual_predict_per_page(engine, pp_inputs, config), "batch_fallback"
+    return _visual_predict_per_page(engine, pp_inputs, config), "per_page"
+
+
+def _visual_predict_batch(engine: Any, pp_inputs: list[dict[str, Any]], config: dict[str, Any]) -> list[Any] | None:
+    input_paths = [input_item["path"] for input_item in pp_inputs]
+    with _suppress_pp_console_output():
+        raw_results = list(engine.visual_predict(input_paths, **_visual_predict_options(config)))
+    if len(raw_results) != len(pp_inputs):
+        return None
+
+    visual_results: list[Any] = []
+    for input_item, result in zip(pp_inputs, raw_results):
+        if isinstance(result, dict):
+            _attach_page_metadata(result, input_item)
+            visual_results.append(result)
+            continue
+        if isinstance(result, (list, tuple)) and all(isinstance(item, dict) for item in result):
+            for nested_result in result:
+                _attach_page_metadata(nested_result, input_item)
+                visual_results.append(nested_result)
+            continue
+        return None
+    return visual_results
+
+
+def _visual_predict_per_page(engine: Any, pp_inputs: list[dict[str, Any]], config: dict[str, Any]) -> list[Any]:
+    visual_results: list[Any] = []
+    for input_item in pp_inputs:
+        with _suppress_pp_console_output():
+            page_visual_results = list(engine.visual_predict(input_item["path"], **_visual_predict_options(config)))
+        for result in page_visual_results:
+            if isinstance(result, dict):
+                _attach_page_metadata(result, input_item)
+        visual_results.extend(page_visual_results)
+    return visual_results
+
+
+def _visual_predict_options(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "use_table_recognition": config["use_table_recognition"],
+        "use_seal_recognition": config["use_seal_recognition"],
+        "use_doc_orientation_classify": config["use_doc_orientation_classify"],
+        "use_doc_unwarping": config["use_doc_unwarping"],
+    }
+
+
+def _attach_page_metadata(result: dict[str, Any], input_item: dict[str, Any]) -> None:
+    result["_pp_page_number"] = input_item["page_number"]
+    result["_pp_source_width"] = input_item.get("source_width")
+    result["_pp_source_height"] = input_item.get("source_height")
 
 
 def _image_size(path: Path) -> tuple[int | None, int | None]:

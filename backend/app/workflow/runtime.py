@@ -30,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
 LOGGER = logging.getLogger(__name__)
+SUBMIT_REVIEW_BEFORE_CLOSE_MESSAGE = "Submit a review decision before closing this session."
 WARNING_VALUE_KEYS = ("code", "warning_code", "reason_code", "type", "stage", "error_code", "message")
 INTERNAL_ONLY_WARNING_CODES = {"PP_CHATOCR_CHAT_STAGE_DISABLED", "PP_CHAT_OCR_CHAT_STAGE_DISABLED"}
 UNSAFE_WARNING_MARKERS = (
@@ -110,7 +111,14 @@ SENSITIVE_SESSION_CLEANUP_VALUES = {
 }
 
 
+class CloseSessionStateError(RuntimeError):
+    pass
+
+
 def close_session(db: DbSession, session: SessionModel) -> SessionModel:
+    if session.status not in HUMAN_FINAL_STATES:
+        raise CloseSessionStateError(SUBMIT_REVIEW_BEFORE_CLOSE_MESSAGE)
+
     start_cleanup(db, session.id)
     repository.transition_state(
         db,

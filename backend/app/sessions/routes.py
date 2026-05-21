@@ -25,8 +25,8 @@ from ..security.pdf_validator import (
     write_pdf_security_sidecar,
 )
 from ..workflow import repository as workflow_repository
-from ..workflow.runtime import close_session, serialize_session
-from .constants import SessionState
+from ..workflow.runtime import CloseSessionStateError, close_session, serialize_session
+from .constants import HUMAN_FINAL_STATES, SessionState
 from .models import Session as SessionModel
 from .models import UploadToken
 
@@ -324,5 +324,10 @@ def close_session_route(
     user: str = Depends(get_current_user),
 ) -> dict:
     session = _get_owned_session(db, session_id, user)
-    closed_session = close_session(db, session)
+    if session.status not in HUMAN_FINAL_STATES:
+        raise HTTPException(status_code=409, detail="Submit a review decision before closing this session.")
+    try:
+        closed_session = close_session(db, session)
+    except CloseSessionStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return serialize_session(db, closed_session)

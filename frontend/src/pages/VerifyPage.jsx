@@ -1,5 +1,11 @@
-import React, { startTransition, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import React, {
+	startTransition,
+	useCallback,
+	useEffect,
+	useMemo,
+	useState,
+} from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
 	closeVerificationSession,
 	runVerificationSession,
@@ -7,6 +13,15 @@ import {
 } from "../features/generalized-verification/api/generalizedVerificationApi.js";
 import DocumentTab from "../features/generalized-verification/components/DocumentTab";
 import { useGeneralizedVerificationWorkspace } from "../features/generalized-verification/hooks/useGeneralizedVerificationWorkspace";
+import { buildVerificationNotices } from "../features/generalized-verification/utils/noticeClassification.js";
+import {
+	hasUploadAutoRunIntent,
+	shouldStartUploadAutoRun,
+} from "../features/generalized-verification/utils/autoRun.js";
+import {
+	getVerifyMainCardState,
+	shouldShowVerificationProcessing,
+} from "../features/generalized-verification/utils/verifyRenderState.js";
 import "../features/generalized-verification/generalizedVerification.css";
 
 const PAGE_ITEMS = [
@@ -34,6 +49,11 @@ const REVIEW_DECISIONS = [
 	},
 ];
 
+const RUNNABLE_VERIFICATION_STATUSES = new Set([
+	"UPLOADED_PENDING_REVIEW",
+	"FAILED_RETRIABLE",
+]);
+
 function asArray(value) {
 	return Array.isArray(value) ? value : [];
 }
@@ -41,7 +61,7 @@ function asArray(value) {
 function isWorkspaceActionEnabled(actions, actionId) {
 	return asArray(actions).some(
 		(action) =>
-			(action.id || action.action_id) === actionId &&
+			(action.id || action.action_id || action.actionId) === actionId &&
 			action.enabled !== false
 	);
 }
@@ -159,6 +179,19 @@ function getFieldExplanation(field) {
 		field.explanation ||
 		"No explanation available."
 	);
+}
+
+function getWorkspaceHeroTitle(workspace) {
+	const reasonCodes = asArray(workspace?.finalVerdict?.reasonCodes);
+
+	if (
+		workspace?.status === "MANUAL_REVIEW_REQUIRED" ||
+		reasonCodes.includes("MANUAL_REVIEW_REQUIRED")
+	) {
+		return "Manual review required";
+	}
+
+	return workspace?.finalVerdict?.explanation || "Workspace graph completed.";
 }
 
 function getFieldConfidence(field) {
@@ -644,6 +677,7 @@ function OverviewCard({ title, children, className = "" }) {
 
 export default function VerifyPage({ auth, onLogout }) {
 	const { sessionId } = useParams();
+	const location = useLocation();
 	const navigate = useNavigate();
 
 	const [activePage, setActivePage] = useState("overview");
@@ -651,12 +685,18 @@ export default function VerifyPage({ auth, onLogout }) {
 	const [reviewerNote, setReviewerNote] = useState("");
 	const [reviewMessage, setReviewMessage] = useState("");
 	const [reviewError, setReviewError] = useState("");
+	const [runError, setRunError] = useState("");
 	const [closeError, setCloseError] = useState("");
 	const [isClosing, setIsClosing] = useState(false);
 	const [isSubmittingReview, setIsSubmittingReview] = useState(false);
 	const [isRunningVerification, setIsRunningVerification] = useState(false);
+	const [autoRunBootstrapping, setAutoRunBootstrapping] = useState(() =>
+		hasUploadAutoRunIntent({ navigationState: location.state, sessionId })
+	);
 	const [reviewCompleted, setReviewCompleted] = useState(false);
 	const [reviewResult, setReviewResult] = useState(null);
+	const [reviewStatusFallback, setReviewStatusFallback] = useState(null);
+	const [autoRunAttempt, setAutoRunAttempt] = useState(null);
 
 	const {
 		documentUrl,
@@ -665,7 +705,6 @@ export default function VerifyPage({ auth, onLogout }) {
 		isLoading,
 		isWorkspacePending,
 		refreshWorkspace,
-		warnings,
 		workspace,
 	} =
 		useGeneralizedVerificationWorkspace({
@@ -690,6 +729,18 @@ export default function VerifyPage({ auth, onLogout }) {
 		() => buildHighlightItems(workspace?.fields || []),
 		[workspace]
 	);
+	const notices = useMemo(() => buildVerificationNotices(workspace), [workspace]);
+
+	useEffect(() => {
+		setReviewCompleted(false);
+		setReviewResult(null);
+		setReviewStatusFallback(null);
+		setAutoRunAttempt(null);
+		setAutoRunBootstrapping(
+			hasUploadAutoRunIntent({ navigationState: location.state, sessionId })
+		);
+		setRunError("");
+	}, [sessionId]);
 
 	const canReview = Boolean(
 		workspace &&
@@ -698,48 +749,157 @@ export default function VerifyPage({ auth, onLogout }) {
 	);
 
 	const FINAL_REVIEW_STATUSES = new Set([
-	"HUMAN_APPROVED",
-	"HUMAN_REJECTED",
-	"MANUAL_REVIEW_REQUIRED",
-	"PENDING_CLEANUP",
+		"HUMAN_APPROVED",
+		"HUMAN_REJECTED",
+		"MANUAL_REVIEW_REQUIRED",
+		"PENDING_CLEANUP",
 	]);
 
 	const canCloseSession = Boolean(
 		workspace &&
 			(FINAL_REVIEW_STATUSES.has(workspace.status) ||
+				(reviewStatusFallback?.sessionId === sessionId &&
+					FINAL_REVIEW_STATUSES.has(reviewStatusFallback.status)) ||
 				workspace.actionFlags?.can_close === true ||
 				isWorkspaceActionEnabled(workspace.actions, "can_close"))
 	);
+	const hasUploadScopedAutoRunState = Boolean(
+		hasUploadAutoRunIntent({ navigationState: location.state, sessionId }) &&
+			!(
+				autoRunAttempt?.sessionId === sessionId &&
+				autoRunAttempt?.attempted === true
+			)
+	);
+	const isVerificationProcessing = shouldShowVerificationProcessing({
+		autoRunBootstrapping,
+		autoRunStarting: hasUploadScopedAutoRunState,
+		isRunInProgress: isRunningVerification,
+		isManualRunInProgress: isRunningVerification,
+		navigationState: location.state,
+		sessionId,
+		workspace,
+		normalizedStatus: workspace?.status,
+	});
+	const canRunVerification = Boolean(
+		!isVerificationProcessing &&
+			(isWorkspacePending ||
+				!workspace ||
+				RUNNABLE_VERIFICATION_STATUSES.has(workspace.status))
+	);
+	const mainCardState = getVerifyMainCardState({
+		canRunVerification,
+		finalReviewStatuses: FINAL_REVIEW_STATUSES,
+		isLoading,
+		isWorkspacePending,
+		runError,
+		shouldShowProcessing: isVerificationProcessing,
+		workspace,
+	});
+
+	const startVerification = useCallback(
+		async ({ reason = "manual" } = {}) => {
+			if (!sessionId || isRunningVerification) {
+				return;
+			}
+
+			setReviewError("");
+			setRunError("");
+			setCloseError("");
+			setReviewMessage(
+				reason === "auto_after_upload"
+					? "Upload complete. Verification is starting automatically..."
+					: ""
+			);
+			setReviewCompleted(false);
+			setReviewResult(null);
+			setReviewStatusFallback(null);
+			setAutoRunBootstrapping(false);
+			setIsRunningVerification(true);
+
+			try {
+				const workspacePayload = await runVerificationSession(
+					sessionId,
+					auth.token
+				);
+
+				if (workspacePayload) {
+					hydrateWorkspace(workspacePayload);
+					setReviewMessage(
+						"Verification completed. Workspace is ready for review."
+					);
+				} else {
+					await refreshWorkspace({ retryOnPending: true });
+					setReviewMessage(
+						"Verification completed. Workspace refresh requested."
+					);
+				}
+			} catch (requestError) {
+				const message =
+					requestError.message ||
+					"Unable to refresh verification. The session may already be processing.";
+				if (
+					requestError.status === 409 &&
+					message.toLowerCase().includes("already in progress")
+				) {
+					await refreshWorkspace({ retryOnPending: true });
+					return;
+				}
+				setReviewMessage("");
+				setRunError(message);
+			} finally {
+				setIsRunningVerification(false);
+				setAutoRunBootstrapping(false);
+			}
+		},
+		[
+			auth.token,
+			hydrateWorkspace,
+			isRunningVerification,
+			refreshWorkspace,
+			sessionId,
+		]
+	);
+
+	useEffect(() => {
+		if (
+			!shouldStartUploadAutoRun({
+				navigationState: location.state,
+				sessionId,
+				isRunningVerification,
+				autoRunAttempt,
+			})
+		) {
+			return;
+		}
+
+		setAutoRunAttempt({ sessionId, attempted: true });
+		setAutoRunBootstrapping(true);
+		navigate(location.pathname, { replace: true, state: null });
+		startVerification({ reason: "auto_after_upload" });
+	}, [
+		autoRunAttempt,
+		isRunningVerification,
+		location.pathname,
+		location.state,
+		navigate,
+		sessionId,
+		startVerification,
+	]);
 
 	async function handleRunVerification() {
-		setReviewError("");
-		setCloseError("");
-		setReviewMessage("");
-		setIsRunningVerification(true);
-
-		try {
-			const workspacePayload = await runVerificationSession(sessionId, auth.token);
-
-			if (workspacePayload) {
-				hydrateWorkspace(workspacePayload);
-				setReviewMessage("Verification completed. Workspace is ready for review.");
-			} else {
-				await refreshWorkspace({ retryOnPending: true });
-				setReviewMessage("Verification completed. Workspace refresh requested.");
-			}
-		} catch (requestError) {
-			setReviewError(
-				requestError.message ||
-					"Unable to refresh verification. The session may already be processing."
-			);
-		} finally {
-			setIsRunningVerification(false);
+		if (!canRunVerification) {
+			return;
 		}
+		setAutoRunAttempt(null);
+		setAutoRunBootstrapping(false);
+		setRunError("");
+		await startVerification({ reason: "manual" });
 	}
 
 	async function handleReviewDecision(decision) {
 		setReviewError("");
 		setReviewMessage("");
+		setRunError("");
 		setCloseError("");
 
 		if (decision === "NEEDS_MANUAL_REVIEW" && !reviewerNote.trim()) {
@@ -758,15 +918,18 @@ export default function VerifyPage({ auth, onLogout }) {
 			);
 
 			setReviewCompleted(true);
+			const finalStatus = reviewResponse?.status || "";
 
 			setReviewResult({
-				status: reviewResponse?.status,
+				sessionId,
+				status: finalStatus,
 				finalDecision:
 					reviewResponse?.final_decision ||
 					reviewResponse?.reviewer_decision ||
 					decision,
 				auditReceiptId: reviewResponse?.audit_receipt_id,
 			});
+			setReviewStatusFallback({ sessionId, status: finalStatus });
 
 			await refreshWorkspace({ showLoading: false });
 
@@ -787,6 +950,7 @@ export default function VerifyPage({ auth, onLogout }) {
 	async function handleCloseSession() {
 		setCloseError("");
 		setReviewError("");
+		setRunError("");
 		setIsClosing(true);
 
 		try {
@@ -885,11 +1049,11 @@ export default function VerifyPage({ auth, onLogout }) {
 								type="button"
 								className="secondary-btn"
 								onClick={handleRunVerification}
-								disabled={isRunningVerification}
+								disabled={!canRunVerification}
 							>
 								{isRunningVerification
-									? "Refreshing..."
-									: "Refresh Verification State"}
+									? "Running verification..."
+									: "Run Verification"}
 							</button>
 
 							<button
@@ -916,12 +1080,13 @@ export default function VerifyPage({ auth, onLogout }) {
 					<AuditReceiptPanel workspace={workspace} reviewResult={reviewResult} />
 
 					<OverviewCard title="Notices" className="gv-card-wide">
-						{warnings.length ? (
+						{notices.length ? (
 							<div className="gv-warning-list">
-								{warnings.map((warning) => (
-									<p key={warning} className="muted">
-										{warning}
-									</p>
+								{notices.map((notice) => (
+									<div key={notice.code} className="gv-notice-item">
+										<p className="muted">{notice.message}</p>
+										<p className="gv-notice-code">{notice.code}</p>
+									</div>
 								))}
 							</div>
 						) : (
@@ -1019,6 +1184,57 @@ export default function VerifyPage({ auth, onLogout }) {
 		}
 	}
 
+	function renderProcessingPage() {
+		return (
+			<div className="gv-processing-panel" role="status" aria-live="polite">
+				<div className="gv-processing-icon" aria-hidden="true">
+					⏳
+				</div>
+				<p className="gv-processing-title">Verification in progress</p>
+				<p className="gv-processing-subtitle">
+					Upload complete. We&rsquo;re verifying your document automatically.
+				</p>
+				<p className="muted">
+					Please wait while we extract document evidence, run verifier checks,
+					and prepare the review workspace.
+				</p>
+				<ul className="gv-processing-steps" aria-label="Verification steps">
+					<li>Preparing uploaded document</li>
+					<li>Extracting OCR evidence</li>
+					<li>Running verification checks</li>
+					<li>Generating review workspace</li>
+				</ul>
+			</div>
+		);
+	}
+
+	function renderRunFailurePanel() {
+		const message =
+			runError ||
+			workspace?.finalVerdict?.explanation ||
+			"Verification failed before a review workspace was generated.";
+
+		return (
+			<div className="gv-pending-panel gv-failure-panel">
+				<div className="gv-pending-icon" aria-hidden="true">
+					!
+				</div>
+				<p className="gv-pending-title">Verification needs attention.</p>
+				<p className="error-text gv-pending-error">{message}</p>
+				{canRunVerification ? (
+					<button
+						id="run-verification-btn"
+						type="button"
+						className="primary-btn"
+						onClick={handleRunVerification}
+					>
+						Run Verification
+					</button>
+				) : null}
+			</div>
+		);
+	}
+
 	return (
 		<div className="page gv-page">
 			<div className="app-header">
@@ -1043,8 +1259,15 @@ export default function VerifyPage({ auth, onLogout }) {
 				</div>
 			</div>
 
-			{isLoading ? <p className="muted">Loading verification workspace...</p> : null}
-			{isWorkspacePending && !workspace && !isLoading ? (
+			{mainCardState === "processing" ? renderProcessingPage() : null}
+			{mainCardState !== "processing" && isLoading ? (
+				<p className="muted">Loading verification workspace...</p>
+			) : null}
+			{mainCardState === "run_error" ||
+			mainCardState === "run_error_retry" ? (
+				renderRunFailurePanel()
+			) : null}
+			{mainCardState === "manual_run" ? (
 				<div className="gv-pending-panel">
 					<div className="gv-pending-icon" aria-hidden="true">⏳</div>
 					<p className="gv-pending-title">Workspace is not ready yet.</p>
@@ -1056,21 +1279,26 @@ export default function VerifyPage({ auth, onLogout }) {
 						type="button"
 						className="primary-btn"
 						onClick={handleRunVerification}
-						disabled={isRunningVerification}
+						disabled={!canRunVerification}
 					>
 						{isRunningVerification ? "Running verification..." : "Run Verification"}
 					</button>
-					{reviewError ? (
-						<p className="error-text gv-pending-error">{reviewError}</p>
-					) : null}
 				</div>
 			) : null}
-			{error ? <p className="error-text">{error}</p> : null}
-			{closeError ? <p className="error-text">{closeError}</p> : null}
-			{workspace && reviewError ? <p className="error-text">{reviewError}</p> : null}
-			{reviewMessage ? <p className="success-text">{reviewMessage}</p> : null}
+			{mainCardState !== "processing" && error ? (
+				<p className="error-text">{error}</p>
+			) : null}
+			{mainCardState !== "processing" && closeError ? (
+				<p className="error-text">{closeError}</p>
+			) : null}
+			{mainCardState !== "processing" && workspace && reviewError ? (
+				<p className="error-text">{reviewError}</p>
+			) : null}
+			{mainCardState !== "processing" && reviewMessage ? (
+				<p className="success-text">{reviewMessage}</p>
+			) : null}
 
-			{workspace ? (
+			{workspace && mainCardState === "workspace" ? (
 				<div className="gv-shell">
 					<aside className="gv-side-nav">
 						<div className="gv-side-nav-inner">
@@ -1094,10 +1322,7 @@ export default function VerifyPage({ auth, onLogout }) {
 					<main className="gv-main-panel">
 						<div className="gv-hero-card">
 							<p className="eyebrow">Final Verdict</p>
-							<h2>
-								{workspace.finalVerdict.explanation ||
-									"Workspace graph completed."}
-							</h2>
+							<h2>{getWorkspaceHeroTitle(workspace)}</h2>
 
 							{workspace.finalVerdict.reasonCodes.length ? (
 								<p className="muted">

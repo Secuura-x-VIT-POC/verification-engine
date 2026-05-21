@@ -377,6 +377,43 @@ class WorkflowApiRouteTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 409)
                 self.assertEqual(response.json()["detail"], "Session is already closed")
 
+    def test_run_endpoint_duplicate_or_review_states_return_409(self):
+        for state in (
+            SessionState.PENDING_HUMAN_REVIEW,
+            SessionState.HUMAN_APPROVED,
+            SessionState.HUMAN_REJECTED,
+            SessionState.MANUAL_REVIEW_REQUIRED,
+        ):
+            with self.subTest(state=state):
+                file_path = self._create_temp_pdf()
+                session_id = f"session-run-{state.lower()}"
+                self._create_session(
+                    session_id=session_id,
+                    status=state,
+                    user_id="user-1",
+                    file_path=file_path,
+                    workspace_payload=self._workspace_payload(session_id),
+                )
+
+                response = self.client.post(f"/api/v1/verification-sessions/{session_id}/run")
+
+                self.assertEqual(response.status_code, 409)
+                self.assertIn("Session is not ready for verification", response.json()["detail"])
+
+    def test_run_endpoint_verifying_returns_409(self):
+        file_path = self._create_temp_pdf()
+        self._create_session(
+            session_id="session-run-verifying",
+            status=SessionState.VERIFYING,
+            user_id="user-1",
+            file_path=file_path,
+        )
+
+        response = self.client.post("/api/v1/verification-sessions/session-run-verifying/run")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "Verification is already in progress")
+
     def test_run_endpoint_generalized_pipeline_failed_returns_500(self):
         file_path = self._create_temp_pdf()
         self._create_session(
@@ -682,6 +719,73 @@ class WorkflowApiRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["session_id"], "session-workspace-persisted")
 
+    def test_workspace_overlays_live_status_and_close_action(self):
+        workspace_payload = self._workspace_payload("session-workspace-live-approved")
+        workspace_payload["actions"] = [
+            {"action_id": "can_close", "label": "Close Session", "enabled": False},
+            {"id": "can_export_report", "label": "Export Report", "enabled": True},
+        ]
+        self._create_session(
+            session_id="session-workspace-live-approved",
+            status=SessionState.HUMAN_APPROVED,
+            user_id="user-1",
+            workspace_payload=workspace_payload,
+        )
+
+        response = self.client.get("/api/v1/verification-sessions/session-workspace-live-approved/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], SessionState.HUMAN_APPROVED)
+        self.assertTrue(payload["action_flags"]["can_close"])
+        close_action = next(action for action in payload["actions"] if action["action_id"] == "can_close")
+        self.assertTrue(close_action["enabled"])
+        self.assertTrue(any(action["action_id"] == "can_export_report" for action in payload["actions"]))
+
+    def test_workspace_keeps_close_disabled_before_final_review(self):
+        workspace_payload = self._workspace_payload("session-workspace-live-pending")
+        workspace_payload["actions"] = [
+            {"action_id": "can_close", "label": "Close Session", "enabled": True},
+        ]
+        self._create_session(
+            session_id="session-workspace-live-pending",
+            status=SessionState.PENDING_HUMAN_REVIEW,
+            user_id="user-1",
+            workspace_payload=workspace_payload,
+        )
+
+        response = self.client.get("/api/v1/verification-sessions/session-workspace-live-pending/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], SessionState.PENDING_HUMAN_REVIEW)
+        self.assertFalse(payload["action_flags"]["can_close"])
+        close_action = next(action for action in payload["actions"] if action["action_id"] == "can_close")
+        self.assertFalse(close_action["enabled"])
+
+    def test_workspace_includes_safe_audit_receipt(self):
+        raw_note = "RAW_REVIEWER_NOTE_SENTINEL_PERSON_E"
+        workspace_payload = self._workspace_payload("session-workspace-audit")
+        self._create_session(
+            session_id="session-workspace-audit",
+            status=SessionState.HUMAN_REJECTED,
+            user_id="user-1",
+            workspace_payload=workspace_payload,
+            audit_receipt_id="audit-workspace-safe",
+        )
+        self._create_audit_receipt("audit-workspace-safe", "session-workspace-audit")
+
+        response = self.client.get("/api/v1/verification-sessions/session-workspace-audit/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        serialized = json.dumps(payload, sort_keys=True)
+        self.assertEqual(payload["audit_receipt"]["audit_receipt_id"], "audit-workspace-safe")
+        self.assertEqual(payload["audit_receipt"]["reviewer_note_hash"], "reviewer-note-hash")
+        self.assertNotIn(raw_note, serialized)
+        self.assertFalse(payload["privacy"]["raw_ocr_text_persisted"])
+        self.assertTrue(payload["privacy"]["reviewer_note_hash_only"])
+
     def _override_get_db(self):
         db = self.SessionLocal()
         try:
@@ -734,6 +838,9 @@ class WorkflowApiRouteTests(unittest.TestCase):
             issued_at=datetime.utcnow(),
             key_version="v1",
             receipt_hash="old-hash",
+            reviewer_decision="REJECTED",
+            reviewer_note_hash="reviewer-note-hash",
+            finding_counts={"green": 0, "amber": 1, "red": 1},
         )
         db.add(receipt)
         db.commit()

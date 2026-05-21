@@ -87,7 +87,15 @@ export default function UploadPage({ auth, onLogout }) {
       });
 
       setStatus(uploadResponse.status);
-      startTransition(() => navigate(getVerifyPath(uploadResponse.session_id)));
+      startTransition(() =>
+        navigate(getVerifyPath(uploadResponse.session_id), {
+          state: {
+            autoRunAfterUpload: true,
+            sessionId: uploadResponse.session_id,
+            uploadStatus: uploadResponse.status,
+          },
+        })
+      );
     } catch (requestError) {
       setError(requestError.message);
     } finally {

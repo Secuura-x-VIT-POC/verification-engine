@@ -45,7 +45,7 @@ from ..agent_orchestration import graph as orchestration_graph
 from ..agent_orchestration.sanitization import sanitize_workspace_payload
 from ..agent_orchestration.schemas import WorkspacePayload
 from ..agent_orchestration.workspace import (
-    get_workspace_payload_for_session,
+    get_live_workspace_payload_for_session,
     run_generalized_verification_session,
 )
 from ..workflow.runtime import get_result_response, get_status_response, serialize_session
@@ -384,17 +384,6 @@ def run_generalized_verification_route(
     if session.status == SessionState.VERIFYING:
         raise HTTPException(status_code=409, detail="Verification is already in progress")
 
-    if session.status in {
-        SessionState.VERIFIED_GREEN,
-        SessionState.VERIFIED_AMBER,
-        SessionState.VERIFIED_RED,
-        SessionState.PENDING_HUMAN_REVIEW,
-        SessionState.HUMAN_APPROVED,
-        SessionState.HUMAN_REJECTED,
-        SessionState.MANUAL_REVIEW_REQUIRED,
-    }:
-        return get_workspace_payload_for_session(session)
-
     if session.status not in {
         SessionState.UPLOADED_PENDING_REVIEW,
         SessionState.FAILED_RETRIABLE,
@@ -496,13 +485,19 @@ def get_generalized_workspace_route(
     session = _get_owned_session(db, session_id, user)
     if session.status in {SessionState.PENDING_CLEANUP, SessionState.PURGE_COMPLETE, SessionState.FAILED_PURGED}:
         raise HTTPException(status_code=409, detail="Session is already closed")
+    if not session.workspace_payload and session.status in {
+        SessionState.VERIFYING,
+        SessionState.FAILED_RETRIABLE,
+        SessionState.ABANDONED_VERIFYING,
+    }:
+        return get_live_workspace_payload_for_session(db, session).model_dump(mode="json")
     if not session.workspace_payload:
         raise HTTPException(
             status_code=409,
             detail="Workspace not ready. Run verification first."
         )
 
-    return sanitize_workspace_payload(WorkspacePayload.model_validate(session.workspace_payload)).model_dump(mode="json")
+    return get_live_workspace_payload_for_session(db, session).model_dump(mode="json")
 
 def build_workspace_response(session):
     # Compatibility-only response helper for older callers. The canonical

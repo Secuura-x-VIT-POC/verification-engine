@@ -9,6 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from extraction.ocr.pp_chatocr_v4 import (
     PPChatOCRConfigurationError,
+    _load_config,
     run_pp_chatocr_v4_extraction,
 )
 
@@ -217,6 +218,92 @@ class PPChatOCRv4NormalizationTests(unittest.TestCase):
             with self.assertRaises(PPChatOCRConfigurationError):
                 run_pp_chatocr_v4_extraction("demo.pdf")
 
+    def test_pdf_raster_scale_defaults_to_two(self):
+        env = {
+            "SECUURA_OCR_ENGINE": "pp_chatocr_v4",
+            "SECUURA_ENABLE_ADVANCED_PADDLE_OCR": "true",
+            "PP_CHAT_OCR_PIPELINE": "PP-ChatOCRv4-doc",
+            "PP_CHAT_OCR_DEVICE": "cpu",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(_load_config()["pdf_raster_scale"], 2.0)
+
+    def test_pdf_raster_scale_invalid_falls_back_to_two(self):
+        env = {
+            "SECUURA_OCR_ENGINE": "pp_chatocr_v4",
+            "SECUURA_ENABLE_ADVANCED_PADDLE_OCR": "true",
+            "PP_CHAT_OCR_PIPELINE": "PP-ChatOCRv4-doc",
+            "PP_CHAT_OCR_DEVICE": "cpu",
+            "PP_CHAT_OCR_PDF_RASTER_SCALE": "not-a-float",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(_load_config()["pdf_raster_scale"], 2.0)
+
+        env["PP_CHAT_OCR_PDF_RASTER_SCALE"] = "0"
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(_load_config()["pdf_raster_scale"], 2.0)
+
+    def test_pdf_raster_scale_valid_value_is_used(self):
+        env = {
+            "SECUURA_OCR_ENGINE": "pp_chatocr_v4",
+            "SECUURA_ENABLE_ADVANCED_PADDLE_OCR": "true",
+            "PP_CHAT_OCR_PIPELINE": "PP-ChatOCRv4-doc",
+            "PP_CHAT_OCR_DEVICE": "cpu",
+            "PP_CHAT_OCR_PDF_RASTER_SCALE": "1.5",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(_load_config()["pdf_raster_scale"], 1.5)
+
+    def test_batch_visual_predict_fallback_preserves_page_order(self):
+        class _BatchRejectingPPChatOCRv4Doc(_FakePPChatOCRv4Doc):
+            def visual_predict(self, input, **kwargs):
+                if isinstance(input, list):
+                    raise TypeError("batch input unsupported")
+                page_text = "PAGE_ONE" if input == "page-1.png" else "PAGE_TWO"
+                return [
+                    _visual_result(
+                        rec_texts=[page_text],
+                        rec_boxes=[[10, 10, 80, 25]],
+                    )
+                ]
+
+        env = {
+            "SECUURA_OCR_ENGINE": "pp_chatocr_v4",
+            "SECUURA_ENABLE_ADVANCED_PADDLE_OCR": "true",
+            "PP_CHAT_OCR_PIPELINE": "PP-ChatOCRv4-doc",
+            "PP_CHAT_OCR_DEVICE": "cpu",
+            "PP_CHAT_OCR_ENABLE_TABLE_RECOGNITION": "true",
+            "PP_CHAT_OCR_ENABLE_SEAL_RECOGNITION": "true",
+            "PP_CHAT_OCR_ENABLE_DOC_ORIENTATION": "true",
+            "PP_CHAT_OCR_ENABLE_DOC_UNWARPING": "true",
+            "PP_CHAT_OCR_MLLM_API_KEY": "mllm-key",
+        }
+        fake_inputs = [
+            {"path": "page-1.png", "page_number": 1, "source_width": 1000, "source_height": 1400},
+            {"path": "page-2.png", "page_number": 2, "source_width": 1000, "source_height": 1400},
+        ]
+
+        class _Prepared:
+            def __enter__(self):
+                return fake_inputs
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch.dict(sys.modules, {"paddleocr": types.SimpleNamespace(PPChatOCRv4Doc=_BatchRejectingPPChatOCRv4Doc)}),
+            patch("extraction.ocr.pp_chatocr_v4._prepare_pp_inputs", return_value=_Prepared()),
+        ):
+            payload = run_pp_chatocr_v4_extraction("demo.pdf", key_list=["all visible key-value pairs"])
+
+        page_tokens = [
+            (item["page_number"], item["text_preview"])
+            for item in payload["spatial_text_map"]
+            if item["text_preview"] in {"PAGE_ONE", "PAGE_TWO"}
+        ]
+        self.assertEqual(page_tokens, [(1, "PAGE_ONE"), (2, "PAGE_TWO")])
+
 
 class _FakePPChatOCRv4DocWithConfigs(_FakePPChatOCRv4Doc):
     def build_vector(self, visual_info, retriever_config=None):
@@ -275,6 +362,7 @@ class PPChatOCRv4AdvancedConfigTests(unittest.TestCase):
             "PP_CHAT_OCR_ENABLE_SEAL_RECOGNITION": "true",
             "PP_CHAT_OCR_ENABLE_DOC_ORIENTATION": "true",
             "PP_CHAT_OCR_ENABLE_DOC_UNWARPING": "true",
+            "PP_CHAT_OCR_MLLM_API_KEY": "mllm-key",
         }
         _FakePPChatOCRv4Doc.visual_results = [_visual_result()]
         _FakePPChatOCRv4Doc.chat_res = {}

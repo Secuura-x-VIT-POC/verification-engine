@@ -45,9 +45,286 @@ import {
   createEmptyVerificationTaskResultCollection,
   createEmptyVerificationSummary,
 } from "../src/features/generalized-verification/types/contracts.js";
+import {
+  hasUploadAutoRunIntent,
+  shouldStartUploadAutoRun,
+} from "../src/features/generalized-verification/utils/autoRun.js";
+import {
+  buildVerificationNotices,
+  classifyVerificationNotice,
+  isWorkspaceFailed,
+  isWorkspaceProcessing,
+} from "../src/features/generalized-verification/utils/noticeClassification.js";
+import {
+  getVerifyMainCardState,
+  shouldShowVerificationProcessing,
+} from "../src/features/generalized-verification/utils/verifyRenderState.js";
 import { normalizeWorkspacePayload } from "../src/features/generalized-verification/utils/workspaceNormalizer.js";
 
 export const checks = [
+  {
+    name: "upload auto-run starts only once for matching uploaded session",
+    run() {
+      const navigationState = {
+        autoRunAfterUpload: true,
+        sessionId: "session-1",
+        uploadStatus: "UPLOADED_PENDING_REVIEW",
+      };
+
+      assert.equal(
+        hasUploadAutoRunIntent({
+          navigationState,
+          sessionId: "session-1",
+        }),
+        true
+      );
+      assert.equal(
+        shouldStartUploadAutoRun({
+          navigationState,
+          sessionId: "session-1",
+          isRunningVerification: false,
+          autoRunAttempt: null,
+        }),
+        true
+      );
+      assert.equal(
+        shouldStartUploadAutoRun({
+          navigationState,
+          sessionId: "session-1",
+          isRunningVerification: false,
+          autoRunAttempt: { sessionId: "session-1", attempted: true },
+        }),
+        false
+      );
+    },
+  },
+  {
+    name: "upload auto-run first render shows processing before stale failure cards",
+    run() {
+      const navigationState = {
+        autoRunAfterUpload: true,
+        sessionId: "session-1",
+        uploadStatus: "UPLOADED_PENDING_REVIEW",
+      };
+      const failedWorkspace = normalizeWorkspacePayload(
+        {
+          session_id: "session-1",
+          status: "FAILED_RETRIABLE",
+          final_verdict: {
+            outcome: "AMBER",
+            explanation: "Generalized verification failed",
+          },
+        },
+        "session-1"
+      );
+      const shouldShowProcessing = shouldShowVerificationProcessing({
+        autoRunBootstrapping: hasUploadAutoRunIntent({
+          navigationState,
+          sessionId: "session-1",
+        }),
+        navigationState,
+        sessionId: "session-1",
+        workspace: failedWorkspace,
+      });
+
+      assert.equal(shouldShowProcessing, true);
+      assert.equal(
+        getVerifyMainCardState({
+          canRunVerification: true,
+          isLoading: false,
+          isWorkspacePending: true,
+          runError: "Generalized verification failed",
+          shouldShowProcessing,
+          workspace: failedWorkspace,
+        }),
+        "processing"
+      );
+    },
+  },
+  {
+    name: "clearing upload router state keeps processing while bootstrapping",
+    run() {
+      assert.equal(
+        shouldShowVerificationProcessing({
+          autoRunBootstrapping: true,
+          navigationState: null,
+          sessionId: "session-1",
+          workspace: null,
+        }),
+        true
+      );
+      assert.equal(
+        getVerifyMainCardState({
+          canRunVerification: false,
+          isLoading: false,
+          isWorkspacePending: true,
+          runError: "Generalized verification failed",
+          shouldShowProcessing: true,
+          workspace: null,
+        }),
+        "processing"
+      );
+    },
+  },
+  {
+    name: "actual run failure shows retry after processing stops",
+    run() {
+      assert.equal(
+        getVerifyMainCardState({
+          canRunVerification: true,
+          isLoading: false,
+          isWorkspacePending: true,
+          runError: "Generalized verification failed",
+          shouldShowProcessing: false,
+          workspace: null,
+        }),
+        "run_error_retry"
+      );
+    },
+  },
+  {
+    name: "VERIFYING status and manual run show processing",
+    run() {
+      assert.equal(
+        shouldShowVerificationProcessing({
+          isManualRunInProgress: true,
+          sessionId: "session-1",
+        }),
+        true
+      );
+      assert.equal(
+        shouldShowVerificationProcessing({
+          sessionId: "session-1",
+          workspace: { status: "VERIFYING" },
+        }),
+        true
+      );
+    },
+  },
+  {
+    name: "upload auto-run rejects non-upload-ready states",
+    run() {
+      for (const uploadStatus of ["VERIFYING", "PENDING_HUMAN_REVIEW", "HUMAN_APPROVED"]) {
+        assert.equal(
+          shouldStartUploadAutoRun({
+            navigationState: {
+              autoRunAfterUpload: true,
+              sessionId: "session-1",
+              uploadStatus,
+            },
+            sessionId: "session-1",
+            isRunningVerification: false,
+            autoRunAttempt: null,
+          }),
+          false
+        );
+      }
+    },
+  },
+  {
+    name: "direct verify page state does not trigger upload auto-run",
+    run() {
+      assert.equal(
+        shouldStartUploadAutoRun({
+          navigationState: null,
+          sessionId: "session-1",
+          isRunningVerification: false,
+          autoRunAttempt: null,
+        }),
+        false
+      );
+      assert.equal(
+        shouldStartUploadAutoRun({
+          navigationState: {
+            autoRunAfterUpload: true,
+            sessionId: "different-session",
+            uploadStatus: "UPLOADED_PENDING_REVIEW",
+          },
+          sessionId: "session-1",
+          isRunningVerification: false,
+          autoRunAttempt: null,
+        }),
+        false
+      );
+    },
+  },
+  {
+    name: "verification notices classify fallback and manual-review codes as non-fatal",
+    run() {
+      const fallbackNotice = classifyVerificationNotice("SCHEMA_INFERENCE_FAILED");
+      const deterministicNotice = classifyVerificationNotice(
+        "DETERMINISTIC_OCR_LABEL_VALUE_FALLBACK"
+      );
+      const providerNotice = classifyVerificationNotice(
+        "MANUAL_REVIEW_PROVIDER_SELECTED"
+      );
+      const reviewNotice = classifyVerificationNotice("MANUAL_REVIEW_REQUIRED");
+
+      assert.equal(fallbackNotice.type, "fallback");
+      assert.equal(fallbackNotice.fatal, false);
+      assert.match(fallbackNotice.message, /deterministic fallback/i);
+      assert.equal(deterministicNotice.type, "fallback");
+      assert.equal(providerNotice.type, "manual_review");
+      assert.equal(providerNotice.fatal, false);
+      assert.equal(reviewNotice.type, "manual_review");
+      assert.match(reviewNotice.message, /human review/i);
+    },
+  },
+  {
+    name: "workspace notices collect friendly codes without treating fallback as failure",
+    run() {
+      const workspace = normalizeWorkspacePayload(
+        {
+          session_id: "session-1",
+          status: "PENDING_HUMAN_REVIEW",
+          document: {
+            warnings: ["SCHEMA_INFERENCE_FAILED"],
+          },
+          summary: {
+            active_exceptions: ["MANUAL_REVIEW_REQUIRED"],
+          },
+          fields: [
+            {
+              field_id: "field-1",
+              reason_codes: ["DETERMINISTIC_OCR_LABEL_VALUE_FALLBACK"],
+            },
+          ],
+          verifiers: [
+            {
+              connector_id: "manual_review",
+              reason_codes: ["MANUAL_REVIEW_PROVIDER_SELECTED"],
+            },
+          ],
+          final_verdict: {
+            outcome: "AMBER",
+            reason_codes: ["MANUAL_REVIEW_REQUIRED"],
+          },
+        },
+        "session-1"
+      );
+
+      const notices = buildVerificationNotices(workspace);
+      const codes = notices.map((notice) => notice.code);
+
+      assert.deepEqual(codes, [
+        "SCHEMA_INFERENCE_FAILED",
+        "MANUAL_REVIEW_REQUIRED",
+        "DETERMINISTIC_OCR_LABEL_VALUE_FALLBACK",
+        "MANUAL_REVIEW_PROVIDER_SELECTED",
+      ]);
+      assert.equal(notices.every((notice) => notice.fatal === false), true);
+      assert.equal(isWorkspaceFailed(workspace), false);
+    },
+  },
+  {
+    name: "workspace status helpers separate processing and fatal retry states",
+    run() {
+      assert.equal(isWorkspaceProcessing({ status: "VERIFYING" }), true);
+      assert.equal(isWorkspaceProcessing({ status: "PENDING_HUMAN_REVIEW" }), false);
+      assert.equal(isWorkspaceFailed({ status: "FAILED_RETRIABLE" }), true);
+      assert.equal(isWorkspaceFailed({ status: "PENDING_HUMAN_REVIEW" }), false);
+    },
+  },
   {
     name: "pp chatocr image pixel boxes scale to rendered page coordinates",
     run() {

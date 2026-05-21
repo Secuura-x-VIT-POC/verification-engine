@@ -502,10 +502,15 @@ def _record_supports_route(
     categories = {_canonical_label(value) for value in as_string_list(record.get("categories"))}
     document_types = {_canonical_label(value) for value in as_string_list(record.get("document_types"))}
 
+    # If the verifier key matches exactly, we consider it supported regardless of category
+    # This allows Name/Identity verification to work even on Academic documents.
+    if verifier_keys and _canonical_label(verifier_key) in verifier_keys:
+        return True
+
     if verifier_keys and _canonical_label(verifier_key) not in verifier_keys:
         return False
     
-    # Flexible category matching: either exact or one is a substring of the other (e.g. 'academic' and 'academic_degree')
+    # Flexible category matching if verifier_key was not specified or not matched
     if categories:
         target = _canonical_label(category)
         if target not in categories:

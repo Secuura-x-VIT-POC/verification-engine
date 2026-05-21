@@ -405,14 +405,18 @@ def _match_local_record(store: dict[str, Any], request: ProviderRequest) -> dict
             "reason_codes": ["LOCAL_VERIFICATION_RECORD_NOT_FOUND"],
         }
 
-    # Now collect all matching fields from this record
+    # Now collect all matching and mismatched fields from this record
     record_id = str(best_record.get("record_id") or "local-record")
     record_fields = best_record.get("fields") or []
     matched_fields = {}
     mismatched_fields = {}
     
-    # If the request has a specific value/label, we prioritize that field
-    # But we also look at other fields in the record to see if they match the request's context
+    # Check every field in the record against the input payload (if present)
+    input_fields = dict(request.input_payload.get("fields") or {})
+    # If the request is for a single field (legacy behavior), we add it to a temporary dict
+    if request.input_payload.get("label") and request.input_payload.get("value"):
+        input_fields[_canonical_label(request.input_payload.get("label"))] = request.input_payload.get("value")
+
     for field in record_fields:
         if not isinstance(field, dict):
             continue
@@ -421,9 +425,16 @@ def _match_local_record(store: dict[str, Any], request: ProviderRequest) -> dict
         stored_value = field.get("value") if field.get("value") not in (None, "") else field.get("normalized_value")
         comparison_value = field.get("normalized_value") or field.get("value")
         
-        # If this is the specific field requested (by label or key)
-        if _field_matches_label(field, label=label, credential_id=credential_id):
-            if _values_match(normalized_value, comparison_value):
+        # Check if we have a corresponding value in the input to compare against
+        # We look for the field_key or the label
+        input_value = None
+        for k, v in input_fields.items():
+            if _canonical_label(k) == _canonical_label(field_key) or _canonical_label(k) == _canonical_label(field.get("label")):
+                input_value = v
+                break
+        
+        if input_value is not None:
+            if _values_match(input_value, comparison_value):
                 matched_fields[field_key] = stored_value
             else:
                 mismatched_fields[field_key] = {
@@ -432,8 +443,8 @@ def _match_local_record(store: dict[str, Any], request: ProviderRequest) -> dict
                     "record_id": record_id,
                 }
         else:
-            # Also include other fields as matched if they exist in the record
-            # (This helps satisfy verifiers that check multiple fields)
+            # If not in input, we still count it as "matched" evidence from the record
+            # (unless it's mandatory, but the provider doesn't know that)
             matched_fields[field_key] = stored_value
 
     if mismatched_fields:

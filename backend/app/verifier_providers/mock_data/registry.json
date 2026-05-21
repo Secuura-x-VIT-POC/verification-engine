@@ -1,32 +1,36 @@
 {
   "records": [
     {
-      "record_id": "green_match_violet",
+      "record_id": "green_violet",
       "verifier_keys": ["academic_registry", "identity_db"],
       "categories": ["academic", "identity"],
       "fields": [
         {
           "field_key": "name",
-          "value": "Violet"
+          "value": "Violet",
+          "label_aliases": ["Name", "Candidate Name", "Student Name"]
         },
         {
           "field_key": "degree",
-          "value": "BTech"
+          "value": "BTech",
+          "label_aliases": ["Degree", "Qualification"]
         }
       ]
     },
     {
-      "record_id": "red_mismatch_ethan",
+      "record_id": "red_ethan",
       "verifier_keys": ["academic_registry", "identity_db"],
       "categories": ["academic", "identity"],
       "fields": [
         {
           "field_key": "name",
-          "value": "Ethan"
+          "value": "Ethan",
+          "label_aliases": ["Name", "Candidate Name", "Eathan"]
         },
         {
           "field_key": "degree",
-          "value": "PhD"
+          "value": "PhD",
+          "label_aliases": ["Degree", "Qualification"]
         }
       ]
     }

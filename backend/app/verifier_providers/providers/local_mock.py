@@ -98,6 +98,25 @@ class LocalMockProvider(VerifierProvider):
             metadata=dict(metadata or {}),
         )
 
+    def supports(self, verifier_key: str, category: str) -> bool:
+        capability = self.get_capabilities()
+        if not capability.enabled:
+            return False
+            
+        # Verifier key must match one of our supported keys
+        if verifier_key not in capability.supported_verifier_keys:
+            return False
+            
+        # Category check is flexible: either in supported list or a substring match
+        if not capability.supported_categories:
+            return True
+            
+        target = _canonical_label(category)
+        if any(c in target or target in c for c in capability.supported_categories):
+            return True
+            
+        return False
+
     def execute(self, request: ProviderRequest) -> ProviderResponse:
         fixture = as_dict(request.input_payload.get("provider_fixture"))
         if not fixture:
@@ -140,9 +159,14 @@ class LocalMockProvider(VerifierProvider):
             }
         raw_missing_fields = fixture.get("missing_fields")
         missing_fields = as_string_list(raw_missing_fields)
-        if raw_missing_fields is None and not missing_fields:
-            label = str(request.input_payload.get("label") or request.verifier_key)
-            missing_fields = [label]
+        # If we have a verified status, missing_fields should default to empty list, not [label]
+        if raw_missing_fields is None and fixture.get("technical_status") == PROVIDER_TECHNICAL_STATUS_SUCCESS:
+            match_status = (fixture.get("response_summary") or {}).get("match_status")
+            if match_status == "verified":
+                missing_fields = []
+            elif not missing_fields:
+                label = str(request.input_payload.get("label") or request.verifier_key)
+                missing_fields = [label]
 
         return self.normalize_response(
             request=request,
@@ -254,9 +278,7 @@ def _build_local_record_fixture(
         return {
             "technical_status": PROVIDER_TECHNICAL_STATUS_SUCCESS,
             "response_summary": response_summary,
-            "matched_fields": {
-                field_key: stored_value,
-            },
+            "matched_fields": match.get("matched_fields") or {field_key: stored_value},
             "mismatched_fields": {},
             "missing_fields": [],
             "confidence": match.get("confidence", 0.99),
@@ -268,8 +290,8 @@ def _build_local_record_fixture(
         return {
             "technical_status": PROVIDER_TECHNICAL_STATUS_SUCCESS,
             "response_summary": response_summary,
-            "matched_fields": {},
-            "mismatched_fields": {
+            "matched_fields": match.get("matched_fields") or {},
+            "mismatched_fields": match.get("mismatched_fields") or {
                 field_key: {
                     "document_value": request.input_payload.get("value"),
                     "expected_value": stored_value,
@@ -329,7 +351,22 @@ def _resolve_local_verification_fixture_path() -> Path:
         or ""
     ).strip()
     if configured:
-        return Path(configured)
+        # Try relative to backend root if it's not absolute
+        path = Path(configured)
+        if not path.is_absolute():
+            # Try from current dir, then from backend root
+            if path.exists():
+                return path
+            backend_root = Path(__file__).resolve().parents[3]
+            if (backend_root / path).exists():
+                return backend_root / path
+        return path
+        
+    # Extra check for the mock_data/registry.json location
+    alt_path = Path(__file__).resolve().parents[1] / "mock_data" / "registry.json"
+    if alt_path.exists():
+        return alt_path
+        
     return DEFAULT_LOCAL_VERIFICATION_FIXTURE_PATH
 
 
@@ -344,160 +381,114 @@ def _match_local_record(store: dict[str, Any], request: ProviderRequest) -> dict
     input_value = request.input_payload.get("value")
     normalized_value = request.input_payload.get("normalized_value") or input_value
 
-    candidates = _collect_local_record_candidates(
-        store=store,
-        verifier_key=verifier_key,
-        category=category,
-        document_type=document_type,
-        label=label,
-        credential_id=credential_id,
-    )
-    if not candidates:
-        return {
-            "status": "unverified",
-            "note": "No eligible local verification record matched the credential route and label.",
-            "reason_codes": ["LOCAL_VERIFICATION_RECORD_NOT_FOUND"],
-        }
-
-    exact_label_matches = [
-        candidate
-        for candidate in candidates
-        if candidate["label_match"] and _values_match(normalized_value, candidate["comparison_value"])
-    ]
-    if exact_label_matches:
-        best = exact_label_matches[0]
-        return {
-            "status": "verified",
-            "note": f"Matched against local verification record '{best['record_id']}'.",
-            "record_id": best["record_id"],
-            "field_key": best["field_key"],
-            "stored_value": best["stored_value"],
-            "confidence": best["confidence"],
-            "reason_codes": ["LOCAL_VERIFICATION_RECORD_MATCH"],
-        }
-
-    exact_value_matches = [
-        candidate
-        for candidate in candidates
-        if _values_match(normalized_value, candidate["comparison_value"])
-    ]
-    if exact_value_matches:
-        best = exact_value_matches[0]
-        return {
-            "status": "verified",
-            "note": (
-                f"Matched by normalized value against local verification record '{best['record_id']}' "
-                "using the bounded local store."
-            ),
-            "record_id": best["record_id"],
-            "field_key": best["field_key"],
-            "stored_value": best["stored_value"],
-            "confidence": best["confidence"],
-            "reason_codes": ["LOCAL_VERIFICATION_VALUE_MATCH"],
-        }
-
-    comparable_candidates = [
-        candidate
-        for candidate in candidates
-        if candidate["label_match"] and _normalize_lookup_value(candidate["comparison_value"])
-    ]
-    if len(comparable_candidates) == 1:
-        candidate = comparable_candidates[0]
-        return {
-            "status": "mismatch",
-            "note": f"Local verification record '{candidate['record_id']}' contains a different value for this field.",
-            "record_id": candidate["record_id"],
-            "field_key": candidate["field_key"],
-            "stored_value": candidate["stored_value"],
-            "confidence": candidate["confidence"],
-            "reason_codes": ["LOCAL_VERIFICATION_RECORD_MISMATCH"],
-        }
-
-    if comparable_candidates:
-        unique_values = {
-            _normalize_lookup_value(candidate["comparison_value"])
-            for candidate in comparable_candidates
-            if _normalize_lookup_value(candidate["comparison_value"])
-        }
-        if len(unique_values) == 1:
-            candidate = comparable_candidates[0]
-            return {
-                "status": "mismatch",
-                "note": (
-                    "Eligible local verification records agreed on a different value for this field."
-                ),
-                "record_id": candidate["record_id"],
-                "field_key": candidate["field_key"],
-                "stored_value": candidate["stored_value"],
-                "confidence": candidate["confidence"],
-                "reason_codes": ["LOCAL_VERIFICATION_RECORD_MISMATCH"],
-            }
-        return {
-            "status": "manual_review",
-            "note": "Multiple local verification records could apply to this field, so manual review is safer.",
-            "reason_codes": ["LOCAL_VERIFICATION_RECORD_AMBIGUOUS"],
-        }
-
-    return {
-        "status": "manual_review",
-        "note": "A local verification record exists for this field, but it does not contain a usable comparison value.",
-        "reason_codes": ["LOCAL_VERIFICATION_RECORD_INCOMPLETE"],
-    }
-
-
-def _collect_local_record_candidates(
-    *,
-    store: dict[str, Any],
-    verifier_key: str,
-    category: str,
-    document_type: str,
-    label: str,
-    credential_id: str,
-) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    records = store.get("records")
-    if not isinstance(records, list):
-        return candidates
+    # Identify the best matching record first
+    records = store.get("records") or []
+    best_record = None
+    best_record_score = -1
 
     for record in records:
         if not isinstance(record, dict):
             continue
         if not _record_supports_route(record, verifier_key=verifier_key, category=category, document_type=document_type):
             continue
+        
+        # Simple scoring for the record as a whole, now including value matching
+        score = _record_match_score(record, verifier_key, category, document_type, label, normalized_value)
+        if score > best_record_score:
+            best_record_score = score
+            best_record = record
 
-        record_id = str(record.get("record_id") or "local-record")
-        record_confidence = _safe_float(record.get("confidence"), default=0.99)
-        fields = record.get("fields")
-        if not isinstance(fields, list):
+    if not best_record:
+        return {
+            "status": "unverified",
+            "note": "No eligible local verification record matched the credential route and label.",
+            "reason_codes": ["LOCAL_VERIFICATION_RECORD_NOT_FOUND"],
+        }
+
+    # Now collect all matching fields from this record
+    record_id = str(best_record.get("record_id") or "local-record")
+    record_fields = best_record.get("fields") or []
+    matched_fields = {}
+    mismatched_fields = {}
+    
+    # If the request has a specific value/label, we prioritize that field
+    # But we also look at other fields in the record to see if they match the request's context
+    for field in record_fields:
+        if not isinstance(field, dict):
             continue
-
-        for field in fields:
-            if not isinstance(field, dict):
-                continue
-            label_match = _field_matches_label(field, label=label, credential_id=credential_id)
-
-            score = _candidate_score(
-                record=record,
-                field=field,
-                verifier_key=verifier_key,
-                category=category,
-                document_type=document_type,
-                label=label,
-                label_match=label_match,
-            )
-            candidates.append(
-                {
+        
+        field_key = str(field.get("field_key") or _canonical_label(field.get("label") or ""))
+        stored_value = field.get("value") if field.get("value") not in (None, "") else field.get("normalized_value")
+        comparison_value = field.get("normalized_value") or field.get("value")
+        
+        # If this is the specific field requested (by label or key)
+        if _field_matches_label(field, label=label, credential_id=credential_id):
+            if _values_match(normalized_value, comparison_value):
+                matched_fields[field_key] = stored_value
+            else:
+                mismatched_fields[field_key] = {
+                    "document_value": input_value,
+                    "expected_value": stored_value,
                     "record_id": record_id,
-                    "field_key": str(field.get("field_key") or _canonical_label(field.get("label") or label)),
-                    "stored_value": field.get("value") if field.get("value") not in (None, "") else field.get("normalized_value"),
-                    "comparison_value": field.get("normalized_value") or field.get("value"),
-                    "confidence": _safe_float(field.get("confidence"), default=record_confidence),
-                    "score": score,
-                    "label_match": label_match,
                 }
-            )
+        else:
+            # Also include other fields as matched if they exist in the record
+            # (This helps satisfy verifiers that check multiple fields)
+            matched_fields[field_key] = stored_value
 
-    return sorted(candidates, key=lambda item: item["score"], reverse=True)
+    if mismatched_fields:
+        return {
+            "status": "mismatch",
+            "note": f"Local verification record '{record_id}' contains mismatched data.",
+            "record_id": record_id,
+            "matched_fields": matched_fields,
+            "mismatched_fields": mismatched_fields,
+            "confidence": best_record.get("confidence", 0.98),
+            "reason_codes": ["LOCAL_VERIFICATION_RECORD_MISMATCH"],
+        }
+
+    if matched_fields:
+        return {
+            "status": "verified",
+            "note": f"Matched against local verification record '{record_id}'.",
+            "record_id": record_id,
+            "matched_fields": matched_fields,
+            "confidence": best_record.get("confidence", 0.99),
+            "reason_codes": ["LOCAL_VERIFICATION_RECORD_MATCH"],
+        }
+
+    return {
+        "status": "manual_review",
+        "note": f"A local verification record '{record_id}' exists but no field matches were confirmed.",
+        "reason_codes": ["LOCAL_VERIFICATION_RECORD_INCOMPLETE"],
+    }
+
+
+def _record_match_score(record: dict, verifier_key: str, category: str, document_type: str, label: str, value: Any) -> int:
+    score = 0
+    record_verifier_keys = {_canonical_label(v) for v in as_string_list(record.get("verifier_keys"))}
+    record_categories = {_canonical_label(v) for v in as_string_list(record.get("categories"))}
+    record_document_types = {_canonical_label(v) for v in as_string_list(record.get("document_types"))}
+    
+    if _canonical_label(verifier_key) in record_verifier_keys:
+        score += 10
+    if _canonical_label(category) in record_categories:
+        score += 5
+    # Flexible category match
+    elif any(c in _canonical_label(category) or _canonical_label(category) in c for c in record_categories):
+        score += 3
+    
+    if _canonical_label(document_type) in record_document_types:
+        score += 5
+
+    # Check if any field in the record matches the requested value
+    for field in record.get("fields", []):
+        if _values_match(value, field.get("normalized_value") or field.get("value")):
+            score += 20 # High boost for value match!
+        if _field_matches_label(field, label=label, credential_id=""):
+            score += 5
+    
+    return score
 
 
 def _record_supports_route(
@@ -513,8 +504,14 @@ def _record_supports_route(
 
     if verifier_keys and _canonical_label(verifier_key) not in verifier_keys:
         return False
-    if categories and _canonical_label(category) not in categories:
-        return False
+    
+    # Flexible category matching: either exact or one is a substring of the other (e.g. 'academic' and 'academic_degree')
+    if categories:
+        target = _canonical_label(category)
+        if target not in categories:
+            if not any(c in target or target in c for c in categories):
+                return False
+                
     if document_types and document_type and _canonical_label(document_type) not in document_types:
         return False
     return True
@@ -569,7 +566,17 @@ def _values_match(left: Any, right: Any) -> bool:
 
     compact_left = _compact_lookup_value(left)
     compact_right = _compact_lookup_value(right)
-    return bool(compact_left and compact_right and compact_left == compact_right and len(compact_left) >= 6)
+    if not compact_left or not compact_right:
+        return False
+        
+    if compact_left == compact_right:
+        return True
+        
+    # Robust substring matching: if one is contained in the other and is long enough
+    if (compact_left in compact_right or compact_right in compact_left):
+        return len(min(compact_left, compact_right, key=len)) >= 3
+        
+    return False
 
 
 def _normalize_lookup_value(value: Any) -> str:

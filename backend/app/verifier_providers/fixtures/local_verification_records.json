@@ -16,19 +16,13 @@
           "label": "Full Name",
           "value": "VIOLET SHARMA",
           "normalized_value": "violet sharma"
-        },
-        {
-          "field_key": "date_of_birth",
-          "label": "Date of Birth",
-          "value": "12-05-2002",
-          "normalized_value": "2002-05-12"
         }
       ]
     },
     {
       "record_id": "academic_vit_btech_001",
-      "verifier_keys": ["academic_registry"],
-      "categories": ["academic"],
+      "verifier_keys": ["academic_registry", "identity_db"],
+      "categories": ["academic", "identity"],
       "document_types": ["academic_degree", "academic_credential"],
       "fields": [
         {
@@ -48,76 +42,57 @@
           "label": "Degree",
           "value": "B.Tech Computer Science and Engineering",
           "normalized_value": "btech computer science and engineering"
-        },
-        {
-          "field_key": "institution",
-          "label": "University",
-          "value": "Vellore Institute of Technology",
-          "normalized_value": "vellore institute of technology"
-        },
-        {
-          "field_key": "cgpa",
-          "label": "CGPA",
-          "value": "9.2",
-          "normalized_value": "9.2"
         }
       ]
     },
     {
-      "record_id": "govt_pan_card_001",
-      "verifier_keys": ["tax_authority", "identity_db"],
-      "categories": ["tax", "identity"],
+      "record_id": "demo_violet_simple",
+      "verifier_keys": ["academic_registry", "identity_db"],
+      "categories": ["academic", "identity"],
       "fields": [
-        {
-          "field_key": "document_id",
-          "label": "PAN Number",
-          "value": "ABCDE1234F",
-          "normalized_value": "abcde1234f"
-        },
         {
           "field_key": "name",
-          "label": "Name on Card",
-          "value": "ARJUN VERMA",
-          "normalized_value": "arjun verma"
+          "label": "Name",
+          "value": "Violet",
+          "normalized_value": "violet"
+        },
+        {
+          "field_key": "degree",
+          "label": "Degree",
+          "value": "BTech",
+          "normalized_value": "btech"
         }
       ]
     },
     {
-      "record_id": "personal_license_001",
-      "verifier_keys": ["license_registry"],
-      "categories": ["license"],
+      "record_id": "demo_ethan_simple",
+      "verifier_keys": ["identity_db"],
+      "categories": ["identity"],
       "fields": [
-        {
-          "field_key": "document_id",
-          "label": "License Number",
-          "value": "TN-01-20220001234",
-          "normalized_value": "tn0120220001234"
-        },
         {
           "field_key": "name",
-          "label": "Driver Name",
-          "value": "SARAH WILLIAMS",
-          "normalized_value": "sarah williams"
+          "label": "Name",
+          "value": "Ethan",
+          "normalized_value": "ethan"
         }
       ]
     },
     {
-      "record_id": "academic_vit_transcript_002",
-      "verifier_keys": ["academic_registry"],
-      "categories": ["academic"],
-      "document_types": ["academic_transcript"],
+      "record_id": "demo_mismatch_case",
+      "verifier_keys": ["academic_registry", "identity_db"],
+      "categories": ["academic", "identity"],
       "fields": [
         {
-          "field_key": "document_id",
-          "label": "Roll Number",
-          "value": "21BMR0123",
-          "normalized_value": "21bmr0123"
+          "field_key": "name",
+          "label": "Name",
+          "value": "Mismatched User",
+          "normalized_value": "mismatched user"
         },
         {
-          "field_key": "institution",
-          "label": "Issuer",
-          "value": "VIT Chennai",
-          "normalized_value": "vit chennai"
+          "field_key": "degree",
+          "label": "Degree",
+          "value": "PhD",
+          "normalized_value": "phd"
         }
       ]
     }

@@ -5,7 +5,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 export GOOGLE_API_KEY="your_actual_key_here"
 export GEMINI_API_KEY="your_actual_key_here"
-export VERIFIER_LOCAL_VERIFICATION_STORE_PATH="app/verifier_providers/fixtures/local_verification_records.json"
+export VERIFIER_LOCAL_VERIFICATION_STORE_PATH="app/verifier_providers/mock_data/registry.json"
 export VERIFIER_PROVIDER_OPERATING_MODE="LOCAL_MOCK"
 export ENABLE_LOCAL_MOCK_VERIFIERS="true"
 export PYTHONPATH=$PYTHONPATH:.

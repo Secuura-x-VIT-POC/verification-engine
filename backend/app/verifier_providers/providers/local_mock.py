@@ -23,7 +23,7 @@ from ..policies import ProviderConfig
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_LOCAL_VERIFICATION_FIXTURE_PATH = (
-    Path(__file__).resolve().parents[1] / "fixtures" / "local_verification_records.json"
+    Path(__file__).resolve().parents[1] / "mock_data" / "registry.json"
 )
 
 SUPPORTED_VERIFIER_KEYS = [
